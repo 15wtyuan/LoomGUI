@@ -1,0 +1,61 @@
+# ===== Rust =====
+/target
+**/*.rs.bk
+Cargo.lock
+# 注：二进制/库工程通常提交 Cargo.lock；若后续定为库可改回忽略。先提交。
+
+# ===== Unity =====
+[Ll]ibrary/
+[Tt]emp/
+[Oo]bj/
+[Bb]uild/
+[Bb]uilds/
+[Ll]ogs/
+[Uu]ser[Ss]ettings/
+[Mm]emoryCaptures/
+[Rr]ecordings/
+# Unity 生成的 meta 保留（资产需要）；以下为不应入库的产物
+*.unitypackage
+*.apk
+*.aab
+*.unityproj
+*.sln
+*.csproj
+*.user
+*.pidb
+*.booproj
+*.svd
+*.mdb
+*.opendb
+*.VC.db
+*.VC.opendb
+sysinfo.txt
+crashlytics-build.properties
+
+# ===== Rust↔Unity 产物 =====
+# csbindgen 生成的 C# 绑定（由 Rust 侧生成，不入库）
+**/LoomGUI*Bindings*.cs
+# native 库产物（按需，若想入库 prebuilt 可注释掉）
+/**/*.dll
+/**/*.dylib
+/**/*.so
+!**/Plugins/**/*.dll
+!**/Plugins/**/*.dylib
+!**/Plugins/**/*.so
+
+# ===== IDE / 编辑器 =====
+.vs/
+.vscode/
+.idea/
+*.swp
+*~
+
+# ===== OS =====
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ===== Claude / 工具缓存 =====
+.claude/cache/
+.claude/state/
+.claude/projects/
