@@ -67,6 +67,30 @@
 
 ---
 
+## 2.1 v1 预览方案（临时，编辑器期换 WASM）
+
+> 这是 v1 的临时预览手段，**不写进主文档**（主文档只写最终设计：编辑器用 WASM 跑核心做零偏差预览）。v1 还没有编辑器/WASM 渲染，用 Chrome 兜底。
+
+**方案 = 围栏验证器 + Chrome MCP 预览 + JS polyfill**：
+1. **围栏验证器**（必做）：检查 HTML/CSS 是否在围栏内，违规（display:grid/position:absolute/行内混排等）编译期报错。AI 的第一道反馈。
+2. **Chrome MCP 预览**：AI 在 Chrome 打开 HTML 看效果。验证器通过后，除自定义属性外 Chrome 都能渲染（flex 布局/垂直堆叠/尺寸/普通文本/图片，偏差可控）。
+3. **JS polyfill 脚本**（`loomgui-polyfill.js`，轻量 Web 资源）：把 LoomGUI 自定义属性翻译成 Chrome 能渲染的标准 CSS——
+   - `-l-slice`（九宫格）→ CSS `border-image`（零偏差）
+   - `:l-page(n)`（Controller 状态）→ JS 监听状态切换，动态加减 class（零偏差）
+   - 其他自定义伪类同理
+   挂这个 polyfill 后，自定义属性也能在 Chrome 预览。
+
+**围栏文档（给 AI 的 prompt）须写清**：
+- 用 Chrome 预览时挂 `loomgui-polyfill.js`。
+- 行内流/不支持属性别写（验证器挡）。
+- Chrome 预览仅布局结构 + polyfill 后的自定义属性可信；文本换行细节/像素级以 LoomGUI 渲染为准（v1 容忍）。
+
+**边界**：polyfill 搞定视觉表现（九宫格效果、状态样式），搞不定 LoomGUI 布局测量细节——但 v1 围栏内的自定义属性都是视觉/状态层（不涉布局尺寸），polyfill 够用。
+
+**v2+ 替换**：编辑器（Claude Design 式 Web 应用）用 WASM 跑 LoomGUI 核心渲染，零偏差所见即所得，淘汰本临时方案。
+
+---
+
 ## 3. v1 必做但主文档没显式列的 Unity 胶水任务
 
 > 主文档定核心设计；这些是 Unity 后端"把核心接起来"的胶水，v1 必做。
