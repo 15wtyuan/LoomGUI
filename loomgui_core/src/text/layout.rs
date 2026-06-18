@@ -5,10 +5,11 @@
 //! - 断行用贪心按空白 + 宽度约束（unicode-linebreak 留作 v1.x 严格换行）。
 //! - glyph 存绝对坐标（已累加 advance + 已应用 align 偏移），后端拼 quad 零累加（§9.2 核心）。
 
+use serde::Serialize;
 use ttf_parser::Face;
 
 /// 单个字形。坐标为绝对坐标（pen 位 = glyph.x/y + bearing）。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Glyph {
     pub glyph_id: u16,
     /// pen x（已累加 advance + 已应用 align 偏移）。
@@ -22,14 +23,14 @@ pub struct Glyph {
 }
 
 /// 单 run：一组连续字形。v0 单字体单 run，glyphs 直接内联。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct GlyphRun {
     pub font_size: f32,
     pub glyphs: Vec<Glyph>,
 }
 
 /// 一行文本。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Line {
     /// 行顶 y（相对布局原点）。
     pub y: f32,
@@ -43,7 +44,7 @@ pub struct Line {
 }
 
 /// 文本布局结果（SOA 三表：lines/runs/glyphs）。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct TextLayout {
     pub text_width: f32,
     pub text_height: f32,

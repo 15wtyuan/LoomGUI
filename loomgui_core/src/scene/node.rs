@@ -10,8 +10,10 @@ use crate::style::resolved::ResolvedStyle;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NodeId(pub usize);
 
-#[derive(Debug, Clone)]
+/// 默认 `Container`（无数据变体），render 层测试构造 Node 用 `Default::default()`。
+#[derive(Debug, Clone, Default)]
 pub enum NodeKind {
+    #[default]
     Container,
     Text { content: String },
     /// v0：src 原样存（不加载），render 层映射到占位 tex_id。
@@ -44,6 +46,26 @@ pub struct Node {
     pub children: Vec<NodeId>,
     pub dirty_mesh: bool,
     pub dirty_text: bool,
+}
+
+impl Default for Node {
+    /// render 层 batch 测试构造占位 Node 用。
+    /// id/parent/children 取空值，kind=Container（NodeKind::default），
+    /// style 取 ResolvedStyle::default，layout_rect/clip_rect 取空。
+    fn default() -> Self {
+        Node {
+            id: NodeId(0),
+            parent: None,
+            kind: NodeKind::default(),
+            style: ResolvedStyle::default(),
+            taffy_id: None,
+            layout_rect: Rect::default(),
+            clip_rect: None,
+            children: Vec::new(),
+            dirty_mesh: true,
+            dirty_text: false,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
