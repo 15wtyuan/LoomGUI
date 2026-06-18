@@ -205,20 +205,46 @@ mod tests {
         // brief 原样保留 inline-style 版本作语义对照（v0 无 inline style → 用 class）。
         let _html = r#"<div class="root"><div style="height:50px"></div><div style="height:30px"></div></div>"#;
         let html2 = r#"<div class="root"><div class="a"></div><div class="b"></div></div>"#;
-        // brief 原样 CSS 漏 flex-direction；测试名 column_stack + 断言「垂直堆叠」
-        // 证明意图是列布局，taffy 默认 flex-row 会让子项横排（b.y≈0 失败）。
-        // 加 flex-direction: column 是对 brief 测试名/注释意图的最小忠实修正。
-        let css = r#".root { width: 200px; height: 200px; flex-direction: column; } .a { height: 50px; } .b { height: 30px; }"#;
+        // §4.1：div 默认 flex-direction: column（ResolvedStyle::default 落地）。
+        // CSS 不写 flex-direction，子项也应垂直堆叠。
+        let css = r#".root { width: 200px; height: 200px; } .a { height: 50px; } .b { height: 30px; }"#;
         let tree = parse_html(html2).unwrap();
         let sheet = parse_css(css).unwrap();
         let styles = resolve_styles(&tree, &sheet);
         let mut scene = build_scene(&tree, &styles);
-        solve(&mut scene, &font().unwrap_or_else(|| font().unwrap()), (200.0, 200.0));
+        solve(&mut scene, &font().expect("test needs a font"), (200.0, 200.0));
         let root = &scene.nodes[scene.roots[0].0];
         let a = &scene.nodes[root.children[0].0];
         let b = &scene.nodes[root.children[1].0];
         assert!((a.layout_rect.h - 50.0).abs() < 0.1);
         assert!((b.layout_rect.h - 30.0).abs() < 0.1);
         assert!((b.layout_rect.y - 50.0).abs() < 0.1); // 垂直堆叠
+    }
+
+    /// §4.1 回归：未显式写 flex-direction 的 div 默认垂直堆叠（column）。
+    /// 防止有人把 ResolvedStyle::default 的 flex_direction 改回 Row。
+    #[test]
+    fn default_div_is_column() {
+        let html = r#"<div class="root"><div class="a"></div><div class="b"></div></div>"#;
+        let css = r#".root { width: 200px; height: 200px; } .a { width: 50px; height: 50px; } .b { width: 30px; height: 30px; }"#;
+        let tree = parse_html(html).unwrap();
+        let sheet = parse_css(css).unwrap();
+        let styles = resolve_styles(&tree, &sheet);
+        let mut scene = build_scene(&tree, &styles);
+        solve(&mut scene, &font().expect("test needs a font"), (200.0, 200.0));
+        let root = &scene.nodes[scene.roots[0].0];
+        let a = &scene.nodes[root.children[0].0];
+        let b = &scene.nodes[root.children[1].0];
+        // 垂直堆叠：b.y ≈ a.h（a 在上，b 在下）。
+        // 若默认回退到 row，b.y 会 ≈ 0（横排），此断言失败。
+        assert!(
+            (b.layout_rect.y - a.layout_rect.h).abs() < 0.1,
+            "expected column stack (b.y ≈ a.h), got a.h={} b.y={}",
+            a.layout_rect.h,
+            b.layout_rect.y
+        );
+        // a、b 同 x（列内左对齐），x 都 ≈ 0。
+        assert!(a.layout_rect.x.abs() < 0.1);
+        assert!(b.layout_rect.x.abs() < 0.1);
     }
 }

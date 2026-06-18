@@ -1,4 +1,5 @@
 use taffy::style::Style as TaffyStyle;
+use taffy::FlexDirection;
 
 #[derive(Debug, Clone)]
 pub struct ResolvedStyle {
@@ -34,8 +35,14 @@ pub enum TextAlign {
 
 impl Default for ResolvedStyle {
     fn default() -> Self {
+        // §4.1：div 永远是 flex 容器，默认 flex-direction: column。
+        // taffy Style::DEFAULT 是 Row，这里改默认为 Column。
+        // CSS 显式声明 flex-direction 时，style::mapping::apply_decl 的对应分支
+        // 无条件覆盖 ts.flex_direction——故显式声明永远胜出（写在 row 即 row）。
+        let mut taffy_style = TaffyStyle::DEFAULT;
+        taffy_style.flex_direction = FlexDirection::Column;
         Self {
-            taffy_style: TaffyStyle::DEFAULT,
+            taffy_style,
             background_color: None,
             border_color: None,
             border_width: 0.0,
@@ -64,5 +71,7 @@ mod tests {
         assert_eq!(s.opacity, 1.0);
         assert_eq!(s.font_size, 16.0);
         assert!(!s.overflow_hidden);
+        // §4.1：div 默认 flex-direction: column（taffy DEFAULT 是 row，必须显式覆盖）
+        assert_eq!(s.taffy_style.flex_direction, taffy::FlexDirection::Column);
     }
 }
