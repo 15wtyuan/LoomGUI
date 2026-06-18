@@ -46,11 +46,9 @@ impl<'i> QualifiedRuleParser<'i> for NestingParser {
     ) -> Result<Self::QualifiedRule, ParseError<'i, Self::Error>> {
         let mut declarations = Vec::new();
         let mut decl_parser = DeclParser;
-        let mut body = RuleBodyParser::new(input, &mut decl_parser);
-        while let Some(item) = body.next() {
-            if let Ok(d) = item {
-                declarations.push(d);
-            }
+        let body = RuleBodyParser::new(input, &mut decl_parser);
+        for d in body.flatten() {
+            declarations.push(d);
         }
         Ok(Rule {
             selector_text: prelude,
@@ -116,11 +114,9 @@ pub fn parse_css(css: &str) -> Result<StyleSheet, String> {
     let mut rules = Vec::new();
     // 用顶层 StyleSheetParser 迭代规则（比循环 parse_one_rule 更贴合 cssparser 0.34 设计）
     let mut nesting = NestingParser;
-    let mut sheet = StyleSheetParser::new(&mut parser, &mut nesting);
-    while let Some(item) = sheet.next() {
-        if let Ok(rule) = item {
-            rules.push(rule);
-        }
+    let sheet = StyleSheetParser::new(&mut parser, &mut nesting);
+    for rule in sheet.flatten() {
+        rules.push(rule);
     }
     Ok(StyleSheet { rules })
 }
