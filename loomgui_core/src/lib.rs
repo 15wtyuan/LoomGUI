@@ -1,5 +1,6 @@
 pub mod layout;
 pub mod parse;
+pub mod render;
 pub mod scene;
 pub mod style;
 pub mod text;
