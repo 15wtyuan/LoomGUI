@@ -1,0 +1,3 @@
+[workspace]
+members = ["loomgui_core"]
+resolver = "2"
