@@ -118,17 +118,10 @@ mod tests {
     use crate::scene::node::*;
     use crate::style::resolved::TextAlign;
 
-    /// 测试字体：Windows arial.ttf / Linux DejaVuSans.ttf，无则跳过。
+    /// 测试字体：仓库内 DejaVuSans.ttf（跨平台一致），缺则跳过。
     fn test_font() -> Option<Font> {
-        for p in [
-            "C:\\Windows\\Fonts\\arial.ttf",
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        ] {
-            if let Ok(f) = Font::from_path(p) {
-                return Some(f);
-            }
-        }
-        None
+        let p = format!("{}/tests/fixtures/DejaVuSans.ttf", env!("CARGO_MANIFEST_DIR"));
+        Font::from_path(&p).ok()
     }
 
     /// 构造一个带 layout_rect 的 Container Node。

@@ -3,6 +3,8 @@
 **/*.rs.bk
 Cargo.lock
 # 注：二进制/库工程通常提交 Cargo.lock；若后续定为库可改回忽略。先提交。
+# v0 runner 产物（cargo run --example v0_snapshot 生成）
+v0_snapshot.json
 
 # ===== Unity =====
 [Ll]ibrary/

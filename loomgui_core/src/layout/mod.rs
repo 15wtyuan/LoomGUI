@@ -192,12 +192,8 @@ mod tests {
     use crate::style::cascade::resolve_styles;
 
     fn font() -> Option<Font> {
-        for p in ["C:\\Windows\\Fonts\\arial.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"] {
-            if let Ok(f) = Font::from_path(p) {
-                return Some(f);
-            }
-        }
-        None
+        let p = format!("{}/tests/fixtures/DejaVuSans.ttf", env!("CARGO_MANIFEST_DIR"));
+        Font::from_path(&p).ok()
     }
 
     #[test]
