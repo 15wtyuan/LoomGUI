@@ -42,7 +42,7 @@
 ### 状态/样式
 - `:hover/:active/:disabled`（运行时伪类 + 样式 dirty 重匹配）
 - cascade 继承（打包期展开）+ 合并 + 出现顺序
-- **砍 Controller/Gear/`:l-page(n)`/Transition**（v1.x）
+- **砍 Controller/Gear/`[data-page]`/Transition**（v1.x）
 
 ---
 
@@ -51,14 +51,15 @@
 **元素**：`div`(Container) / `span`+裸文本(Text) / `img`(Image) / `button`(Button)。
 砍：`l-rich`/`input`/`l-graph`/`l-loader`/`l-movie`/`l-list`/`l-slider`/`l-combobox`/`l-tree`/`l-native`（v1.x）。v1 可滚动列表用 `div`+ScrollPane 手搓 item，**不做 `<l-list>` 虚拟化**。
 
-**CSS 布局**：`display:flex/none`、`flex-direction`、`flex-wrap`、`gap`、`justify-content`、`align-items`、`align-self`、`flex`(grow/shrink/basis)、`width/height/min/max`(px/%/auto)、`padding`、`margin`、`border-width`、`position:relative`、`aspect-ratio`、`order`。
-砍：`position:absolute`、`align-content`、`row-gap/column-gap`（v1.x）。
+**CSS 布局**：`display:flex/none`、`flex-direction`、`flex-wrap`、`gap`、`row-gap`、`column-gap`、`justify-content`、`align-items`、`align-self`、`flex`(grow/shrink/basis)、`width/height/min/max`(px/%/auto)、`padding`、`margin`、`border-width`、`position:relative`、`aspect-ratio`、`order`。
+砍：`position:absolute`、`align-content`（换行行分布不可配，围栏文档须告知）、`position:sticky/fixed`（v1.x）。
+> `row-gap`/`column-gap` 是 `gap` 的 longhand，映射同 taffy 字段，支持它们以对齐 AI 先验（AI 常写 longhand）。
 
 **CSS 视觉**：`background-color`、`background-image`(url)、`background-size`(cover/contain/100%)、`border`(color/width/solid)、`opacity`、`overflow:visible/hidden`、`color/font-size/font-family/font-weight/font-style`、`text-align`、`line-height`、`letter-spacing`、`white-space:nowrap`。
 砍：`filter`、`clip-path`、`border-radius`、九宫格 `-l-slice`、`background-position`（v1.x）。
 
 **交互/状态**：`pointer-events:auto/none`、`:hover/:active/:disabled`。
-砍：`cursor`、`:focus`、`:l-page(n)`+Controller/Gear、`:nth-child`、属性选择器（v1.x）。
+砍：`cursor`、`:focus`、Controller/Gear/`[data-page]`、`:nth-child`、属性选择器（v1.x）。
 
 **选择器**：标签/类/id/后代/子代。
 
@@ -75,9 +76,8 @@
 1. **围栏验证器**（必做）：检查 HTML/CSS 是否在围栏内，违规（display:grid/position:absolute/行内混排等）编译期报错。AI 的第一道反馈。
 2. **Chrome MCP 预览**：AI 在 Chrome 打开 HTML 看效果。验证器通过后，除自定义属性外 Chrome 都能渲染（flex 布局/垂直堆叠/尺寸/普通文本/图片，偏差可控）。
 3. **JS polyfill 脚本**（`loomgui-polyfill.js`，轻量 Web 资源）：把 LoomGUI 自定义属性翻译成 Chrome 能渲染的标准 CSS——
-   - `-l-slice`（九宫格）→ CSS `border-image`（零偏差）
-   - `:l-page(n)`（Controller 状态）→ JS 监听状态切换，动态加减 class（零偏差）
-   - 其他自定义伪类同理
+   - `border-image-slice`（九宫格，LoomGUI canonical 已是标准 CSS）→ Chrome 原生渲染（polyfill 几乎 no-op）
+   - `[data-page]`（Controller 状态，v1.x 才用）→ JS 监听状态切换，动态改 `data-page` 属性（标准属性选择器，Chrome 原生匹配，零偏差）
    挂这个 polyfill 后，自定义属性也能在 Chrome 预览。
 
 **围栏文档（给 AI 的 prompt）须写清**：
@@ -85,7 +85,15 @@
 - 行内流/不支持属性别写（验证器挡）。
 - Chrome 预览仅布局结构 + polyfill 后的自定义属性可信；文本换行细节/像素级以 LoomGUI 渲染为准（v1 容忍）。
 
-**边界**：polyfill 搞定视觉表现（九宫格效果、状态样式），搞不定 LoomGUI 布局测量细节——但 v1 围栏内的自定义属性都是视觉/状态层（不涉布局尺寸），polyfill 够用。
+**Chrome 预览可信清单（防 AI 被预览骗）**：polyfill 只管视觉/状态自定义属性，管不了 LoomGUI 与浏览器的**布局语义分歧**。AI 须分清——
+- **可信**（Chrome ≈ LoomGUI）：flex 轴/方向、显式 `display:flex`、**`gap` 间距**、颜色、opacity、border、图片、px 尺寸。
+- **不可信**（Chrome ≠ LoomGUI，别按预览调）：
+  - **裸 div 混排**：Chrome 行内流 vs LoomGUI 堆叠——但验证器会挡，AI 拿不到预览，须改用 `<l-rich>`。
+  - **margin 控间距**：Chrome（block flow）折叠 margin、LoomGUI（flex）求和不折叠。**子项间距用 `gap`**，别用 margin（gap 两边一致）。
+  - **文本换行/像素级**：Chrome 文本引擎 vs LoomGUI（unicode-linebreak），换行点/塞文本宽度会偏。调宽塞文本时别全信 Chrome。
+- **口径**：不可信项"信围栏规则，别信预览"。
+
+**边界**：polyfill 搞定视觉表现（九宫格效果、状态样式），搞不定 LoomGUI 布局测量细节——但 v1 围栏内的自定义属性都是视觉/状态层（不涉布局尺寸），polyfill 够用。布局语义分歧（margin/换行）是围栏规则约束的，非 polyfill 职责。
 
 **v2+ 替换**：编辑器（Claude Design 式 Web 应用）用 WASM 跑 LoomGUI 核心渲染，零偏差所见即所得，淘汰本临时方案。
 
@@ -125,6 +133,7 @@
 6. 从 **HTML 经打包器产出二进制包** 加载
 
 性能基线：500 节点静态 UI 每帧无卡顿（v1 中段 stress 测试，早暴露 FFI/批合问题）。
+**冷帧/换页帧**：冷启动首帧 + controller 全量换页帧（500 节点全 dirty）也每帧无卡顿——单帧 FFI 拷贝 + arena 解析 ≤ 2ms（§14.3 ArrayPool 租用，零 GC）。静态帧是便宜的那个，冷帧/换页帧才是 FFI 压力点。
 
 ---
 
@@ -150,5 +159,7 @@
 ## 7. v1 明确不做（推 v1.x+）
 
 富文本、九宫格/平铺/填充、软裁剪/形状遮罩(paintingMode)、动画(GTween 全套)+Transition+Controller+Gear、列表虚拟化、滚动分页/吸附/下拉刷新、动态节点 API 完整化、自定义控件扩展、IME 完整链路+软键盘、字体 fallback 链、NativeHost、rustybuzz 复杂 shaping+BiDi、IL2CPP+移动端、grid、CSS transition。
+
+**v1 性能优化暂不做（实现期撞墙再加）**：文本测量缓存（`(text_hash,font,size,constraint)→(w,h)`）——v1 节点少（500）、naive 重算够用，待 taffy 反复调 measure 撞性能墙时再上 cache。
 
 > 完整缺口登记见各轮 review 文档（`docs/review/`）。

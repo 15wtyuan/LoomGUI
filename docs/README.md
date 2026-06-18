@@ -9,7 +9,7 @@
 | [`design/`](design/) | **主设计**（单一真相源，最终总设计，无版本/迭代噪音） | 理解"设计成什么样" |
 | [`roadmap/`](roadmap/) | 实现范围（按版本，v1/v1.x/v2 干什么） | 理解"先做什么" |
 | [`decisions/`](decisions/) | 架构决策记录（ADR，每个决策的"为什么"） | 理解"为什么这么定" |
-| [`review/`](review/) | 对抗性审查归档（三轮 subagent review） | 追溯决策来源 |
+| [`review/`](review/) | 对抗性审查归档（四轮 subagent review） | 追溯决策来源 |
 
 ## 入口
 
