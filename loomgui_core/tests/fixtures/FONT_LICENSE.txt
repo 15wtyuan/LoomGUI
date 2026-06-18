@@ -1,0 +1,46 @@
+DejaVuSans.ttf — DejaVu Fonts
+================================================================
+
+Source:  https://dejavu-fonts.github.io/
+           (downloaded from the DejaVu Fonts project release)
+File:    DejaVuSans.ttf (DejaVu Sans, regular)
+SHA-256: see git history; size ~740 KiB.
+
+License
+-------
+DejaVu Fonts are free software, released under a permissive license that
+permits use, redistribution, and modification — including in bundled
+binary form — provided the copyright notice and license are preserved.
+
+  Copyright (c) 2003 by Bitstream, Inc. All Rights Reserved.
+  DejaVu changes are in the public domain.
+
+  Permission is hereby granted, free of charge, to any person obtaining a
+  copy of the fonts accompanying this license ("Fonts") and associated
+  documentation files (the "Font Software"), to deal in the Font Software,
+  including without limitation the rights to use, copy, merge, publish,
+  distribute, and/or sell copies of the Font Software, and to permit persons
+  to whom the Font Software is furnished to do so, subject to the following
+  conditions:
+
+  The above copyright and trademark notices and this permission notice shall
+  be included in all copies of one or more of the Font Software typefaces.
+
+  The Font Software may be modified, but the font name(s) and trademark
+  notices must not be modified. The name "DejaVu" is a trademark.
+
+Why it is here
+--------------
+This file is checked into the repo so that snapshot tests use a single
+fixed font across all platforms (Windows/Linux/macOS CI), instead of
+depending on system-installed arial.ttf (absent on Linux CI) and to avoid
+glyph-metric drift. DejaVu Sans is chosen because:
+  - its license permits free redistribution inside a source repo,
+  - it has complete ASCII + Latin coverage with stable glyph metrics,
+  - it is widely used as a cross-platform test font.
+
+CJK coverage note
+-----------------
+DejaVu Sans does NOT cover CJK ideographs. v0 snapshot fixtures use ASCII
+text only (see v0-skeleton-design.md §9). CJK text rendering validation is
+deferred to v1, which will adopt a dedicated CJK font strategy.

@@ -4,21 +4,26 @@
 //! - 首次接受：`INSTA_UPDATE=always cargo test -p loomgui_core --test snapshot`
 //! - 之后：`cargo test -p loomgui_core --test snapshot`（绿=锁定）
 //!
-//! 无字体环境（arial.ttf/DejaVuSans.ttf 都缺）时整测 skip。
-//! 覆盖：simple_panel（flex 列布局 + Container/Button/Text/Image）、
+//! 字体策略：测试字体锁仓库内 `tests/fixtures/DejaVuSans.ttf`（开源，跨平台一致），
+//! 不再依赖系统 arial.ttf / DejaVuSans（Linux CI 无 arial 会漂移）。
+//! DejaVu Sans 无 CJK glyph，故 fixture 用 ASCII 文本；CJK 渲染验证留 v1
+//! （需 CJK 字体策略，见 spec §9）。
+//! 覆盖：simple_panel（flex 列布局 + Container/Button/Text）、
 //! cascade_inheritance（root color/font-size 经 cascade 传子）。
 
 use loomgui_core::stage::Stage;
 
-fn font_path() -> String {
-    if cfg!(windows) {
-        "C:\\Windows\\Fonts\\arial.ttf".into()
-    } else {
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf".into()
-    }
+/// 测试字体：仓库内 DejaVuSans.ttf，跨平台一致。
+/// 用 `env!("CARGO_MANIFEST_DIR")` 拼绝对路径，不依赖系统字体安装。
+fn test_font_path() -> String {
+    format!(
+        "{}/tests/fixtures/DejaVuSans.ttf",
+        env!("CARGO_MANIFEST_DIR")
+    )
 }
 
 /// 缺字体时 skip（return，不算失败）。
+/// 防御性保留：仓库内字体正常情况下必存在，实际不会 skip。
 fn skip_if_no_font(font: &str) -> bool {
     if std::fs::read(font).is_err() {
         eprintln!("skip: no font at {}", font);
@@ -29,11 +34,12 @@ fn skip_if_no_font(font: &str) -> bool {
 
 #[test]
 fn snapshot_simple_panel() {
-    let font = font_path();
+    let font = test_font_path();
     if skip_if_no_font(&font) {
         return;
     }
-    let html = r#"<div class="root"><div class="h">标题</div><button class="b">确定</button></div>"#;
+    // fixture 用 ASCII（DejaVuSans 无 CJK，CJK 验证留 v1）
+    let html = r#"<div class="root"><div class="h">Title</div><button class="b">OK</button></div>"#;
     let css = r#".root { width: 300px; height: 200px; flex-direction: column; gap: 8px; } .h { height: 30px; } .b { width: 100px; height: 40px; }"#;
     let mut stage = Stage::new(&font, (300.0, 200.0)).unwrap();
     stage.load_inline(html, css).unwrap();
@@ -43,7 +49,7 @@ fn snapshot_simple_panel() {
 
 #[test]
 fn snapshot_cascade_inheritance() {
-    let font = font_path();
+    let font = test_font_path();
     if skip_if_no_font(&font) {
         return;
     }

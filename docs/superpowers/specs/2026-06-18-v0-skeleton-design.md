@@ -134,6 +134,7 @@ loomgui/
 - **文本测量深度**：v0 文本全做是最大工期变量。若 taffy MeasureFunc 反复调用 + 文本测量撞性能墙，登记"测量缓存"（v1x-deferred §5），v0 naive 重算先过。
 - **line-height / kinsoku 公式**：主文档只留原则（§9.1），v0 实现期对照 Chrome 调，不预设公式。
 - **JSON 快照 schema 稳定性**：v0 期间 schema 会随实现微调；快照锁定让变更显式，跨版本比较能力 v0 不做（够用即可）。
+- **测试字体跨平台一致性**：v0 快照锁定 glyph 度量，若依赖系统字体（Win arial.ttf / Linux DejaVuSans）会跨平台漂移（Linux CI 无 arial）。决策：**测试字体锁仓库内 `loomgui_core/tests/fixtures/DejaVuSans.ttf`**（开源 DejaVu 字体，许可允许再分发，~740 KiB），测试用 `env!("CARGO_MANIFEST_DIR")` 拼绝对路径指向该 fixture。DejaVu Sans 无 CJK glyph，故 v0 fixture 文本用 ASCII 验管线；**CJK 文本渲染验证留 v1**（v1 需独立 CJK 字体策略，可能走字体子集 + fallback 链）。
 
 ---
 

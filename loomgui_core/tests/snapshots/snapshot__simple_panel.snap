@@ -226,31 +226,52 @@ expression: json
     "payload": {
       "Text": {
         "layout": {
-          "text_width": 24.0,
-          "text_height": 18.398438,
+          "text_width": 34.289062,
+          "text_height": 18.625,
           "lines": [
             {
               "y": 0.0,
-              "height": 18.398438,
-              "baseline": 14.484375,
-              "width": 24.0,
+              "height": 18.625,
+              "baseline": 14.8515625,
+              "width": 34.289062,
               "runs": [
                 {
                   "font_size": 16.0,
                   "glyphs": [
                     {
-                      "glyph_id": 0,
+                      "glyph_id": 55,
                       "x": 0.0,
                       "y": 0.0,
-                      "bearing_x": 2.0,
-                      "bearing_y": 10.0
+                      "bearing_x": -0.046875,
+                      "bearing_y": 11.6640625
                     },
                     {
-                      "glyph_id": 0,
-                      "x": 12.0,
+                      "glyph_id": 76,
+                      "x": 9.28125,
                       "y": 0.0,
-                      "bearing_x": 2.0,
-                      "bearing_y": 10.0
+                      "bearing_x": 1.5078125,
+                      "bearing_y": 12.15625
+                    },
+                    {
+                      "glyph_id": 87,
+                      "x": 13.7265625,
+                      "y": 0.0,
+                      "bearing_x": 0.4296875,
+                      "bearing_y": 11.234375
+                    },
+                    {
+                      "glyph_id": 79,
+                      "x": 20.0,
+                      "y": 0.0,
+                      "bearing_x": 1.5078125,
+                      "bearing_y": 12.15625
+                    },
+                    {
+                      "glyph_id": 72,
+                      "x": 24.445312,
+                      "y": 0.0,
+                      "bearing_x": 0.8828125,
+                      "bearing_y": 8.9609375
                     }
                   ]
                 }
@@ -393,31 +414,31 @@ expression: json
     "payload": {
       "Text": {
         "layout": {
-          "text_width": 24.0,
-          "text_height": 18.398438,
+          "text_width": 23.085938,
+          "text_height": 18.625,
           "lines": [
             {
               "y": 0.0,
-              "height": 18.398438,
-              "baseline": 14.484375,
-              "width": 24.0,
+              "height": 18.625,
+              "baseline": 14.8515625,
+              "width": 23.085938,
               "runs": [
                 {
                   "font_size": 16.0,
                   "glyphs": [
                     {
-                      "glyph_id": 0,
+                      "glyph_id": 50,
                       "x": 0.0,
                       "y": 0.0,
-                      "bearing_x": 2.0,
-                      "bearing_y": 10.0
+                      "bearing_x": 0.8984375,
+                      "bearing_y": 11.875
                     },
                     {
-                      "glyph_id": 0,
-                      "x": 12.0,
+                      "glyph_id": 46,
+                      "x": 12.59375,
                       "y": 0.0,
-                      "bearing_x": 2.0,
-                      "bearing_y": 10.0
+                      "bearing_x": 1.5703125,
+                      "bearing_y": 11.6640625
                     }
                   ]
                 }
