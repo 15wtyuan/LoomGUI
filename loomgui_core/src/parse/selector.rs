@@ -294,6 +294,7 @@ mod tests {
             tag: tag.into(),
             classes: classes.iter().map(|s| s.to_string()).collect(),
             id: id.map(|s| s.into()),
+            attrs: std::collections::HashMap::new(),
             text: None,
             children: Vec::new(),
             parent: None,

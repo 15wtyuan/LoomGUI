@@ -1,4 +1,5 @@
 use scraper::{Html, Selector as ScraperSelector};
+use std::collections::HashMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ElementId(pub usize);
@@ -8,6 +9,9 @@ pub struct ElementData {
     pub tag: String,
     pub classes: Vec<String>,
     pub id: Option<String>,
+    /// 所有 HTML 属性（src/href/data-* 等）。class/id 单独解析到上面字段，
+    /// 但也保留在 attrs 里（原样字符串值）以便需要时取。
+    pub attrs: HashMap<String, String>,
     pub text: Option<String>,
     pub children: Vec<ElementId>,
     pub parent: Option<ElementId>,
@@ -54,6 +58,11 @@ fn build_element(
         .attr("class")
         .map(|s| s.split_whitespace().map(|w| w.to_string()).collect())
         .unwrap_or_default();
+    // 收集全部属性（含 class/id，原样字符串）——img src 等从这取。
+    let attrs: HashMap<String, String> = el_val
+        .attrs()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
 
     // 收集直接文本子节点；若同时有文本子节点和元素子节点 → 行内混排报错
     let mut text_parts: Vec<String> = Vec::new();
@@ -97,6 +106,7 @@ fn build_element(
         tag,
         classes,
         id: id_attr,
+        attrs,
         text,
         children: Vec::new(),
         parent,
@@ -150,5 +160,29 @@ mod tests {
         assert_eq!(inner.children.len(), 1);
         let span = &tree.nodes[inner.children[0].0];
         assert_eq!(span.tag, "span");
+    }
+
+    #[test]
+    fn captures_all_attributes_including_src() {
+        // img 的 src 走属性而非 text；ElementData.attrs 必须保留所有 attr
+        let tree = parse_html(r#"<img src="logo.png" alt="logo" data-id="42">"#).unwrap();
+        let img = &tree.nodes[tree.roots[0].0];
+        assert_eq!(img.tag, "img");
+        assert_eq!(img.attrs.get("src").map(|s| s.as_str()), Some("logo.png"));
+        assert_eq!(img.attrs.get("alt").map(|s| s.as_str()), Some("logo"));
+        assert_eq!(img.attrs.get("data-id").map(|s| s.as_str()), Some("42"));
+        // text 不被属性污染
+        assert!(img.text.is_none());
+    }
+
+    #[test]
+    fn class_and_id_also_land_in_attrs() {
+        // class/id 单独字段，但 attrs 也要保留原值（不丢信息）
+        let tree = parse_html(r#"<div id="main" class="a b"></div>"#).unwrap();
+        let div = &tree.nodes[tree.roots[0].0];
+        assert_eq!(div.id.as_deref(), Some("main"));
+        assert_eq!(div.classes, vec!["a", "b"]);
+        assert_eq!(div.attrs.get("id").map(|s| s.as_str()), Some("main"));
+        assert_eq!(div.attrs.get("class").map(|s| s.as_str()), Some("a b"));
     }
 }
