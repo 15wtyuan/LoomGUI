@@ -66,7 +66,11 @@ pub fn parse_selector(raw: &str) -> Result<ParsedSelector, String> {
                     first = false;
                     buf.clear();
                 }
-                next_comb = Combinator::Descendant;
+                // 空格降级为 descendant，但不要覆盖 `>` 已设的 child。
+                // （CSS 里 `a > b` 的 `>` 两侧可有可无空格，空格不能把 child 降回 descendant。）
+                if next_comb != Combinator::Child {
+                    next_comb = Combinator::Descendant;
+                }
             }
             c => {
                 buf.push(c);
@@ -166,11 +170,22 @@ fn compound_matches(c: &Compound, el: &ElementData) -> bool {
 }
 
 /// 从右往左匹配：最后一个 compound 必须命中目标元素，前面的按 combinator 沿父链找。
+///
+/// 标准 CSS 后代/子代语义：
+/// - 最后一个 compound：必须命中目标元素本身
+/// - 往左每个 compound，按它的 `combinator`（与它右边 compound 的关系）：
+///   - `Combinator::Child`：必须在**直接父**匹配
+///   - `Combinator::Descendant`：必须在**任一祖先**匹配（沿 parent 链向上搜）
+///
+/// 后代匹配用回溯：在祖先链上找到任一满足该 compound 的祖先后继续往左匹配剩余 compounds；
+/// 若后续失败，回溯到该祖先的更上层继续尝试。这样 `div.a span` 能在
+/// `<div class=a><div><span>` 上命中（div.a 是 span 的祖父）。
 fn matches(sel: &ParsedSelector, el_id: ElementId, tree: &ElementTree) -> bool {
     let comps = &sel.compound;
     if comps.is_empty() {
         return false;
     }
+    // 最后一个 compound 必须命中目标元素
     let last = &comps[comps.len() - 1];
     if !compound_matches(last, &tree.nodes[el_id.0]) {
         return false;
@@ -178,24 +193,59 @@ fn matches(sel: &ParsedSelector, el_id: ElementId, tree: &ElementTree) -> bool {
     if comps.len() == 1 {
         return true;
     }
-    // 向上匹配剩余 compound（从倒数第二个到第一个）
-    let mut cur_el = el_id;
-    let mut idx = comps.len() - 1;
-    while idx > 0 {
-        let target_comp = &comps[idx - 1];
-        let parent = match tree.nodes[cur_el.0].parent {
-            Some(p) => p,
-            None => return false,
-        };
-        if !compound_matches(target_comp, &tree.nodes[parent.0]) {
-            return false;
-        }
-        cur_el = parent;
-        idx -= 1;
-        // v0 简化：不严格区分 descendant/child 的多级，只查直接父。
-        // （child 要求直接父；descendant 也只查父——v0 树浅，够用；如需严格后代遍历，实现期补）
+    // 从目标元素往上，逐个匹配剩余 compounds（从倒数第二个到第一个）
+    match_compound_chain(comps, comps.len() - 1, el_id, tree)
+}
+
+/// 递归匹配 compounds[0..end_idx]（不含 end_idx），要求这一段链能在 `start_el`
+/// 的祖先链上找到对应位置。`start_el` 是已经匹配了 comps[end_idx] 的元素，
+/// 我们要为 comps[end_idx - 1] 找一个（Child：直接父；Descendant：任一祖先）匹配的祖先，
+/// 再继续为 comps[0..end_idx-1] 在该祖先之上匹配。
+fn match_compound_chain(
+    comps: &[Compound],
+    end_idx: usize,
+    start_el: ElementId,
+    tree: &ElementTree,
+) -> bool {
+    if end_idx == 0 {
+        return true;
     }
-    true
+    let target_comp = &comps[end_idx - 1];
+    match target_combinator(&comps[end_idx]) {
+        Combinator::Child => {
+            // Child：必须是直接父
+            match tree.nodes[start_el.0].parent {
+                Some(parent) => {
+                    compound_matches(target_comp, &tree.nodes[parent.0])
+                        && match_compound_chain(comps, end_idx - 1, parent, tree)
+                }
+                None => false,
+            }
+        }
+        Combinator::Descendant => {
+            // Descendant：沿祖先链向上找任一匹配的祖先；找到后递归匹配剩余，
+            // 若剩余失败则继续往上找下一个匹配祖先（回溯）。
+            let mut cur = tree.nodes[start_el.0].parent;
+            while let Some(ancestor) = cur {
+                if compound_matches(target_comp, &tree.nodes[ancestor.0]) {
+                    if match_compound_chain(comps, end_idx - 1, ancestor, tree) {
+                        return true;
+                    }
+                    // 此祖先匹配但更左的链匹配不上 → 继续往上找
+                }
+                cur = tree.nodes[ancestor.0].parent;
+            }
+            false
+        }
+    }
+}
+
+/// 取一个 compound 的 combinator 字段。第一个 compound（idx=0）的 combinator
+/// 在 parse 阶段被设为 Descendant 占位，但语义上它无前驱，调用方应保证不会走到这里。
+/// 这里只是直读字段——对 idx>0 的 compound，字段记录的就是它与前一个 compound 的关系，
+/// 也就是「它的右边 compound 通过什么关系到达它」，正是从右往左匹配时需要的关系。
+fn target_combinator(c: &Compound) -> Combinator {
+    c.combinator
 }
 
 /// 给定元素 + 规则集 → 命中规则（已按 specificity 降序、同级按出现顺序）
@@ -297,5 +347,72 @@ mod tests {
         ];
         let matched = match_element(&tree.nodes[0], &tree, &rules);
         assert_eq!(matched.len(), 3); // div, .panel, #main 命中；span 不中
+    }
+
+    /// 后代选择器跨多层匹配：`div.a span` 应在 `<div class=a><div><span>` 上命中 span。
+    /// （修复前：matches 只查直接父，div.a 是 span 的祖父 → 静默失败。）
+    #[test]
+    fn descendant_matches_across_layers() {
+        // nodes: 0=div.a (root), 1=div, 2=span
+        let mut nodes = vec![
+            el("div", &["a"], None),
+            el("div", &[], None),
+            el("span", &[], None),
+        ];
+        nodes[1].parent = Some(ElementId(0));
+        nodes[2].parent = Some(ElementId(1));
+        nodes[0].children = vec![ElementId(1)];
+        nodes[1].children = vec![ElementId(2)];
+        let tree = ElementTree {
+            roots: vec![ElementId(0)],
+            nodes,
+        };
+        let rules = vec![Rule {
+            selector_text: "div.a span".into(),
+            declarations: vec![],
+        }];
+        // span 是 nodes[2]
+        let matched = match_element(&tree.nodes[2], &tree, &rules);
+        assert_eq!(matched.len(), 1, "div.a span 必须命中跨层的 span");
+    }
+
+    /// 子代选择器要求直接父匹配。`div.a > span`：span 的直接父是普通 div（nodes[1]），
+    /// 而 `div.a` 只是祖父（nodes[0]）。子代要求直接父命中 `div.a` → 不应命中。
+    /// （对比：`div.a span` 后代会命中——见上一个测试的同一棵树。）
+    #[test]
+    fn child_combinator_requires_direct_parent() {
+        // nodes: 0=div.a (root), 1=div (普通), 2=span
+        let mut nodes = vec![
+            el("div", &["a"], None),
+            el("div", &[], None),
+            el("span", &[], None),
+        ];
+        nodes[1].parent = Some(ElementId(0));
+        nodes[2].parent = Some(ElementId(1));
+        nodes[0].children = vec![ElementId(1)];
+        nodes[1].children = vec![ElementId(2)];
+        let tree = ElementTree {
+            roots: vec![ElementId(0)],
+            nodes,
+        };
+        let rules = vec![
+            Rule {
+                selector_text: "div.a > span".into(),
+                declarations: vec![],
+            },
+            Rule {
+                selector_text: "div.a span".into(),
+                declarations: vec![],
+            },
+        ];
+        let matched = match_element(&tree.nodes[2], &tree, &rules);
+        // 子代 `div.a > span` 不中（直接父是普通 div，非 div.a）；
+        // 后代 `div.a span` 中（div.a 是祖先）。共命中 1 条。
+        assert_eq!(
+            matched.len(),
+            1,
+            "div.a > span 不应命中（直接父非 div.a），div.a span 应命中"
+        );
+        assert_eq!(matched[0].selector_text, "div.a span");
     }
 }
