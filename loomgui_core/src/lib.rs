@@ -1,4 +1,5 @@
 pub mod parse;
+pub mod scene;
 pub mod style;
 
 pub fn version() -> &'static str {
