@@ -1,4 +1,5 @@
 pub mod parse;
+pub mod style;
 
 pub fn version() -> &'static str {
     "v0-skeleton"
