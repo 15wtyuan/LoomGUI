@@ -18,6 +18,9 @@ pub struct ResolvedStyle {
     pub line_height: f32, // 单位倍数（1.5 = 1.5x font-size），0 = normal
     pub letter_spacing: f32,
     pub white_space_nowrap: bool,
+    /// flex 顺序（CSS `order`）。taffy 0.5 Style 无此字段，存在这里由
+    /// Task 6 layout 在 flex 排序前消费。默认 0 = DOM 顺序。
+    pub order: i32,
     /// img 的 src（v0 不加载，→ 占位 tex_id）
     pub img_src: Option<String>,
 }
@@ -46,6 +49,7 @@ impl Default for ResolvedStyle {
             line_height: 0.0,
             letter_spacing: 0.0,
             white_space_nowrap: false,
+            order: 0,
             img_src: None,
         }
     }

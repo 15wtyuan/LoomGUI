@@ -265,8 +265,9 @@ pub fn apply_decl(style: &mut ResolvedStyle, prop: &str, value: &str) -> bool {
             true
         }
         "order" => {
-            // taffy 0.5 Style 无 order 字段；视觉/布局顺序由 DOM 顺序决定。
-            // 接受声明但不存储（v0 装饰性忽略）。
+            // taffy 0.5 Style 无 order 字段；存进 ResolvedStyle.order，
+            // 由 Task 6 layout 在 flex 排序前消费。非法值降级为 0。
+            style.order = value.trim().parse::<i32>().unwrap_or(0);
             true
         }
         _ => false, // 装饰属性静默忽略（§4.1）
@@ -324,5 +325,20 @@ mod tests {
         assert!(apply_decl(&mut s, "background-color", "#00ff00"));
         assert!(s.background_color == Some([0.0, 1.0, 0.0, 1.0]));
         assert!(!apply_decl(&mut s, "border-radius", "4px")); // 装饰属性忽略
+    }
+    #[test]
+    fn order_is_stored() {
+        // 合法值：存进 ResolvedStyle.order，不再静默丢弃
+        let mut s = ResolvedStyle::default();
+        assert!(apply_decl(&mut s, "order", "2"));
+        assert_eq!(s.order, 2);
+        // 非法值：降级为 0（不 panic、不污染）
+        let mut s2 = ResolvedStyle::default();
+        assert!(apply_decl(&mut s2, "order", "abc"));
+        assert_eq!(s2.order, 0);
+        // 负值也接受（CSS order 允许负）
+        let mut s3 = ResolvedStyle::default();
+        assert!(apply_decl(&mut s3, "order", "-1"));
+        assert_eq!(s3.order, -1);
     }
 }
