@@ -98,20 +98,26 @@ fn build_rec(
 ) -> NodeId {
     let el = &tree.nodes[el_id.0];
     let style = &styles[el_id.0];
-    // img 的 src 从属性取（`<img src="...">`），不是元素文本。
-    // 属性缺失时空字符串降级（render 层负责报缺图占位）。
-    // 未识别 tag 一律降级为 Text（v0 不报错；上层可选地校验白名单）。
+    // parse 层已保证 tag 在围栏白名单内（div/span/img/button/l-container），
+    // 故此处显式 match 无 fallback；若来未识别 tag 是 parse/白名单的 bug。
+    // img 的 src 从属性取（`<img src="...">`），不是元素文本；
+    // span 的文本是其自身 content（Text 叶子，无子节点）。
     let kind = match el.tag.as_str() {
         "div" | "l-container" => NodeKind::Container,
         "button" => NodeKind::Button,
         "img" => NodeKind::Image {
             src: el.attrs.get("src").cloned().unwrap_or_default(),
         },
-        _ => NodeKind::Text {
+        "span" => NodeKind::Text {
             content: el.text.clone().unwrap_or_default(),
         },
+        _ => unreachable!(
+            "parse 层白名单已挡围栏外 tag，scene 不应见到 <{}>；\
+             这是 parse/scene 契约破坏",
+            el.tag
+        ),
     };
-    let has_children = !el.children.is_empty();
+    let has_element_children = !el.children.is_empty();
     let nid = NodeId(scene.nodes.len());
     scene.nodes.push(Node {
         id: nid,
@@ -129,14 +135,64 @@ fn build_rec(
         dirty_mesh: true,
         dirty_text: matches!(kind, NodeKind::Text { .. }),
     });
-    if has_children {
-        let mut kids = Vec::new();
+
+    // §4.2：Container/Button 的裸文本 → Text 子节点（文本是 flex item，参与布局）。
+    // parse 已保证 has_text 时无元素子（行内混排编译期报错），故此处只需判 el.text。
+    // 文本子放 children 头（混排已挡，只有纯文本无元素子场景，顺序无所谓）。
+    let mut kids: Vec<NodeId> = Vec::new();
+    if matches!(kind, NodeKind::Container | NodeKind::Button) {
+        if let Some(text) = &el.text {
+            let text_nid = build_text_child(scene, text, Some(nid));
+            kids.push(text_nid);
+        }
+    }
+
+    if has_element_children {
         for c in &el.children {
             let cid = build_rec(tree, styles, *c, Some(nid), scene);
             kids.push(cid);
         }
-        scene.nodes[nid.0].children = kids;
     }
+    scene.nodes[nid.0].children = kids;
+    nid
+}
+
+/// 构造一个 Text 叶子 Node（Container/Button 的裸文本子节点）。
+/// 注意：span 的文本是其自身 content（在 build_rec 里直接进 NodeKind::Text），
+/// 不经此函数；本函数只服务 Container/Button 的裸文本→Text 子节点转换。
+fn build_text_child(scene: &mut Scene, text: &str, parent: Option<NodeId>) -> NodeId {
+    let nid = NodeId(scene.nodes.len());
+    // Text 子节点（对应 HTML 里无独立元素）应像无 class 的 <span> 一样：
+    // taffy_style 取 DEFAULT（无固定 size，由文本测量决定尺寸，正常参与 flex），
+    // 视觉/字体字段继承父值（cascade 里 <span> 也是这么拿 color/font-* 的）。
+    // 不能直接克隆父 style——父若是 .h{height:30px} 会让文本子也高 30px，
+    // 既不正确也压制了文本自然测量。
+    let mut style = ResolvedStyle::default();
+    if let Some(p) = parent {
+        let ps = &scene.nodes[p.0].style;
+        style.color = ps.color;
+        style.font_size = ps.font_size;
+        style.font_family = ps.font_family.clone();
+        style.font_weight = ps.font_weight;
+        style.line_height = ps.line_height;
+        style.letter_spacing = ps.letter_spacing;
+        style.text_align = ps.text_align;
+        style.white_space_nowrap = ps.white_space_nowrap;
+    }
+    scene.nodes.push(Node {
+        id: nid,
+        parent,
+        kind: NodeKind::Text {
+            content: text.to_string(),
+        },
+        style,
+        taffy_id: None,
+        layout_rect: Rect::default(),
+        clip_rect: None,
+        children: Vec::new(),
+        dirty_mesh: true,
+        dirty_text: true,
+    });
     nid
 }
 
@@ -215,5 +271,69 @@ mod tests {
         let text = &scene.nodes[root.children[0].0];
         assert!(text.dirty_mesh);
         assert!(text.dirty_text); // Text 节点脏文本
+    }
+
+    #[test]
+    fn div_raw_text_becomes_text_child() {
+        // §4.2：div 的裸文本 → Text 子节点（文本是 flex item，参与布局）。
+        // 匹配 AI 的 HTML 先验：<div>标题</div> 里的"标题"应可见、参与 flex 排列。
+        let html = r#"<div>标题</div>"#;
+        let css = "";
+        let tree = parse_html(html).unwrap();
+        let sheet = parse_css(css).unwrap();
+        let styles = resolve_styles(&tree, &sheet);
+        let scene = build_scene(&tree, &styles);
+        let root = &scene.nodes[scene.roots[0].0];
+        assert!(matches!(root.kind, NodeKind::Container));
+        assert_eq!(root.children.len(), 1, "裸文本应产 1 个 Text 子节点");
+        let child = &scene.nodes[root.children[0].0];
+        match &child.kind {
+            NodeKind::Text { content } => assert_eq!(content, "标题"),
+            other => panic!("expected Text child, got {:?}", other),
+        }
+        // parent 指向 Container
+        assert_eq!(child.parent, Some(scene.roots[0]));
+    }
+
+    #[test]
+    fn button_raw_text_becomes_text_child() {
+        // button 同理：裸文本 → Text 子节点
+        let html = r#"<button>确定</button>"#;
+        let css = "";
+        let tree = parse_html(html).unwrap();
+        let sheet = parse_css(css).unwrap();
+        let styles = resolve_styles(&tree, &sheet);
+        let scene = build_scene(&tree, &styles);
+        let btn = &scene.nodes[scene.roots[0].0];
+        assert!(matches!(btn.kind, NodeKind::Button));
+        assert_eq!(btn.children.len(), 1);
+        match &scene.nodes[btn.children[0].0].kind {
+            NodeKind::Text { content } => assert_eq!(content, "确定"),
+            _ => panic!("expected Text child"),
+        }
+    }
+
+    #[test]
+    fn text_child_inherits_parent_text_fields_resets_size() {
+        // §4.2 + §5.2.3：Text 子节点应像无 class 的 <span>——继承父 color/font，
+        // 但 taffy_style 取 DEFAULT（无固定 size，由测量决定）。
+        // 父 .h{height:30px} 不应让文本子也高 30px。
+        let html = r#"<div class="h">txt</div>"#;
+        let css = r#".h { height: 30px; color: #ff0000; font-size: 20px; }"#;
+        let tree = parse_html(html).unwrap();
+        let sheet = parse_css(css).unwrap();
+        let styles = resolve_styles(&tree, &sheet);
+        let scene = build_scene(&tree, &styles);
+        let root = &scene.nodes[scene.roots[0].0];
+        let child = &scene.nodes[root.children[0].0];
+        // 继承
+        assert_eq!(child.style.color, [1.0, 0.0, 0.0, 1.0]);
+        assert_eq!(child.style.font_size, 20.0);
+        // size 不继承：父 height=Length(30)，子 height 应是 Auto（由文本测量决定）
+        use taffy::style::Dimension;
+        assert!(
+            matches!(child.style.taffy_style.size.height, Dimension::Auto),
+            "text child height should be Auto (measured), not inherited parent's 30px"
+        );
     }
 }

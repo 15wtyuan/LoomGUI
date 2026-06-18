@@ -203,6 +203,74 @@ expression: json
   },
   {
     "node_id": 2,
+    "parent_id": 1,
+    "visible": true,
+    "alpha": 1.0,
+    "grayed": false,
+    "color_tint": [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ],
+    "transform": {
+      "x": 0.0,
+      "y": 0.0,
+      "scale_x": 1.0,
+      "scale_y": 1.0,
+      "rotation": 0.0
+    },
+    "blend": "Normal",
+    "mask_context": 0,
+    "sort_key": 2,
+    "payload": {
+      "Text": {
+        "layout": {
+          "text_width": 24.0,
+          "text_height": 18.398438,
+          "lines": [
+            {
+              "y": 0.0,
+              "height": 18.398438,
+              "baseline": 14.484375,
+              "width": 24.0,
+              "runs": [
+                {
+                  "font_size": 16.0,
+                  "glyphs": [
+                    {
+                      "glyph_id": 0,
+                      "x": 0.0,
+                      "y": 0.0,
+                      "bearing_x": 2.0,
+                      "bearing_y": 10.0
+                    },
+                    {
+                      "glyph_id": 0,
+                      "x": 12.0,
+                      "y": 0.0,
+                      "bearing_x": 2.0,
+                      "bearing_y": 10.0
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        "font_size": 16.0,
+        "color": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "program": 1
+      }
+    }
+  },
+  {
+    "node_id": 3,
     "parent_id": 0,
     "visible": true,
     "alpha": 1.0,
@@ -222,7 +290,7 @@ expression: json
     },
     "blend": "Normal",
     "mask_context": 0,
-    "sort_key": 2,
+    "sort_key": 3,
     "payload": {
       "Mesh": {
         "verts": [
@@ -297,6 +365,74 @@ expression: json
         ],
         "texture": 0,
         "program": 0
+      }
+    }
+  },
+  {
+    "node_id": 4,
+    "parent_id": 3,
+    "visible": true,
+    "alpha": 1.0,
+    "grayed": false,
+    "color_tint": [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ],
+    "transform": {
+      "x": 0.0,
+      "y": 38.0,
+      "scale_x": 1.0,
+      "scale_y": 1.0,
+      "rotation": 0.0
+    },
+    "blend": "Normal",
+    "mask_context": 0,
+    "sort_key": 4,
+    "payload": {
+      "Text": {
+        "layout": {
+          "text_width": 24.0,
+          "text_height": 18.398438,
+          "lines": [
+            {
+              "y": 0.0,
+              "height": 18.398438,
+              "baseline": 14.484375,
+              "width": 24.0,
+              "runs": [
+                {
+                  "font_size": 16.0,
+                  "glyphs": [
+                    {
+                      "glyph_id": 0,
+                      "x": 0.0,
+                      "y": 0.0,
+                      "bearing_x": 2.0,
+                      "bearing_y": 10.0
+                    },
+                    {
+                      "glyph_id": 0,
+                      "x": 12.0,
+                      "y": 0.0,
+                      "bearing_x": 2.0,
+                      "bearing_y": 10.0
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        "font_size": 16.0,
+        "color": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "program": 1
       }
     }
   }

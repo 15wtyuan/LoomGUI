@@ -22,7 +22,8 @@ pub struct Stage {
 
 impl Stage {
     pub fn new(font_path: &str, root_size: (f32, f32)) -> Result<Self, String> {
-        let font = Font::from_path(font_path).map_err(|e| e)?;
+        // Font::from_path 返回 Result<_, String>，直接 ? 传播（原 .map_err(|e| e)? 是 no-op）。
+        let font = Font::from_path(font_path)?;
         Ok(Stage {
             scene: None,
             font: Arc::new(font),

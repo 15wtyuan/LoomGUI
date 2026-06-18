@@ -4,20 +4,6 @@ use crate::parse::selector::{match_element, parse_selector, Specificity};
 use crate::style::mapping::apply_decl;
 use crate::style::resolved::ResolvedStyle;
 
-/// 继承白名单（§5.2.3）：color/font-*/line-height/letter-spacing/text-align/white-space
-const INHERITED: &[&str] = &[
-    "color",
-    "font-size",
-    "font-family",
-    "font-weight",
-    "line-height",
-    "letter-spacing",
-    "text-align",
-    "white-space",
-];
-// 注：INHERITED 列表保留为文档（声明哪些属性语义上继承），实际继承在 resolve_rec
-// 里按字段直拷——apply_decl 已把值写进对应字段，这里只需复制这几个字段的父值。
-
 /// 给整棵树算每元素的 ResolvedStyle（继承在 resolve 期展开）。
 /// 索引与 ElementTree.nodes 一一对应。
 pub fn resolve_styles(tree: &ElementTree, sheet: &StyleSheet) -> Vec<ResolvedStyle> {
@@ -42,8 +28,6 @@ pub fn resolve_styles(tree: &ElementTree, sheet: &StyleSheet) -> Vec<ResolvedSty
             style.text_align = p.text_align;
             style.white_space_nowrap = p.white_space_nowrap;
         }
-        // img src 从属性拿（v0：parse 时没存 attr，这里从 text 或约定拿；实际在 scene 层从 ElementData 扩展取）
-        // —— 见 scene task，这里只管 CSS。
 
         let el = &tree.nodes[id.0];
         let rules = match_element(el, tree, &sheet.rules);
@@ -72,12 +56,6 @@ pub fn resolve_styles(tree: &ElementTree, sheet: &StyleSheet) -> Vec<ResolvedSty
         resolve_rec(tree, sheet, *root, None, &mut out);
     }
     out
-}
-
-// 抑制未使用警告：INHERITED 作为语义文档保留，便于后续 inline style / 复杂继承扩展时引用。
-#[allow(dead_code)]
-fn _inherited_marker() -> &'static [&'static str] {
-    INHERITED
 }
 
 /// 取一条 rule 选择器的 specificity。解析失败回退到 (0,0,0) 最低（安全降级）。
