@@ -32,7 +32,7 @@
 - ScrollPane 基础：惯性 + 回弹 + 滚动条 + 鼠标滚轮（自维护可变 target tween，不走 GTween）
 
 ### 资源
-- **打包器 `loomgui_pkg`**（HTML+CSS+资源→.pkg.bin+图集）——开工商前提
+- **打包器 `loomgui_pkg`**（HTML+CSS+资源→.pkg.bin+图集）——v0 后、v1 第一阶段落地（v0 内存直通 defer）
 - 二进制包加载（formatVersion + 迁移器）
 - 图集 TextureView（散图起步、图集紧随，**优先级高**）+ refcount
 
@@ -105,7 +105,7 @@
 
 | # | 任务 | 说明 |
 |---|---|---|
-| G1 | 打包器 `loomgui_pkg` | 见上，开工商前提 |
+| G1 | 打包器 `loomgui_pkg` | v0 后、v1 第一阶段落地（v0 内存直通 defer） |
 | G2 | Stage MonoBehaviour 驱动 | 唯一 tick 入口、Unity 生命周期挂钩 |
 | G3 | 根 Stage 挂 Unity（Camera/GameObject + 根 (1,-1,1) y-flip） | 屏幕空间 Stage 挂载点 |
 | G4 | 输入采集→扁平事件→FFI 注入 | Unity 新/旧输入系统，含 IME character |
@@ -152,7 +152,7 @@
 
 1. **v1 围栏冻结清单签字**（§2）。
 2. **打包器 + 15 项胶水任务**写进任务拆解（§3），每项估时。
-3. **v0 纯 Rust 骨架**先跑通（HTML→打包→加载→taffy→render_nodes JSON 快照），1-2 周验证 Rust 能力 + 解耦 FFI/Unity 风险。骨架通再投 Unity 后端大工期。
+3. **v0 纯 Rust 骨架**先跑通（**内存直通**：HTML→parse→scene→taffy→render_nodes JSON 快照，打包器磁盘格式 defer v1 第一阶段），~2-3 周验证 Rust 能力（含文本测量全链）+ 解耦 FFI/Unity 风险。骨架通再投 Unity 后端大工期。v0 详见 [`docs/superpowers/specs/2026-06-18-v0-skeleton-design.md`](../superpowers/specs/2026-06-18-v0-skeleton-design.md)。
 
 ---
 
