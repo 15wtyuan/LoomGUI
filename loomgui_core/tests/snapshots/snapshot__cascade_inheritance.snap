@@ -1,0 +1,173 @@
+---
+source: loomgui_core/tests/snapshot.rs
+expression: json
+---
+[
+  {
+    "node_id": 0,
+    "parent_id": null,
+    "visible": true,
+    "alpha": 1.0,
+    "grayed": false,
+    "color_tint": [
+      1.0,
+      0.0,
+      0.0,
+      1.0
+    ],
+    "transform": {
+      "x": 0.0,
+      "y": 0.0,
+      "scale_x": 1.0,
+      "scale_y": 1.0,
+      "rotation": 0.0
+    },
+    "blend": "Normal",
+    "mask_context": 0,
+    "sort_key": 0,
+    "payload": {
+      "Mesh": {
+        "verts": [
+          [
+            0.0,
+            0.0
+          ],
+          [
+            300.0,
+            0.0
+          ],
+          [
+            300.0,
+            200.0
+          ],
+          [
+            0.0,
+            200.0
+          ]
+        ],
+        "uvs": [
+          [
+            0.0,
+            0.0
+          ],
+          [
+            1.0,
+            0.0
+          ],
+          [
+            1.0,
+            1.0
+          ],
+          [
+            0.0,
+            1.0
+          ]
+        ],
+        "colors": [
+          [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ]
+        ],
+        "indices": [
+          0,
+          1,
+          2,
+          0,
+          2,
+          3
+        ],
+        "texture": 0,
+        "program": 0
+      }
+    }
+  },
+  {
+    "node_id": 1,
+    "parent_id": 0,
+    "visible": true,
+    "alpha": 1.0,
+    "grayed": false,
+    "color_tint": [
+      1.0,
+      0.0,
+      0.0,
+      1.0
+    ],
+    "transform": {
+      "x": 0.0,
+      "y": 0.0,
+      "scale_x": 1.0,
+      "scale_y": 1.0,
+      "rotation": 0.0
+    },
+    "blend": "Normal",
+    "mask_context": 0,
+    "sort_key": 1,
+    "payload": {
+      "Text": {
+        "layout": {
+          "text_width": 15.566406,
+          "text_height": 22.998047,
+          "lines": [
+            {
+              "y": 0.0,
+              "height": 22.998047,
+              "baseline": 18.105469,
+              "width": 15.566406,
+              "runs": [
+                {
+                  "font_size": 20.0,
+                  "glyphs": [
+                    {
+                      "glyph_id": 75,
+                      "x": 0.0,
+                      "y": 0.0,
+                      "bearing_x": 1.3183594,
+                      "bearing_y": 14.316406
+                    },
+                    {
+                      "glyph_id": 76,
+                      "x": 11.123047,
+                      "y": 0.0,
+                      "bearing_x": 1.328125,
+                      "bearing_y": 14.316406
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        "font_size": 20.0,
+        "color": [
+          1.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "program": 1
+      }
+    }
+  }
+]
