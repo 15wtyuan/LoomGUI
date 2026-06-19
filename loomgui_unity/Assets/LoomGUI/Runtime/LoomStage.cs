@@ -160,13 +160,10 @@ namespace LoomGUI
             // tick → build_blob 写入 Rust 拥有缓存（dt v0 忽略）。
             Native.loomgui_stage_tick(_stage, Time.deltaTime);
 
-            // borrow_frame：返回 byte*（缓存首），写 nuint 长度。钉一个 nuint 取回。
+            // borrow_frame：返回 byte*（缓存首），写 nuint 长度。
+            // 局部变量已在栈上固定，直接 & 取址传入（fixed 反而报 CS0213 "already fixed"）。
             nuint lenRaw = 0;
-            byte* ptr;
-            fixed (nuint* lp = &lenRaw)
-            {
-                ptr = Native.loomgui_stage_borrow_frame(_stage, lp);
-            }
+            byte* ptr = Native.loomgui_stage_borrow_frame(_stage, &lenRaw);
             if (ptr == null || lenRaw == 0) return;
 
             int len = (int)lenRaw;
