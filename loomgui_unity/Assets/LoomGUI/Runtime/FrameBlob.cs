@@ -117,8 +117,8 @@ namespace LoomGUI
         /// per-node 段布局（little-endian，§4.1/§4.3）：
         ///   font_size:u32 | color:f32×4 | glyph_count:u32
         ///   | glyphs[count × { codepoint:u32, pen_x:f32, pen_y:f32 }]  (12B/glyph)
-        /// pen_x/pen_y 已 GO-local 绝对 design（content 偏移在 render/mod.rs 烤进 glyph.x）；
-        /// pen_y = line.y + line.baseline（绝对，同行同值）。Unity 不 re-base、不用 advance。
+        /// pen_x/pen_y 已 GO-local（layout-rect 相对；节点绝对位在 local_x/local_y，pen 是相对节点原点的偏移，勿与 local_x/local_y 叠加）；
+        /// pen_y = line.y + line.baseline（同行同值）。Unity 不 re-base、不用 advance。
         public void ReadText(int i, out int fontSize, out Color color, out GlyphData[] glyphs)
         {
             int p = TextArenaOff + (int)TextOff(i);

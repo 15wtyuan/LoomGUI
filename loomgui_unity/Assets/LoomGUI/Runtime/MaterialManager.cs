@@ -29,8 +29,8 @@ namespace LoomGUI
                     // §4.4：ctx>0 → CLIPPED 变体（multi_compile _ CLIPPED，shader 端 discard）。
                     // mask_context 进 key，每 ctx 独立 Material 实例，keyword 设该实例。
                     mat.EnableKeyword("CLIPPED");
-                    // 若本帧 MirrorPool 已先 SetClipBox（不该发生——Sync 先算 box 再 Get），
-                    // 新建时也带上当前 box；常规路径 SetClipBox 在 Get 后单独调用。
+                    // 首帧路径：MirrorPool 先 SetClipBox（box 进 _clipBoxByCtx）再 Get；
+                    // 新建 Material 时从此 dict 读 box。后续帧材质已缓存，SetClipBox 的 SetVector 分支刷新。
                     if (_clipBoxByCtx.TryGetValue(maskContext, out var cb))
                         mat.SetVector("_ClipBox", cb);
                 }

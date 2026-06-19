@@ -31,7 +31,7 @@ namespace LoomGUI
         /// 顶点色 = color × alpha（node_alpha，四顶点同）。texture = font atlas（caller 设 material）。
         /// program=1（text，与 Image 共用 LoomGUI/Unlit）由 caller 在 mm.Get 时指定。
         ///
-        /// quad 数学（y-down GO-local，pen 已 GO-local 绝对 design，**不 re-base**，§4.3 step 4）：
+        /// quad 数学（y-down GO-local，pen 已 GO-local（layout-rect 相对；节点绝对位在 local_x/local_y，pen 是相对节点原点的偏移，勿与 local_x/local_y 叠加），**不 re-base**，§4.3 step 4）：
         ///   quad_left   = pen_x + info.minX
         ///   quad_right  = pen_x + info.maxX
         ///   quad_top    = pen_y − info.maxY   （maxY 在基线上方 → y-down 减）

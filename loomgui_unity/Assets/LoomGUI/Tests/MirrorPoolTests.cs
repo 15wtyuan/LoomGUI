@@ -246,6 +246,13 @@ namespace LoomGUI.Tests
                 var vertsA2 = meshA2.vertices;
                 Assert.AreEqual(4, vertsA2.Length, "A2: 收缩后仍 4 顶点");
                 Assert.AreEqual(new Vector3(5f, 5f, 0f), vertsA2[2], "A2: v2 恢复 (5,5) 无残留");
+                // uv/colors 也须恢复 A 值——收缩后 List 不应残留 B 的 uv/colors（blob B 与 A 共用同一 0/1/2/3
+                // uv+白顶点色，但显式断言锁 reuse 路径 Clear+refill 正确搬运，而非靠 B 凑巧同值掩盖 bug）。
+                Assert.AreEqual(4, meshA2.uv.Length, "A2: 4 uv（收缩后无残留）");
+                Assert.AreEqual(new Vector2(0f, 0f), meshA2.uv[0], "A2: uv0 恢复 (0,0)");
+                Assert.AreEqual(new Vector2(1f, 1f), meshA2.uv[2], "A2: uv2 恢复 (1,1)");
+                Assert.AreEqual(4, meshA2.colors.Length, "A2: 4 色（收缩后无残留）");
+                Assert.AreEqual(new Color(1f, 1f, 1f, 1f), meshA2.colors[0], "A2: 白色不透明 恢复");
             }
             finally
             {
