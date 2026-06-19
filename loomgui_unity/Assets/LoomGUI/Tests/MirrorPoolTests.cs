@@ -11,27 +11,28 @@ namespace LoomGUI.Tests
     {
         /// 构造一个 1 节点 Mesh blob：visible=1, payload_kind=1, parent=-1,
         /// 4 顶点 quad mesh（顶点=(0,0)(w,0)(w,h)(0,h)，已 re-base 到本地）。
+        /// v2 布局（13 列 + mesh/text/clip 三 arena header；text 空、clip 仅 count=0）。
         /// 用于驱动 MirrorPool.Sync 的 diff 逻辑。
         static byte[] OneMeshNodeBlob(
             uint id, float x, float y, float w, float h, uint sortKey)
         {
             var b = new List<byte>();
 
-            // header: magic, version=1, node_count=1
+            // header: magic, version=2, node_count=1
             b.AddRange(System.BitConverter.GetBytes(0x4D4F4F4Cu));
-            b.AddRange(System.BitConverter.GetBytes(1u));
+            b.AddRange(System.BitConverter.GetBytes(2u));
             b.AddRange(System.BitConverter.GetBytes(1u));
 
-            // header 总长 = 3*4 + 11*4 + 2*4 = 64。列 offset 从此起按 elemSize 递进。
-            const int HeaderLen = 12 + 11 * 4 + 2 * 4; // = 64
+            // header 总长 = 3*4 + 13*4 + 6*4 = 88。列 offset 从此起按 elemSize 递进。
+            const int HeaderLen = 12 + 13 * 4 + 2 * 4 + 2 * 4 + 2 * 4; // = 88
             int colOff = HeaderLen;
-            int[] offs = new int[11];
-            // 元素字节数顺序同 blob.rs columns（见 FrameBlob 注释）。
-            int[] elemSize = { 4, 4, 1, 4, 4, 4, 4, 4, 1, 4, 4 };
-            for (int i = 0; i < 11; i++) { offs[i] = colOff; colOff += elemSize[i]; }
+            int[] offs = new int[13];
+            // 元素字节数顺序同 blob.rs columns（v2 +text_off/text_len）。
+            int[] elemSize = { 4, 4, 1, 4, 4, 4, 4, 4, 1, 4, 4, 4, 4 };
+            for (int i = 0; i < 13; i++) { offs[i] = colOff; colOff += elemSize[i]; }
             int arenaOff = colOff;
 
-            // arena：1 mesh，4 verts / 6 idx。顶点已 re-base 到本地：(0,0)(w,0)(w,h)(0,h)。
+            // mesh arena：1 mesh，4 verts / 6 idx。顶点已 re-base 到本地：(0,0)(w,0)(w,h)(0,h)。
             var arena = new List<byte>();
             int arenaStart = arena.Count;
             arena.AddRange(System.BitConverter.GetBytes(4)); // vert_count
@@ -63,10 +64,15 @@ namespace LoomGUI.Tests
             arena.AddRange(System.BitConverter.GetBytes(3u));
             int arenaLen = arena.Count - arenaStart;
 
-            // 11 列 offset（byte offset from blob start）+ arena_off + arena_len
+            // 13 列 offset + mesh/text/clip 三 arena off+len
             foreach (var o in offs) b.AddRange(System.BitConverter.GetBytes(o));
-            b.AddRange(System.BitConverter.GetBytes(arenaOff));
-            b.AddRange(System.BitConverter.GetBytes(arenaLen));
+            b.AddRange(System.BitConverter.GetBytes(arenaOff));              // mesh_arena_off
+            b.AddRange(System.BitConverter.GetBytes(arenaLen));              // mesh_arena_len
+            b.AddRange(System.BitConverter.GetBytes(arenaOff + arenaLen));   // text_arena_off（紧跟）
+            b.AddRange(System.BitConverter.GetBytes(0u));                    // text_arena_len（T1 空）
+            int clipOff = arenaOff + arenaLen;                               // text 空，clip 紧跟
+            b.AddRange(System.BitConverter.GetBytes(clipOff));               // clip_table_off
+            b.AddRange(System.BitConverter.GetBytes(4u));                    // clip_table_len（仅 clip_count）
 
             // 列数据（node 0）。
             b.AddRange(System.BitConverter.GetBytes(id));        // node_id
@@ -80,8 +86,13 @@ namespace LoomGUI.Tests
             b.Add(1);                                            // payload_kind = Mesh
             b.AddRange(System.BitConverter.GetBytes(0u));        // mesh_off（相对 arena 起始）
             b.AddRange(System.BitConverter.GetBytes((uint)arenaLen)); // mesh_len
+            b.AddRange(System.BitConverter.GetBytes(0u));        // text_off（T1 占位）
+            b.AddRange(System.BitConverter.GetBytes(0u));        // text_len（T1 占位）
 
             b.AddRange(arena);
+            // text_arena T1 空，跳过。
+            // clip 表：仅 clip_count=0
+            b.AddRange(System.BitConverter.GetBytes(0u));
             return b.ToArray();
 
             static void AppendVert(List<byte> a, float vx, float vy)
@@ -95,19 +106,27 @@ namespace LoomGUI.Tests
         {
             var b = new List<byte>();
             b.AddRange(System.BitConverter.GetBytes(0x4D4F4F4Cu)); // magic
-            b.AddRange(System.BitConverter.GetBytes(1u));          // version
+            b.AddRange(System.BitConverter.GetBytes(2u));          // version=2
             b.AddRange(System.BitConverter.GetBytes(0u));          // node_count = 0
-            // 即便 0 节点也写全 header（11 col offset + arena off/len = 0），避免越界读。
-            const int HeaderLen = 12 + 11 * 4 + 2 * 4;
+            // 即便 0 节点也写全 header（13 col offset + mesh/text/clip 三 arena off+len），避免越界读。
+            const int HeaderLen = 12 + 13 * 4 + 2 * 4 + 2 * 4 + 2 * 4; // = 88
             int colOff = HeaderLen;
-            int[] elemSize = { 4, 4, 1, 4, 4, 4, 4, 4, 1, 4, 4 };
-            for (int i = 0; i < 11; i++)
+            int[] elemSize = { 4, 4, 1, 4, 4, 4, 4, 4, 1, 4, 4, 4, 4 };
+            for (int i = 0; i < 13; i++)
             {
                 b.AddRange(System.BitConverter.GetBytes(colOff));
                 colOff += elemSize[i];
             }
-            b.AddRange(System.BitConverter.GetBytes(colOff));     // arena_off
-            b.AddRange(System.BitConverter.GetBytes(0u));         // arena_len
+            // 0 节点：三 arena 都紧跟 header 之后且互相重叠（均 len=0），clip 表仍含 clip_count=0。
+            int segOff = colOff;
+            b.AddRange(System.BitConverter.GetBytes(segOff)); // mesh_arena_off
+            b.AddRange(System.BitConverter.GetBytes(0u));     // mesh_arena_len
+            b.AddRange(System.BitConverter.GetBytes(segOff)); // text_arena_off（紧跟，len=0）
+            b.AddRange(System.BitConverter.GetBytes(0u));     // text_arena_len
+            b.AddRange(System.BitConverter.GetBytes(segOff)); // clip_table_off（紧跟，len=0）
+            b.AddRange(System.BitConverter.GetBytes(4u));     // clip_table_len（仅 clip_count）
+            // clip 表：仅 clip_count=0
+            b.AddRange(System.BitConverter.GetBytes(0u));
             return b.ToArray();
         }
 

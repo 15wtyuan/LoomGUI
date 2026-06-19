@@ -26,6 +26,10 @@ namespace LoomGUI
 
         public void Sync(FrameBlob blob, Transform root, MaterialManager mm, Texture placeholder)
         {
+            // 防御：陈旧/非 v2 blob 直接早退（§4.1 magic+version 校验）。不做清理——上一帧的 GO
+            // 维持不动比误销毁更安全；调用方应自检 IsValid 再 Sync。
+            if (!blob.IsValid) return;
+
             // ① 全标 stale
             foreach (var kv in _pool) kv.Value.Stale = true;
 
