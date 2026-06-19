@@ -9,7 +9,7 @@ namespace LoomGUI
     /// 巢状 + 绝对 localPosition 会双计父；flatten 后 world = root(绝对) = 正确，与 clip（绝对 design→root）一致。
     /// parent_id 仍在 blob 列但 Phase 2 渲染不用（v1c 事件再用）。
     /// Mesh 顶点已由 Rust（blob.rs）re-base 到节点本地空间，此处按 (x,y,0) 上传。
-    /// Phase 1：只渲染 payload_kind=1（Mesh）；Text(2)/Unchanged(0) 跳过。
+    /// Phase 2：渲染 payload_kind=1（Mesh）+ 2（Text）；Unchanged(0) 跳过。
     sealed class RenderObj
     {
         public GameObject Go;
@@ -18,20 +18,28 @@ namespace LoomGUI
         public Mesh Mesh;
         public bool Stale;
         public uint LastNodeId;       // 复用 GO 时校验
+        public bool IsText;            // kind=2：font atlas rebuild 时需重光栅
+        // -1 哨兵：新建 RenderObj 的 text 节点首帧必 BuildMesh（即使 FontVersion==0）。
+        public int LastFontVersion = -1;
     }
 
     public sealed class MirrorPool
     {
         readonly Dictionary<uint, RenderObj> _pool = new();
+        int _lastFontVersion = -1;     // -1 → 首帧必不等，强制建/光栅；之后追 TextRasterizer.FontVersion
 
         /// 当前镜像中的 GO 数量（=pool 中 node_id 数）。测试/调试用。
         public int Count => _pool.Count;
 
-        public void Sync(FrameBlob blob, Transform root, MaterialManager mm, Texture placeholder)
+        public void Sync(FrameBlob blob, Transform root, MaterialManager mm, Texture placeholder, Font font)
         {
             // 防御：陈旧/非 v2 blob 直接早退（§4.1 magic+version 校验）。不做清理——上一帧的 GO
             // 维持不动比误销毁更安全；调用方应自检 IsValid 再 Sync。
             if (!blob.IsValid) return;
+
+            // font atlas rebuild 检测（§4.3 必修坑）：版本变 → 本帧所有 text 节点强制重 BuildMesh
+            // （glyph UV 变，缓存 mesh 作废）。照 fgui Stage.cs:828 重跑帧语义。
+            bool fontDirty = _lastFontVersion != TextRasterizer.FontVersion;
 
             // ① 全标 stale
             foreach (var kv in _pool) kv.Value.Stale = true;
@@ -42,7 +50,7 @@ namespace LoomGUI
             {
                 if (!blob.Visible(i)) continue;
                 byte kind = blob.PayloadKind(i);
-                if (kind != 1) continue;  // Phase 1：只渲染 Mesh(1)；Text(2)/Unchanged(0) 跳过
+                if (kind != 1 && kind != 2) continue;  // Mesh(1)/Text(2)；Unchanged(0) 跳过
 
                 uint id = blob.NodeId(i);
                 if (!_pool.TryGetValue(id, out var ro))
@@ -52,24 +60,49 @@ namespace LoomGUI
                     _pool[id] = ro;
                 }
                 ro.Stale = false;
+                ro.IsText = kind == 2;
 
                 // flatten（§4.2）：所有节点挂 root，localPosition=绝对 design（避免巢状双计父）。
                 // blob local_x/local_y 是绝对 design 坐标；root scale=(sf,-sf,sf) 映射 design→world。
-                // parent_id 仍在 blob 列但 Phase 2 渲染不用（v1c 事件再用）。
                 ro.Go.transform.SetParent(root, false);
                 ro.Go.transform.localPosition = new Vector3(blob.LocalX(i), blob.LocalY(i), 0f);
                 ro.Go.transform.localScale = Vector3.one;
 
                 ro.Mr.sortingOrder = (int)blob.SortKey(i);
 
-                // mesh 上传
-                var seg = blob.ReadMesh(i);
-                UploadMesh(ro, seg);
-                ro.Mesh.RecalculateBounds();
+                uint maskCtx = blob.MaskContext(i);
+                float nodeAlpha = blob.Alpha(i);
 
-                // 材质：Phase 1 program=0（Image），mask_context=0，texture=占位白。
-                ro.Mr.sharedMaterial = mm.Get(program: 0, placeholder, blob.MaskContext(i));
+                if (kind == 1)
+                {
+                    // mesh 上传（Rust 已 re-base 顶点到本地）。
+                    var seg = blob.ReadMesh(i);
+                    UploadMesh(ro, seg);
+                    ro.Mesh.RecalculateBounds();
+                    ro.LastFontVersion = TextRasterizer.FontVersion;
+                    // Image program=0，texture=占位白（v1b 真纹理）。
+                    ro.Mr.sharedMaterial = mm.Get(program: 0, placeholder, maskCtx);
+                }
+                else  // kind == 2 (Text)
+                {
+                    // font atlas rebuild 或首次 → 重 BuildMesh（glyph UV 变，旧 mesh 作废）。
+                    bool needRebuild = fontDirty || ro.LastFontVersion != TextRasterizer.FontVersion;
+                    if (needRebuild)
+                    {
+                        blob.ReadText(i, out int fontSize, out Color textColor, out GlyphData[] glyphs);
+                        var seg = TextRasterizer.BuildMesh(font, fontSize, textColor, nodeAlpha, glyphs);
+                        UploadMesh(ro, seg);
+                        ro.Mesh.RecalculateBounds();
+                        ro.LastFontVersion = TextRasterizer.FontVersion;
+                    }
+                    // text program=1，texture=font atlas。font.material.mainTexture（atlas rebuild 后引用更新）。
+                    // font 可能为 null（caller 未注入）→ 跳材质以免 NRE；测试用 BuildMesh 直接验。
+                    if (font != null)
+                        ro.Mr.sharedMaterial = mm.Get(program: 1, font.material.mainTexture, maskCtx);
+                }
             }
+
+            if (fontDirty) _lastFontVersion = TextRasterizer.FontVersion;
 
             // ③ 余 stale 销毁
             var dead = new List<uint>();

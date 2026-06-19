@@ -26,6 +26,9 @@ namespace LoomGUI
             ".b{width:200px;height:100px;background-color:#ff0000;}";
         [SerializeField] Vector2 _designSize = new(1080, 1920);
         [SerializeField] Camera _uiCamera;
+        // Unity 动态字体（§4.3）：与 Rust measure 的同一份 DejaVuSans.ttf（Assets/LoomGUI/Fonts/）。
+        // Inspector 指定为主路径；EditMode 测试 / 未配场景用 AssetDatabase 兜底（见 EnsureFont）。
+        [SerializeField] Font _font;
 
         // csbindgen 生成的 Native 用类型化指针 StageHandle*（非 IntPtr）；
         // 借出长度参数是 nuint*（非 ulong*）。故本类标 unsafe 并持 StageHandle*。
@@ -73,9 +76,33 @@ namespace LoomGUI
             _mm = new MaterialManager(shader);
             _pool = new MirrorPool();
 
+            EnsureFont();
+            // Font.textureRebuilt 是静态事件（§4.3 必修坑）：atlas 异步 rebuild 时 glyph UV 变。
+            // 注册 TextRasterizer.OnRebuilt（自增 FontVersion）→ MirrorPool.Sync 下帧检测到版本
+            // 变 → 强制 text 节点重 RequestCharactersInTexture + 重取 UV（fgui DynamicFont.cs:356-375）。
+            // 全局静态事件：必须 OnDestroy 解绑，否则泄漏跨场景/实例。
+            Font.textureRebuilt += TextRasterizer.OnRebuilt;
+
             gameObject.layer = LoomUILayer;
             EnsureCamera();
             ConfigureTransforms();
+        }
+
+        /// <summary>
+        /// 取 Unity 动态 Font。Inspector 指定优先；未配则 EditMode 用 AssetDatabase 兜底加载
+        /// Assets/LoomGUI/Fonts/DejaVuSans.ttf（PlayMode/build 必须由用户在 Inspector 指定——
+        /// AssetDatabase 仅 editor）。Font 须与 Rust measure 同一份 ttf（§4.3 跨平台一致性根）。
+        /// </summary>
+        void EnsureFont()
+        {
+            if (_font != null) return;
+#if UNITY_EDITOR
+            _font = UnityEditor.AssetDatabase.LoadAssetAtPath<Font>("Assets/LoomGUI/Fonts/DejaVuSans.ttf");
+            if (_font == null)
+                Debug.LogError("[LoomStage] 未在 Inspector 指定 _font，且 Assets/LoomGUI/Fonts/DejaVuSans.ttf 不可达");
+#else
+            Debug.LogError("[LoomStage] PlayMode/build 必须在 Inspector 指定 _font（DejaVuSans）");
+#endif
         }
 
         /// <summary>
@@ -176,11 +203,13 @@ namespace LoomGUI
             Marshal.Copy((IntPtr)ptr, _frameBuf, 0, len);
 
             var blob = new FrameBlob(_frameBuf);
-            _pool.Sync(blob, transform, _mm, Texture2D.whiteTexture);
+            _pool.Sync(blob, transform, _mm, Texture2D.whiteTexture, _font);
         }
 
         void OnDestroy()
         {
+            // 全局静态事件：Awake 注册过才解绑（Awake 失败早退则跳过）。
+            Font.textureRebuilt -= TextRasterizer.OnRebuilt;
             _pool?.Clear();
             _mm?.Clear();
             FreeStage();
@@ -195,8 +224,13 @@ namespace LoomGUI
             }
         }
 
-        // Domain reload 保护（§4.3e）。Phase 1 最小：占位。Phase 2 调 loomgui_shutdown + 清全局。
+        // Domain reload 保护（§4.3e / §4.6）。SubsystemRegistration 在 Domain reload 时跑（关闭 Domain
+        // Reload 仍跑）。Phase 2 最小：清 TextRasterizer 静态 font 版本号（atlas rebuild 计数器）。
+        // native 全局态 Phase 2 暂无（Stage per-handle，stage_free drop）；loomgui_shutdown 接线留 T8。
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
-        static void ResetStatics() { /* Phase 2 */ }
+        static void ResetStatics()
+        {
+            TextRasterizer.ResetStatic();
+        }
     }
 }

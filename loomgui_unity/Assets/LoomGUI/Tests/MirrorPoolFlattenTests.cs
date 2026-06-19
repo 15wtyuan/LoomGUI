@@ -154,7 +154,8 @@ namespace LoomGUI.Tests
                     childId: 8, cx: 50f, cy: 50f,
                     w: 5f, h: 5f, sortKey: 1));
                 Assert.AreEqual(2, blob.NodeCount, "blob 应解析出 2 节点");
-                pool.Sync(blob, root.transform, mm, tex);
+                // T4：Sync 加 Font 参数（kind=2 用）；本测纯 Mesh，传 null。
+                pool.Sync(blob, root.transform, mm, tex, null);
 
                 // 找到 child GO（按 node_id 8 不能直接查 pool 内部 dict；遍历 root 直接子节点）。
                 Assert.AreEqual(2, pool.Count, "flatten: 2 节点都应在 pool");

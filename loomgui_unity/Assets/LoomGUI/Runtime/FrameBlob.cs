@@ -1,4 +1,5 @@
 using System;
+using UnityEngine;
 
 namespace LoomGUI
 {
@@ -89,8 +90,47 @@ namespace LoomGUI
             return seg;
         }
 
+        /// 读节点 i 的 text 段（仅 payload_kind==2 时调用）。镜像 Rust blob.rs::read_text。
+        /// per-node 段布局（little-endian，§4.1/§4.3）：
+        ///   font_size:u32 | color:f32×4 | glyph_count:u32
+        ///   | glyphs[count × { codepoint:u32, pen_x:f32, pen_y:f32 }]  (12B/glyph)
+        /// pen_x/pen_y 已 GO-local 绝对 design（content 偏移在 render/mod.rs 烤进 glyph.x）；
+        /// pen_y = line.y + line.baseline（绝对，同行同值）。Unity 不 re-base、不用 advance。
+        public void ReadText(int i, out int fontSize, out Color color, out GlyphData[] glyphs)
+        {
+            int p = TextArenaOff + (int)TextOff(i);
+            fontSize = (int)ReadU32(p); p += 4;
+            float r = ReadF32(p); p += 4;
+            float g = ReadF32(p); p += 4;
+            float b = ReadF32(p); p += 4;
+            float a = ReadF32(p); p += 4;
+            color = new Color(r, g, b, a);
+            int count = (int)ReadU32(p); p += 4;
+            glyphs = new GlyphData[count];
+            for (int k = 0; k < count; k++)
+            {
+                uint cp = ReadU32(p); p += 4;
+                float px = ReadF32(p); p += 4;
+                float py = ReadF32(p); p += 4;
+                glyphs[k] = new GlyphData(cp, px, py);
+            }
+        }
+
         uint ReadU32(int o) => BitConverter.ToUInt32(_buf, o);
         float ReadF32(int o) => BitConverter.ToSingle(_buf, o);
+    }
+
+    /// 单 glyph 笔位（GO-local 绝对 design，y-down）。codepoint 为 Unicode 标量值（传 GetCharacterInfo
+    /// 前 cast char；BMP 外暂不支持——T3 仅 ASCII/BMP 测，v1c emoji 再议）。
+    public readonly struct GlyphData
+    {
+        public readonly uint Codepoint;
+        public readonly float PenX;
+        public readonly float PenY;
+        public GlyphData(uint codepoint, float penX, float penY)
+        {
+            Codepoint = codepoint; PenX = penX; PenY = penY;
+        }
     }
 
     /// ReadMesh 返回的 mesh 数据拷贝。verts/uvs/colors 长度 == vertCount，Idx 长度 == idxCount。

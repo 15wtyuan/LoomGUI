@@ -147,7 +147,7 @@ namespace LoomGUI.Tests
                 // 1) Create：Sync 1 节点 → 恰好创建 1 GO（root 的直接子节点）。
                 var blob1 = new FrameBlob(OneMeshNodeBlob(id: 7, x: 10f, y: 20f, w: 5f, h: 5f, sortKey: 3));
                 Assert.AreEqual(1, blob1.NodeCount, "blob 应解析出 1 节点");
-                pool.Sync(blob1, root.transform, mm, tex);
+                pool.Sync(blob1, root.transform, mm, tex, null);  // T4：Sync 加 Font 参数（Mesh 测传 null）
 
                 Assert.AreEqual(1, pool.Count, "Create: pool.Count 应为 1");
                 Assert.AreEqual(1, root.transform.childCount, "Create: root 应有 1 个直接子 GO");
@@ -167,7 +167,7 @@ namespace LoomGUI.Tests
                 var createdGo = node.gameObject;  // 记下，验证 Reuse 是同一个 GO
 
                 // 2) Reuse：再 Sync 同一 blob → 仍 1 GO（复用，非新增）。
-                pool.Sync(blob1, root.transform, mm, tex);
+                pool.Sync(blob1, root.transform, mm, tex, null);
                 Assert.AreEqual(1, pool.Count, "Reuse: pool.Count 仍应为 1");
                 Assert.AreEqual(1, root.transform.childCount, "Reuse: root 仍只 1 子 GO");
                 Assert.AreSame(createdGo, root.transform.GetChild(0).gameObject,
