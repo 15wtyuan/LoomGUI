@@ -4,7 +4,6 @@
 pub mod blob;
 
 use std::ffi::CString;
-use loomgui_core::render::node::RenderNode;
 use loomgui_core::stage::Stage;
 
 /// 版本字符串（C null-terminated `b"v1a\0"`）。Task 1 工具链 round-trip 用。
@@ -98,8 +97,8 @@ pub extern "C" fn loomgui_stage_tick(h: *mut StageHandle, _dt: f32) {
         return;
     }
     let sh = unsafe { &mut *h };
-    let nodes: Vec<RenderNode> = sh.stage.tick_and_render();
-    sh.frame_blob = blob::build_blob(&nodes);
+    let frame = sh.stage.tick_and_render();
+    sh.frame_blob = blob::build_blob(&frame);
 }
 
 /// 借出最近一帧 blob：写 len 到 out_len，返回 Rust 拥有缓存指针（下 tick 失效）。

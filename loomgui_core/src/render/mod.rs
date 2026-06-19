@@ -11,7 +11,7 @@ pub mod batch;
 pub mod mesh;
 pub mod node;
 
-use crate::scene::node::{NodeKind, Scene};
+use crate::scene::node::{NodeKind, Rect, Scene};
 use crate::text::layout::{measure_text, Font};
 use node::*;
 
@@ -19,12 +19,33 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use taffy::style::LengthPercentage;
 
-/// 遍历 Scene → `Vec<RenderNode>`。
+/// clip 表条目：context_id（mask_context>0 的层级）→ 该层级的交集绝对 design rect。
+///
+/// 由 `batch::assign_sort_keys` 在 DFS 时产；`context_id` 与 RenderNode 的
+/// `mask_context.0` 对齐（被该 clip 约束的节点引用同一 id）。§4.4 rect mask / §4.1 clip 表。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ClipEntry {
+    pub context_id: u32,
+    pub rect: Rect,
+}
+
+/// 一帧渲染数据：节点 + clip 表（FFI blob 同帧 emit）。
+///
+/// `clips` 只含 mask_context>0 的层级；context==0（无 clip）永不入表。
+/// 由 `build_render_nodes` 产，`stage::tick_and_render` 透传，`blob::build_blob` 消费。
+#[derive(Debug, Clone)]
+pub struct FrameData {
+    pub nodes: Vec<RenderNode>,
+    pub clips: Vec<ClipEntry>,
+}
+
+/// 遍历 Scene → `FrameData`（nodes + clip 表）。
 ///
 /// 顺序与 `scene.nodes` 同序（node_id == scene 索引），便于 batch DFS 对齐。
 /// Text 节点调 `measure_text` 产 TextLayout；Container/Image 产 Mesh quad。
-/// `font` 仅 Text 节点用（v0 单字体）。
-pub fn build_render_nodes(scene: &Scene, font: &Font) -> Vec<RenderNode> {
+/// `font` 仅 Text 节点用（v0 单字体）。clip 表由 `batch::assign_sort_keys` 算
+/// 祖先 clip 链交集后产出（§4.4）。
+pub fn build_render_nodes(scene: &Scene, font: &Font) -> FrameData {
     // 预分配 Unchanged 占位，逐个按 scene 节点覆写。
     let mut nodes: Vec<RenderNode> = (0..scene.nodes.len())
         .map(|_| RenderNode {
@@ -110,8 +131,8 @@ pub fn build_render_nodes(scene: &Scene, font: &Font) -> Vec<RenderNode> {
             }
         }
     }
-    batch::assign_sort_keys(scene, &mut nodes);
-    nodes
+    let clips = batch::assign_sort_keys(scene, &mut nodes);
+    FrameData { nodes, clips }
 }
 
 /// src → 占位 tex_id：DefaultHasher 低 16 位。
@@ -193,7 +214,8 @@ mod tests {
             Some([1.0, 0.0, 0.0, 1.0]),
         ));
         let font = test_font().expect("need test font for build_render_nodes");
-        let rns = build_render_nodes(&scene, &font);
+        let frame = build_render_nodes(&scene, &font);
+        let rns = &frame.nodes;
         assert_eq!(rns.len(), 1);
         match &rns[0].payload {
             NodePayload::Mesh {
@@ -255,7 +277,8 @@ mod tests {
         scene.roots = vec![NodeId(0), NodeId(1)];
 
         let font = test_font().expect("need test font");
-        let rns = build_render_nodes(&scene, &font);
+        let frame = build_render_nodes(&scene, &font);
+        let rns = &frame.nodes;
         let tex_a = match &rns[0].payload {
             NodePayload::Mesh { texture, .. } => *texture,
             _ => panic!("expected Mesh"),
@@ -296,7 +319,8 @@ mod tests {
         };
         scene.nodes.push(n);
 
-        let rns = build_render_nodes(&scene, &font);
+        let frame = build_render_nodes(&scene, &font);
+        let rns = &frame.nodes;
         match &rns[0].payload {
             NodePayload::Text {
                 layout,
@@ -355,7 +379,8 @@ mod tests {
         };
         scene.nodes.push(n);
 
-        let rns = build_render_nodes(&scene, &font);
+        let frame = build_render_nodes(&scene, &font);
+        let rns = &frame.nodes;
         match &rns[0].payload {
             NodePayload::Text { layout, .. } => {
                 let g = &layout.lines[0].runs[0].glyphs;
@@ -388,7 +413,8 @@ mod tests {
         scene.nodes.push(container_node(2, Some(0), Rect::default(), None));
 
         let font = test_font().expect("need test font");
-        let rns = build_render_nodes(&scene, &font);
+        let frame = build_render_nodes(&scene, &font);
+        let rns = &frame.nodes;
         assert!(rns[0].sort_key < rns[1].sort_key);
         assert!(rns[1].sort_key < rns[2].sort_key);
     }

@@ -1,8 +1,9 @@
-//! 帧 blob 构建器：Vec<RenderNode> → 拍平 SOA blob（§4.1）。
+//! 帧 blob 构建器：FrameData → 拍平 SOA blob（§4.1）。
 //! mesh 顶点 re-base 到节点本地空间（v0 是父坐标系，减 transform.x/y）。
 
 #[allow(unused_imports)] // BlendMode/MaskContext/NodeTransform 仅测试 helper 经 super::* 用。
 use loomgui_core::render::node::{BlendMode, MaskContext, NodePayload, NodeTransform, RenderNode};
+use loomgui_core::render::FrameData;
 #[allow(unused_imports)] // Glyph/GlyphRun/Line/TextLayout 仅 text round-trip 测试 helper 用。
 use loomgui_core::text::layout::{Glyph, GlyphRun, Line, TextLayout};
 
@@ -10,8 +11,10 @@ use loomgui_core::text::layout::{Glyph, GlyphRun, Line, TextLayout};
 const MAGIC: u32 = 0x4D4F4F4C;
 const VERSION: u32 = 2;
 
-/// 入口：RenderNode 切片 → blob 字节。
-pub fn build_blob(nodes: &[RenderNode]) -> Vec<u8> {
+/// 入口：FrameData（nodes + clip 表）→ blob 字节。
+pub fn build_blob(frame: &FrameData) -> Vec<u8> {
+    let nodes = &frame.nodes;
+    let clips = &frame.clips;
     let n = nodes.len();
     // 列名 + 每元素字节数。v2 在 v1 的 11 列上 +text_off/text_len（§4.1）。
     let columns: &[(&str, usize)] = &[
@@ -164,9 +167,19 @@ pub fn build_blob(nodes: &[RenderNode]) -> Vec<u8> {
     let text_arena_off = mesh_arena_off + mesh_arena_len;
     let text_arena_len = text_arena.len() as u32;   // T3：Text 节点 layout 序列化进 text_arena
     let clip_table_off = text_arena_off + text_arena_len;
-    // T1：clip 表只含 clip_count(u32)=0，无 entries。T5 填嵌套交集 entries。
-    let clip_count: u32 = 0;
-    let clip_table_len: u32 = 4;
+    // T5：clip 表 = clip_count:u32 + entries[count × {context_id:u32, x,y,w,h:f32}]（20B/entry）。
+    // 只含 mask_context>0 的层级（context==0 = 无 clip，永不入表）。§4.4 / §4.1。
+    let clip_count: u32 = clips.len() as u32;
+    let clip_table_len: u32 = 4 + clip_count * 20;
+    let mut clip_table_buf: Vec<u8> = Vec::with_capacity(clip_table_len as usize);
+    clip_table_buf.extend_from_slice(&clip_count.to_le_bytes());
+    for c in clips {
+        clip_table_buf.extend_from_slice(&c.context_id.to_le_bytes());
+        clip_table_buf.extend_from_slice(&c.rect.x.to_le_bytes());
+        clip_table_buf.extend_from_slice(&c.rect.y.to_le_bytes());
+        clip_table_buf.extend_from_slice(&c.rect.w.to_le_bytes());
+        clip_table_buf.extend_from_slice(&c.rect.h.to_le_bytes());
+    }
 
     // 拼装。
     let mut out = Vec::new();
@@ -183,14 +196,21 @@ pub fn build_blob(nodes: &[RenderNode]) -> Vec<u8> {
     for (_name, buf) in &col_bufs { out.extend_from_slice(buf); }
     out.extend_from_slice(&mesh_arena);
     out.extend_from_slice(&text_arena);
-    // clip 表：仅 clip_count。
-    out.extend_from_slice(&clip_count.to_le_bytes());
+    // clip 表：clip_count + entries。
+    out.extend_from_slice(&clip_table_buf);
     out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use loomgui_core::render::ClipEntry;
+    use loomgui_core::scene::node::Rect;
+
+    /// 把 nodes 包成无 clip 的 FrameData（多数 blob 测试不需要 clip 表）。
+    fn frame(nodes: &[RenderNode]) -> FrameData {
+        FrameData { nodes: nodes.to_vec(), clips: Vec::new() }
+    }
 
     fn mesh_node(id: u32, parent: Option<u32>, x: f32, y: f32, w: f32, h: f32) -> RenderNode {
         RenderNode {
@@ -247,7 +267,7 @@ mod tests {
 
     #[test]
     fn build_blob_has_magic_and_count() {
-        let blob = build_blob(&[mesh_node(0, None, 10.0, 20.0, 5.0, 5.0)]);
+        let blob = build_blob(&frame(&[mesh_node(0, None, 10.0, 20.0, 5.0, 5.0)]));
         assert_eq!(&blob[0..4], &MAGIC.to_le_bytes());
         let v = u32::from_le_bytes(blob[4..8].try_into().unwrap());
         assert_eq!(v, VERSION);
@@ -260,7 +280,7 @@ mod tests {
     /// text_arena 在 T1 暂空（len=0），clip 表 T1 仅 4B clip_count=0。
     #[test]
     fn blob_v2_header_has_text_and_clip_arena_fields() {
-        let blob = build_blob(&[mesh_node(0, None, 0.0, 0.0, 1.0, 1.0)]);
+        let blob = build_blob(&frame(&[mesh_node(0, None, 0.0, 0.0, 1.0, 1.0)]));
 
         // magic + version==2（已在 build_blob_has_magic_and_count 覆盖，此处再钉一次契约）。
         assert_eq!(u32::from_le_bytes(blob[0..4].try_into().unwrap()), MAGIC);
@@ -300,7 +320,7 @@ mod tests {
     /// 且 T1 占位语义（text_off/text_len=0、text_arena_len=0、clip_count=0）成立。
     #[test]
     fn test_view_parses_v2_layout_and_t1_placeholders() {
-        let blob = build_blob(&[mesh_node(0, None, 0.0, 0.0, 1.0, 1.0)]);
+        let blob = build_blob(&frame(&[mesh_node(0, None, 0.0, 0.0, 1.0, 1.0)]));
         let view = TestView::parse(&blob);
         assert_eq!(view.text_off(0), 0, "T1: text_off 占位 0");
         assert_eq!(view.text_len(0), 0, "T1: text_len 占位 0");
@@ -313,7 +333,7 @@ mod tests {
     #[test]
     fn mesh_verts_are_rebased_to_local() {
         // 顶点原本在 (10,20)..(15,25)；re-base 后应 (0,0)..(5,5)。
-        let blob = build_blob(&[mesh_node(0, None, 10.0, 20.0, 5.0, 5.0)]);
+        let blob = build_blob(&frame(&[mesh_node(0, None, 10.0, 20.0, 5.0, 5.0)]));
         let view = TestView::parse(&blob);
         let verts = view.mesh_verts(0);
         assert_eq!(verts[0], [0.0, 0.0]);
@@ -325,7 +345,7 @@ mod tests {
 
     #[test]
     fn parent_id_minus_one_for_none() {
-        let blob = build_blob(&[mesh_node(0, None, 0.0, 0.0, 1.0, 1.0)]);
+        let blob = build_blob(&frame(&[mesh_node(0, None, 0.0, 0.0, 1.0, 1.0)]));
         let view = TestView::parse(&blob);
         assert_eq!(view.parent_id(0), -1);
     }
@@ -336,12 +356,12 @@ mod tests {
     /// → 首顶点色 = [1.0, 0.0, 0.0, 1.0×0.5] = [1.0, 0.0, 0.0, 0.5]（红，半透明）。
     #[test]
     fn mesh_colors_bake_alpha_not_tint() {
-        let blob = build_blob(&[mesh_node_tinted(
+        let blob = build_blob(&frame(&[mesh_node_tinted(
             0,
             [0.5, 0.5, 0.5, 1.0],
             0.5,
             [1.0, 0.0, 0.0, 1.0],
-        )]);
+        )]));
         let view = TestView::parse(&blob);
         let colors = view.mesh_colors(0);
         assert_eq!(colors.len(), 4);
@@ -421,7 +441,7 @@ mod tests {
             vec![(b'A' as u32, 0.0, 0.0), (b'B' as u32, 12.0, 0.0)],
             20.0, // baseline_off → line.baseline = 0.0 + 20.0 = 20.0
         );
-        let blob = build_blob(&[node]);
+        let blob = build_blob(&frame(&[node]));
         let view = TestView::parse(&blob);
 
         // header 契约：text_arena 非空、text_off/text_len 指向实段。
@@ -557,5 +577,60 @@ mod tests {
                 0
             }
         }
+        /// 读 clip 表 entries：Vec<(context_id, Rect)>（§4.1 / §4.4）。
+        /// layout: clip_count:u32 后跟 count × {context_id:u32, x,y,w,h:f32}（20B/entry）。
+        fn read_clips(&self) -> Vec<(u32, Rect)> {
+            let count = self.clip_count() as usize;
+            let mut p = self.clip_table_off + 4;
+            (0..count).map(|_| {
+                let cid = u32::from_le_bytes(self.buf[p..p+4].try_into().unwrap()); p += 4;
+                let x = f32::from_le_bytes(self.buf[p..p+4].try_into().unwrap()); p += 4;
+                let y = f32::from_le_bytes(self.buf[p..p+4].try_into().unwrap()); p += 4;
+                let w = f32::from_le_bytes(self.buf[p..p+4].try_into().unwrap()); p += 4;
+                let h = f32::from_le_bytes(self.buf[p..p+4].try_into().unwrap()); p += 4;
+                (cid, Rect { x, y, w, h })
+            }).collect()
+        }
+    }
+
+    /// §4.4 / §4.1：clip 表 round-trip——context_id + 交集绝对 rect 序列化进 blob 末段。
+    /// 构造 FrameData 带 2 个 clip entry（含一个零面积 disjoint 交集），读回值正确；
+    /// 且 mask_context==0 永不入表（context 从 1 起）。
+    #[test]
+    fn clip_table_round_trip_with_entries() {
+        let node = mesh_node(0, None, 0.0, 0.0, 1.0, 1.0);
+        let frame = FrameData {
+            nodes: vec![node],
+            clips: vec![
+                ClipEntry { context_id: 1, rect: Rect { x: 0.0, y: 0.0, w: 100.0, h: 100.0 } },
+                ClipEntry { context_id: 2, rect: Rect { x: 50.0, y: 50.0, w: 0.0, h: 0.0 } },
+            ],
+        };
+        let blob = build_blob(&frame);
+        let view = TestView::parse(&blob);
+        assert_eq!(view.clip_count(), 2, "clip_count == 2");
+        let clips = view.read_clips();
+        assert_eq!(clips.len(), 2);
+        assert_eq!(clips[0].0, 1);
+        assert_eq!((clips[0].1.x, clips[0].1.y, clips[0].1.w, clips[0].1.h),
+                   (0.0, 0.0, 100.0, 100.0));
+        assert_eq!(clips[1].0, 2);
+        // 零面积 disjoint 交集 round-trip（w/h=0）。
+        assert_eq!((clips[1].1.x, clips[1].1.y, clips[1].1.w, clips[1].1.h),
+                   (50.0, 50.0, 0.0, 0.0));
+        // clip 表段长度 = 4(count) + 2×20(entry) = 44。
+        assert_eq!(view.clip_table_len, 44, "clip_table_len = 4 + count×20");
+        assert_eq!(view.clip_table_off + view.clip_table_len as usize, blob.len(),
+                   "clip_table 应是 blob 末段");
+    }
+
+    /// 空 clip 表（无 overflow:hidden）：clip_count=0，clip_table_len=4（仅 count 占位）。
+    #[test]
+    fn empty_clip_table_round_trip() {
+        let blob = build_blob(&frame(&[mesh_node(0, None, 0.0, 0.0, 1.0, 1.0)]));
+        let view = TestView::parse(&blob);
+        assert_eq!(view.clip_count(), 0);
+        assert_eq!(view.clip_table_len, 4, "空 clip 表 len=4（仅 clip_count=0）");
+        assert_eq!(view.read_clips().len(), 0);
     }
 }

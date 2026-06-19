@@ -8,7 +8,7 @@ use crate::layout::solve;
 use crate::parse::css::parse_css;
 use crate::parse::dom::parse_html;
 use crate::render::build_render_nodes;
-use crate::render::node::RenderNode;
+use crate::render::FrameData;
 use crate::scene::node::{build_scene, Scene};
 use crate::style::cascade::resolve_styles;
 use crate::text::layout::Font;
@@ -40,15 +40,15 @@ impl Stage {
         Ok(())
     }
 
-    /// 静态首帧：solve + render。v0 无输入/动画。
-    pub fn tick_and_render(&mut self) -> Vec<RenderNode> {
+    /// 静态首帧：solve + render。v0 无输入/动画。返回 nodes + clip 表（§4.4）。
+    pub fn tick_and_render(&mut self) -> FrameData {
         let scene = self.scene.as_mut().expect("load first");
         solve(scene, &self.font, self.root_size);
         build_render_nodes(scene, &self.font)
     }
 
     pub fn render_json(&mut self) -> String {
-        let nodes = self.tick_and_render();
-        serde_json::to_string_pretty(&nodes).unwrap()
+        let frame = self.tick_and_render();
+        serde_json::to_string_pretty(&frame.nodes).unwrap()
     }
 }
