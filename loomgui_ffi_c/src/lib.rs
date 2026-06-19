@@ -1,6 +1,8 @@
 //! FFI 导出层（§14.1 csbindgen）：extern "C" 薄包装，opaque Stage 句柄。
 //! 命名前缀 `loomgui_`，csbindgen 扫描本文件生成 C# 绑定。
 
+pub mod blob;
+
 use std::ffi::CString;
 
 /// 版本字符串（C null-terminated `b"v1a\0"`）。Task 1 工具链 round-trip 用。
