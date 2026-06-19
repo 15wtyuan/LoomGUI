@@ -357,7 +357,7 @@ struct TextureView {
 - 批合局部（每 BatchingRoot 独立）。不合并 mesh（每节点各自原生渲染对象）。
 
 ### 8.6 裁剪/遮罩（意图表达，机制后端自选）
-v1 实现 **rect mask（硬矩形裁剪）**：意图=矩形区域裁剪。核心给 clip_box；后端自选实现（Unity: shader uniform `|clipPos|>1` discard；Godot: canvas_item_set_clip；软件: scanline）。`mask_context`（rect clip 上下文）是批合边界（§8.5）。
+v1 实现 **rect mask（硬矩形裁剪）**：意图=矩形区域裁剪。核心给 clip_box；后端自选实现（Unity: shader uniform `|clipPos|>1` discard；Godot: canvas_item_set_clip；软件: scanline）。`mask_context`（rect clip 上下文）是批合边界（§8.5）。**嵌套 `overflow:hidden`**：clip 区域取**祖先 clip 链的交集**（核心 DFS 累积交集，每 clip 上下文绑定一个交集后的 rect；后端每 context 一个 clip uniform，照搬 fgui 折叠语义——非逐层独立裁剪）。
 
 soft clip（羽化）/shape mask（形状遮罩，含 Write/Content/Erase 时序）/paintingMode（离屏 RT）是 **v1.x**（机制见 roadmap）。
 
@@ -418,7 +418,7 @@ enum NodePayload {
 struct TextLayout { text_width: f32, text_height: f32, lines: Vec<Line> }
 struct Line { y, height, baseline, width, runs: Vec<GlyphRun>, inline_objects: Vec<(x,y,w,h,obj_id)> }
 struct GlyphRun { font_id, font_size, format, glyphs: Vec<Glyph> }
-struct Glyph { glyph_id, x, y, bearing_x, bearing_y }   // v1：绝对坐标 + bearing
+struct Glyph { glyph_id, codepoint, x, y, bearing_x, bearing_y }   // v1：绝对坐标 + bearing；codepoint 供引擎字体 API（Unity GetCharacterInfo 按 char 取），glyph_id 供 ttf 直连后端
 ```
 - **glyph 存绝对坐标**（核心已累加 advance、已应用 text-align 偏移），后端拼 quad 零累加：`quad_min = (glyph.x + bearing_x, glyph.y + bearing_y)`，再按光栅化字形像素边界扩展。`advance` 是核心内部 pen 推进值，**不进 FFI 表**。
 - `bearing_x/bearing_y` = pen 位到字形 quad 左上的偏移（字形 left/top bearing，来自 ttf-parser glyph bbox）。
@@ -605,9 +605,11 @@ csbindgen 是为 Unity/IL2CPP 设计的主流绑定生成器（Cysharp MagicPhys
    Unchanged 节点 payload_kinds=Unchanged，三元组为空。
 2. 多个按类型分区的 per-frame arena（变长 payload，每种一个 arena）：
    mesh_arena   : 扁平 verts[f32]/uvs[f32]/colors[u32]/indices[u16] + count
-   text_arena   : TextLayout 的 SOA 三表（glyphs_soa/runs_soa/lines_soa，§9.2）
+   text_arena   : v1a 扁平 glyphs[{codepoint,pen_x,pen_y}] + 节点级 font_size/color（单字体简化；runs/lines 三表随多字体/CJK 于 v1b 落地，§9.2）
    —— 每种 arena 一种结构，C# 按 payload_kind 选解析器。
 ```
+
+**坐标空间**：SOA `transforms[]`（local_x/local_y）与 clip rect 均为**绝对 design 坐标**（核心 layout 累加 parent origin）。后端不做逐节点 parent 累加——根 Stage transform 一次性映射 design→world（§8.1）。
 
 **内存所有权**：公共头 SOA + 各 arena 都是 Rust 侧 per-frame。**公共头 + 所有 arena 在 tick 返回前由 C# 原子拷贝到托管 buffer**（拷贝而非 pin）；tick 返回后 Rust 即可 reset，C# 后续只读自身拷贝。Rust 下帧开头 reset arena（复用零分配）。**"沿用上帧"**：不 dirty 节点 payload=Unchanged，不进 arena，后端不动该 node_id 的渲染对象。
 
@@ -625,7 +627,7 @@ csbindgen 是为 Unity/IL2CPP 设计的主流绑定生成器（Cysharp MagicPhys
 3. **同步**：上传 mesh 到 MeshFilter（非文本）；文本据 TextLayout 光栅化+拼 quad；按 `(program+flags+blend+texture+mask_context)` 从 DrawState 缓存（MaterialManager）取/建 Material；设 transform、sortingOrder、blend/stencil、clip uniform。rect 遮罩用 shader uniform `_ClipBox` discard（§8.6；shape mask 才用 stencil）。
 4. 输入采集：Unity 新/旧输入系统 → 扁平事件（含 IME character）。
 5. 资源加载：Addressables/YooAsset → 纹理上传 → 注册 TexId。字体用包声明的同一 ttf。
-6. 坐标：根 Stage GameObject 挂 (1,-1,1) scale 一次性 y-flip。
+6. 坐标：根 Stage GameObject 挂 (1,-1,1) scale 一次性 y-flip。blob 的 local_x/local_y 与 clip_rect 是绝对 design 坐标（§14.3），**v1a/Phase 2 渲染对象全部挂根 GO、localPosition=绝对**（flatten，避免巢状 SetParent 双计父位置）；GO 层级巢状 + 父相对坐标留待 transform 继承需求（v1c+ 事件 / 旋转缩放容器）。
 
 > Unity 后端的 `MeshFilter+MeshRenderer+MaterialManager+sortingOrder+stencil` 是 §8 契约的**一种实现**，几何数据来自核心，后端不生成非文本几何。
 > v1.x: NativeHost（放用户 GameObject，tick 前 push 尺寸）、世界空间 UI、slot 复用池——见 roadmap。
