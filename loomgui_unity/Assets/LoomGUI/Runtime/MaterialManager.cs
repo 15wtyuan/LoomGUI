@@ -17,7 +17,7 @@ namespace LoomGUI
 
         public Material Get(int program, Texture texture, uint maskContext)
         {
-            var key = new Key(program, texture ? texture.GetEntityId() : 0, maskContext);
+            var key = new Key(program, texture, maskContext);
             if (!_cache.TryGetValue(key, out var mat))
             {
                 mat = new Material(_shader);
@@ -43,13 +43,19 @@ namespace LoomGUI
             _cache.Clear();
         }
 
+        // key 持 Texture 引用（Unity 对象同一性），避开 Unity 6.5 废弃的 GetInstanceID/GetEntityId/EntityId。
+        // 材质与纹理同生命周期，缓存随纹理存活正确；v1b 纹理释放时配 eviction。
         readonly struct Key
         {
-            readonly int _program, _tex;
+            readonly int _program;
+            readonly Texture _tex;
             readonly uint _ctx;
-            public Key(int p, int t, uint c) { _program = p; _tex = t; _ctx = c; }
+            public Key(int p, Texture t, uint c) { _program = p; _tex = t; _ctx = c; }
             public override int GetHashCode() => System.HashCode.Combine(_program, _tex, (int)_ctx);
-            public override bool Equals(object o) => o is Key k && k._program == _program && k._tex == _tex && k._ctx == _ctx;
+            public override bool Equals(object o) => o is Key k
+                && k._program == _program
+                && k._tex == _tex
+                && k._ctx == _ctx;
         }
     }
 }
