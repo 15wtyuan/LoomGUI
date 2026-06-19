@@ -21,6 +21,16 @@ namespace LoomGUI
         public bool IsText;            // kind=2：font atlas rebuild 时需重光栅
         // -1 哨兵：新建 RenderObj 的 text 节点首帧必 BuildMesh（即使 FontVersion==0）。
         public int LastFontVersion = -1;
+
+        // §4.5 buffer 复用（500 节点静态压测 GC 缓解）：每 RenderObj 持可复用 List，
+        // UploadMesh 每帧 Clear+fill 后用 Mesh.SetVertices(List) 等 overload 上传——
+        // List<T>.Clear() 保留 Capacity，故 warm-up 后零 per-frame 数组 alloc。
+        // 替代 naive `new Vector3[]/Color[]/int[]`（Phase 1 review Minor：500 节点×3 数组/帧 GC）。
+        // 全量 ArrayPool（含 ReadMesh 数组 alloc）冷帧零 GC 留 v1e。
+        public readonly List<Vector3> VList = new();
+        public readonly List<Vector2> UvList = new();
+        public readonly List<Color> CList = new();
+        public readonly List<int> IList = new();
     }
 
     public sealed class MirrorPool
@@ -142,18 +152,35 @@ namespace LoomGUI
             return new RenderObj { Go = go, Mf = mf, Mr = mr, Mesh = mesh };
         }
 
+        /// §4.5 buffer 复用：从 MeshSegment 填 ro 持有的可复用 List，再走 SetVertices(List) 等 overload。
+        /// List<T>.Clear() 保留 Capacity → warm-up 后每帧零数组 alloc（naive 每帧 new Vector3[]/Color[]/int[]
+        /// 在 500 节点 ×3 数组/帧 是主要 GC 源）。kind=1（mesh）与 kind=2（text BuildMesh 产出）同走此路径。
+        /// 注意：SetVertices(List) 要求 list 长度 == 顶点数；Clear()+Add 精确填到 Verts.Length 即满足。
         static void UploadMesh(RenderObj ro, MeshSegment seg)
         {
-            var verts = new Vector3[seg.Verts.Length];
-            for (int i = 0; i < seg.Verts.Length; i++) verts[i] = new Vector3(seg.Verts[i].x, seg.Verts[i].y, 0);
-            var cols = new Color[seg.Colors.Length];
-            for (int i = 0; i < seg.Colors.Length; i++) cols[i] = seg.Colors[i];
-            var idx = new int[seg.Idx.Length];
-            for (int i = 0; i < seg.Idx.Length; i++) idx[i] = (int)seg.Idx[i];
+            int vc = seg.Verts.Length;
+            // Clear 保留 capacity，再填（避免每帧 new List / new 数组）。
+            var v = ro.VList; v.Clear();
+            var uv = ro.UvList; uv.Clear();
+            var c = ro.CList; c.Clear();
+            var idx = ro.IList; idx.Clear();
+            // 预扩一次（首次或更大 mesh 时）；后续 Clear 不收缩，零 alloc。
+            if (v.Capacity < vc) { v.Capacity = vc; uv.Capacity = vc; c.Capacity = vc; }
+            int ic = seg.Idx.Length;
+            if (idx.Capacity < ic) idx.Capacity = ic;
+
+            for (int i = 0; i < vc; i++)
+            {
+                v.Add(new Vector3(seg.Verts[i].x, seg.Verts[i].y, 0f));
+                uv.Add(seg.Uvs[i]);
+                c.Add(seg.Colors[i]);
+            }
+            for (int i = 0; i < ic; i++) idx.Add((int)seg.Idx[i]);
+
             ro.Mesh.Clear();                 // Unity 要求 SetVertices 前清空，否则顶点数变更报错
-            ro.Mesh.SetVertices(verts);
-            ro.Mesh.SetUVs(0, seg.Uvs);
-            ro.Mesh.SetColors(cols);
+            ro.Mesh.SetVertices(v);
+            ro.Mesh.SetUVs(0, uv);
+            ro.Mesh.SetColors(c);
             ro.Mesh.SetTriangles(idx, 0);
         }
 

@@ -30,6 +30,13 @@ namespace LoomGUI
         // Inspector 指定为主路径；EditMode 测试 / 未配场景用 AssetDatabase 兜底（见 EnsureFont）。
         [SerializeField] Font _font;
 
+        // §4.5 500 节点静态压测 fixture：勾选 → Awake 覆盖 _html/_css 为程序生成的 ~500 节点
+        // （嵌套 flex column + 每行 colored div + text label，覆盖 mesh + text 双路径）。
+        // 默认 false（保持 v1a 单红块场景不变）。PlayMode 肉眼验无卡顿（v1a §9.3 便宜帧）。
+        [SerializeField] bool _stress500;
+        // OnGUI 左上角 FPS 读数（1/Time.smoothDeltaTime + pool 节点数）。stress500 或本开关任一为真即显。
+        [SerializeField] bool _showFps;
+
         // csbindgen 生成的 Native 用类型化指针 StageHandle*（非 IntPtr）；
         // 借出长度参数是 nuint*（非 ulong*）。故本类标 unsafe 并持 StageHandle*。
         StageHandle* _stage;
@@ -58,6 +65,9 @@ namespace LoomGUI
                 Debug.LogError("[LoomStage] loomgui_stage_new 失败（字体路径/不可达？）");
                 return;
             }
+
+            // §4.5 stress fixture：勾选 → 程序生成 ~500 节点 html/css（mesh + text 双路径）。
+            if (_stress500) BuildStress500Fixture();
 
             if (!LoadHtml())
             {
@@ -119,6 +129,54 @@ namespace LoomGUI
                     _stage, hp, (nuint)hb.Length, cp, (nuint)cb.Length);
                 return r == 0;
             }
+        }
+
+        /// <summary>
+        /// §4.5 stress fixture：程序生成 ~500 渲染节点的 html/css。
+        /// 结构：一个 flex column 容器，内含 N 行；每行 = 一个 colored div（mesh 路径）+
+        /// 一个 text label（text 路径）。每行约 2 渲染节点（div + text），250 行 ≈ 500 节点。
+        /// 颜色用行号取模分配（视觉可辨、避免全同色无法肉眼判卡顿）。
+        /// v0 解析器不读 inline style=（layout/mod.rs 注释），故全用 class + 独立 CSS。
+        /// </summary>
+        void BuildStress500Fixture()
+        {
+            const int Rows = 250;   // 每行 1 div + 1 text → ~500 渲染节点。
+            var html = new StringBuilder(1 << 14);
+            html.Append("<div class=\"c\">");
+            for (int i = 0; i < Rows; i++)
+            {
+                // 每行一个带 class 的 div + 一个 <p> 文本节点。
+                html.Append("<div class=\"r").Append(i % 4).Append("\"><p>row ").Append(i).Append("</p></div>");
+            }
+            html.Append("</div>");
+
+            // CSS：容器 flex column 定宽；4 种行 class 循环配色 + p 文本样式。
+            // 用 px 绝对值（v0 layout 支持）；行高 ~30px 容纳 250 行（超出 design 高度会溢出，
+            // 但本测关心的是渲染节点数与帧时间，不关心可视区域；Rust 仍 layout 全部节点）。
+            var css = new StringBuilder(1 << 12);
+            css.Append(".c{display:flex;flex-direction:column;width:1000px;}");
+            css.Append(".r0{width:960px;height:28px;background-color:#c62828;margin:2px;}");
+            css.Append(".r1{width:960px;height:28px;background-color:#1565c0;margin:2px;}");
+            css.Append(".r2{width:960px;height:28px;background-color:#2e7d32;margin:2px;}");
+            css.Append(".r3{width:960px;height:28px;background-color:#6a1b9a;margin:2px;}");
+            css.Append("p{font-size:20px;color:#ffffff;}");
+
+            _html = html.ToString();
+            _css = css.ToString();
+        }
+
+        /// <summary>
+        /// §4.5 on-screen FPS 读数（_stress500 或 _showFps 任一为真时显示）。
+        /// 1/Time.smoothDeltaTime 平滑帧率 + MirrorPool 当前节点数。最小实现（不做 profiler）。
+        /// 用户在 PlayMode 肉眼判卡顿（v1a §9.3 便宜帧 ≥45fps 静态无卡顿）。
+        /// </summary>
+        void OnGUI()
+        {
+            if (!_stress500 && !_showFps) return;
+            float fps = Time.smoothDeltaTime > 0f ? 1f / Time.smoothDeltaTime : 0f;
+            int nodes = _pool?.Count ?? 0;
+            string label = $"FPS {fps:F1}  nodes {nodes}";
+            GUI.Label(new Rect(8f, 8f, 240f, 24f), label);
         }
 
         /// <summary>

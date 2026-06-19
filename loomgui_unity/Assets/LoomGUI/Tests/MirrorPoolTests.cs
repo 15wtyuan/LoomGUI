@@ -178,7 +178,7 @@ namespace LoomGUI.Tests
                 //  但 pool 的 dict 是同步清空的——这是 stale-flag diff 的真实语义。
                 var empty = new FrameBlob(EmptyBlob());
                 Assert.AreEqual(0, empty.NodeCount, "空 blob NodeCount=0");
-                pool.Sync(empty, root.transform, mm, tex);
+                pool.Sync(empty, root.transform, mm, tex, null);
                 Assert.AreEqual(0, pool.Count, "Destroy: 全 stale 后 pool.Count 应为 0");
                 // createdGo 已被 Object.Destroy 标记销毁；deferred 后引用 == null（Unity 重载）。
                 // EditMode 下一帧才真销毁，故仅断 pool.Count，不强断 childCount。
@@ -186,6 +186,69 @@ namespace LoomGUI.Tests
             finally
             {
                 // 清理：pool.Clear 销毁残留 GO；MaterialManager 销毁缓存的 Material；root 本身。
+                pool.Clear();
+                mm.Clear();
+                Object.DestroyImmediate(root);
+            }
+        }
+
+        /// §4.5 / Task 7：UploadMesh 现走 RenderObj 可复用 List 路径（Clear+fill+SetVertices(List)）。
+        /// 验证 reuse 不破坏几何——同 blob 连续 Sync 多次（List 被 Clear+refill），顶点/uv/颜色/索引
+        /// 与首次完全一致；且不同 mesh（顶点数变化）也能正确刷新（List 扩容/收缩正确，无残留旧顶点）。
+        /// kind=1（mesh）路径在此直测；kind=2（text）路径走 TextRasterizer.BuildMesh → 同 UploadMesh，
+        /// 几何由 BuildMesh 决定、UploadMesh 仅搬运——故 mesh 路径的正确性即覆盖 UploadMesh 对 text 的搬运正确性。
+        /// （text 顶点值需 live Font 才能算，此处不在单测范围；T4 TextRasterizerTests 已验 BuildMesh 输出。）
+        [Test]
+        public void UploadMesh_WithListReuse_ProducesCorrectGeometry()
+        {
+            var root = new GameObject("root");
+            var shader = Shader.Find("LoomGUI/Unlit");
+            var mm = new MaterialManager(shader);
+            var pool = new MirrorPool();
+            var tex = Texture2D.whiteTexture;
+
+            try
+            {
+                // blob A：4 顶点 quad（5×5），位置 (10,20)。
+                var blobA = new FrameBlob(OneMeshNodeBlob(id: 1, x: 10f, y: 20f, w: 5f, h: 5f, sortKey: 0));
+                pool.Sync(blobA, root.transform, mm, tex, null);
+                var meshA = root.transform.GetChild(0).GetComponent<MeshFilter>().sharedMesh;
+
+                // 读回几何，断 UploadMesh 路径产出正确（4 顶点、(0,0)(5,0)(5,5)(0,5) re-based 本地）。
+                var vertsA = meshA.vertices;
+                Assert.AreEqual(4, vertsA.Length, "A: 4 顶点");
+                Assert.AreEqual(new Vector3(0f, 0f, 0f), vertsA[0], "A: v0");
+                Assert.AreEqual(new Vector3(5f, 0f, 0f), vertsA[1], "A: v1");
+                Assert.AreEqual(new Vector3(5f, 5f, 0f), vertsA[2], "A: v2");
+                Assert.AreEqual(new Vector3(0f, 5f, 0f), vertsA[3], "A: v3");
+                var idxA = meshA.triangles;
+                Assert.AreEqual(new[] { 0, 1, 2, 0, 2, 3 }, idxA, "A: 索引两三角");
+                Assert.AreEqual(4, meshA.uv.Length, "A: 4 uv");
+                Assert.AreEqual(new Vector2(0f, 0f), meshA.uv[0], "A: uv0");
+                Assert.AreEqual(new Vector2(1f, 1f), meshA.uv[2], "A: uv2");
+                Assert.AreEqual(4, meshA.colors.Length, "A: 4 色");
+                Assert.AreEqual(new Color(1f, 1f, 1f, 1f), meshA.colors[0], "A: 白色不透明");
+
+                // blob B：更大 quad（20×30），同 id 复用同一 RenderObj（List 被 Clear+refill 到更大尺寸）。
+                // 验 List 扩容后几何仍正确（无残留 A 的旧顶点 / 旧索引）。
+                var blobB = new FrameBlob(OneMeshNodeBlob(id: 1, x: 10f, y: 20f, w: 20f, h: 30f, sortKey: 0));
+                pool.Sync(blobB, root.transform, mm, tex, null);
+                var meshB = root.transform.GetChild(0).GetComponent<MeshFilter>().sharedMesh;
+                var vertsB = meshB.vertices;
+                Assert.AreEqual(4, vertsB.Length, "B: 仍 4 顶点（List refill 不残留）");
+                Assert.AreEqual(new Vector3(20f, 0f, 0f), vertsB[1], "B: v1=(20,0)");
+                Assert.AreEqual(new Vector3(0f, 30f, 0f), vertsB[3], "B: v3=(0,30)");
+                Assert.AreEqual(new[] { 0, 1, 2, 0, 2, 3 }, meshB.triangles, "B: 索引不变");
+
+                // 再回 blob A（List 收缩回 4 顶点小 quad）——验 Clear 后无残留 B 的大尺寸顶点。
+                pool.Sync(blobA, root.transform, mm, tex, null);
+                var meshA2 = root.transform.GetChild(0).GetComponent<MeshFilter>().sharedMesh;
+                var vertsA2 = meshA2.vertices;
+                Assert.AreEqual(4, vertsA2.Length, "A2: 收缩后仍 4 顶点");
+                Assert.AreEqual(new Vector3(5f, 5f, 0f), vertsA2[2], "A2: v2 恢复 (5,5) 无残留");
+            }
+            finally
+            {
                 pool.Clear();
                 mm.Clear();
                 Object.DestroyImmediate(root);
