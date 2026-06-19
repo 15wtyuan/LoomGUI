@@ -115,5 +115,92 @@ namespace LoomGUI.Tests
             Assert.AreEqual(1f, mesh.Verts[2].x);
             Assert.AreEqual(1f, mesh.Verts[2].y);
         }
+
+        /// T6：ClipRect 从 clip 表读 ctx → design rect。镜像 blob.rs::read_clips。
+        /// 构造含 2 entries（ctx=1 rect{10,20,100,50}；ctx=2 rect{5,5,30,40}）的 blob，验线性扫描命中。
+        static byte[] BuildBlobWithClips((uint ctx, float x, float y, float w, float h)[] clips)
+        {
+            var b = new List<byte>();
+            b.AddRange(System.BitConverter.GetBytes(0x4D4F4F4Cu));  // magic
+            b.AddRange(System.BitConverter.GetBytes(2u));           // version
+            b.AddRange(System.BitConverter.GetBytes(1u));           // node_count
+
+            const int HeaderLen = 88;
+            int colOff = HeaderLen;
+            int[] offs = new int[13];
+            int[] elemSize = { 4, 4, 1, 4, 4, 4, 4, 4, 1, 4, 4, 4, 4 };
+            for (int i = 0; i < 13; i++) { offs[i] = colOff; colOff += elemSize[i]; }
+
+            // mesh arena：空（vc=0,ic=0），只为占位（本测不验 mesh）。
+            var arena = new List<byte>();
+            arena.AddRange(System.BitConverter.GetBytes(0));  // vc
+            arena.AddRange(System.BitConverter.GetBytes(0));  // ic
+
+            foreach (var o in offs) b.AddRange(System.BitConverter.GetBytes(o));
+            int meshOff = colOff;
+            b.AddRange(System.BitConverter.GetBytes(meshOff));
+            b.AddRange(System.BitConverter.GetBytes((uint)arena.Count));
+            int textOff = meshOff + arena.Count;
+            b.AddRange(System.BitConverter.GetBytes(textOff));
+            b.AddRange(System.BitConverter.GetBytes(0u));     // text_arena_len
+            int clipOff = textOff;
+            uint clipLen = 4u + (uint)(clips.Length * 20);
+            b.AddRange(System.BitConverter.GetBytes(clipOff));
+            b.AddRange(System.BitConverter.GetBytes(clipLen));
+
+            // 列（1 节点，mask_context=clips[0].ctx 仅占位）
+            uint nodeCtx = clips.Length > 0 ? clips[0].ctx : 0u;
+            b.AddRange(System.BitConverter.GetBytes(1u));     // node_id
+            b.AddRange(System.BitConverter.GetBytes(-1));     // parent
+            b.Add(1);                                         // visible
+            b.AddRange(System.BitConverter.GetBytes(1f));     // alpha
+            b.AddRange(System.BitConverter.GetBytes(0u));     // sort_key
+            b.AddRange(System.BitConverter.GetBytes(0f));     // local_x
+            b.AddRange(System.BitConverter.GetBytes(0f));     // local_y
+            b.AddRange(System.BitConverter.GetBytes(nodeCtx));// mask_context
+            b.Add(0);                                         // payload_kind=Unchanged（跳渲染）
+            b.AddRange(System.BitConverter.GetBytes(0u));     // mesh_off
+            b.AddRange(System.BitConverter.GetBytes(0u));     // mesh_len
+            b.AddRange(System.BitConverter.GetBytes(0u));     // text_off
+            b.AddRange(System.BitConverter.GetBytes(0u));     // text_len
+
+            b.AddRange(arena);
+            // clip 表
+            b.AddRange(System.BitConverter.GetBytes((uint)clips.Length));
+            foreach (var c in clips)
+            {
+                b.AddRange(System.BitConverter.GetBytes(c.ctx));
+                b.AddRange(System.BitConverter.GetBytes(c.x));
+                b.AddRange(System.BitConverter.GetBytes(c.y));
+                b.AddRange(System.BitConverter.GetBytes(c.w));
+                b.AddRange(System.BitConverter.GetBytes(c.h));
+            }
+            return b.ToArray();
+        }
+
+        [Test]
+        public void ClipRect_ReadsEntryByCtx_LinearScan()
+        {
+            var blob = new FrameBlob(BuildBlobWithClips(new[] {
+                (1u, 10f, 20f, 100f, 50f),
+                (2u, 5f, 5f, 30f, 40f),
+            }));
+            Assert.AreEqual(2, blob.ClipCount, "2 clip entries");
+
+            Assert.IsTrue(blob.ClipRect(1u, out float x1, out float y1, out float w1, out float h1));
+            Assert.AreEqual(10f, x1); Assert.AreEqual(20f, y1); Assert.AreEqual(100f, w1); Assert.AreEqual(50f, h1);
+
+            Assert.IsTrue(blob.ClipRect(2u, out float x2, out float y2, out float w2, out float h2));
+            Assert.AreEqual(5f, x2); Assert.AreEqual(5f, y2); Assert.AreEqual(30f, w2); Assert.AreEqual(40f, h2);
+        }
+
+        [Test]
+        public void ClipRect_MissingCtx_ReturnsFalse()
+        {
+            var blob = new FrameBlob(BuildBlobWithClips(new[] { (1u, 10f, 20f, 100f, 50f) }));
+            Assert.IsFalse(blob.ClipRect(999u, out float x, out float y, out float w, out float h),
+                "未入表的 ctx 应返回 false（调用方跳过 SetClipBox）");
+            Assert.AreEqual(0f, x, "miss 时 out 置 0");
+        }
     }
 }

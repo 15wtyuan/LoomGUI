@@ -64,6 +64,29 @@ namespace LoomGUI
         /// clip_count(u32) 在 ClipTableOff 处；clip_table_len(header @84) 含 clip_count 本身。
         public int ClipCount => ClipTableLen >= 4 ? (int)ReadU32(ClipTableOff) : 0;
 
+        /// 读某 clip context 的 design rect（绝对，y-down）。entry 布局：ctx,x,y,w,h 各 4B（20B/entry）。
+        /// mask_context==0 永不入表（无裁剪）；未找到 ctx → found=false（调用方跳过 SetClipBox）。
+        /// 镜像 Rust blob.rs::read_clips。线性扫描（few entries，O(n) 足够）。
+        public bool ClipRect(uint ctx, out float x, out float y, out float w, out float h)
+        {
+            int count = ClipCount;
+            int p = ClipTableOff + 4;   // 跳过 clip_count
+            for (int i = 0; i < count; i++)
+            {
+                if (ReadU32(p) == ctx)
+                {
+                    x = ReadF32(p + 4);
+                    y = ReadF32(p + 8);
+                    w = ReadF32(p + 12);
+                    h = ReadF32(p + 16);
+                    return true;
+                }
+                p += 20;
+            }
+            x = y = w = h = 0f;
+            return false;
+        }
+
         /// 读节点 i 的 mesh（仅 payload_kind==1 时调用）。
         /// mesh arena 段布局：vert_count(u32) idx_count(u32) verts[vc×2 f32] uvs[vc×2 f32]
         ///               colors[vc×4 f32] indices[idx_count u32]。

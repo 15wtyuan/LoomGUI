@@ -27,6 +27,9 @@ namespace LoomGUI
     {
         readonly Dictionary<uint, RenderObj> _pool = new();
         int _lastFontVersion = -1;     // -1 → 首帧必不等，强制建/光栅；之后追 TextRasterizer.FontVersion
+        // §4.4：每 ctx 每帧首次（fgui firstMaterialInFrame 模式）算一次 _ClipBox 并 SetClipBox。
+        // Sync 开头清空；clip 表 entry 少（few ctx），每帧开销可忽略。
+        readonly HashSet<uint> _clipsAppliedThisFrame = new();
 
         /// 当前镜像中的 GO 数量（=pool 中 node_id 数）。测试/调试用。
         public int Count => _pool.Count;
@@ -43,6 +46,8 @@ namespace LoomGUI
 
             // ① 全标 stale
             foreach (var kv in _pool) kv.Value.Stale = true;
+            // §4.4：本帧 clip 应用集清空（per-ctx-per-frame 一次性算 _ClipBox）。
+            _clipsAppliedThisFrame.Clear();
 
             // ② 遍历节点
             int n = blob.NodeCount;
@@ -72,6 +77,20 @@ namespace LoomGUI
 
                 uint maskCtx = blob.MaskContext(i);
                 float nodeAlpha = blob.Alpha(i);
+
+                // §4.4：mc>0 节点本帧首次见 → 读 clip 表 design rect，转 world，算 _ClipBox，
+                // SetClipBox 到该 ctx 的 per-context Material（fgui firstMaterialInFrame）。
+                // 必须在 mm.Get 之前调，使新建 Material 时即带 box；同 ctx 后续节点跳过（HashSet 去重）。
+                if (maskCtx > 0u && _clipsAppliedThisFrame.Add(maskCtx))
+                {
+                    if (blob.ClipRect(maskCtx, out float dx, out float dy, out float dw, out float dh))
+                    {
+                        Vector4 clipBox = ClipMath.ComputeClipBox(root, dx, dy, dw, dh);
+                        mm.SetClipBox(maskCtx, clipBox);
+                    }
+                    // ClipRect miss（表里无该 ctx）→ 不 SetClipBox；material 仍按 mc 建（CLIPPED variant
+                    // + 默认 _ClipBox=0,0,1,1 → 全保留，clip 无效但不崩；正常 flow 表必含所有 mc>0 ctx）。
+                }
 
                 if (kind == 1)
                 {

@@ -24,18 +24,31 @@ namespace LoomGUI
                 mat.mainTexture = texture;
                 mat.SetFloat("_SrcFactor", 5f);   // SrcAlpha
                 mat.SetFloat("_DstFactor", 10f);  // OneMinusSrcAlpha
-                if (_clipBoxByCtx.TryGetValue(maskContext, out var cb))
+                if (maskContext > 0u)
                 {
-                    mat.SetVector("_ClipBox", cb);
+                    // §4.4：ctx>0 → CLIPPED 变体（multi_compile _ CLIPPED，shader 端 discard）。
+                    // mask_context 进 key，每 ctx 独立 Material 实例，keyword 设该实例。
                     mat.EnableKeyword("CLIPPED");
+                    // 若本帧 MirrorPool 已先 SetClipBox（不该发生——Sync 先算 box 再 Get），
+                    // 新建时也带上当前 box；常规路径 SetClipBox 在 Get 后单独调用。
+                    if (_clipBoxByCtx.TryGetValue(maskContext, out var cb))
+                        mat.SetVector("_ClipBox", cb);
                 }
                 _cache[key] = mat;
             }
             return mat;
         }
 
-        /// Phase 2 rect mask 用：注册某 mask_context 的 clip_box。
-        public void SetClipBox(uint maskContext, Vector4 clipBox) => _clipBoxByCtx[maskContext] = clipBox;
+        /// §4.4：注册某 mask_context 的 _ClipBox。先写 _clipBoxByCtx（新建 Material 时 Get 会带上），
+        /// 再把已缓存 Material 实例的 _ClipBox 同步刷新（每 ctx 一实例，fgui group=clipId 语义）。
+        /// 两路都覆盖：SetClipBox 既可在 Get 前（首帧：box 进 dict，Get 建材质时读取）也可在 Get 后
+        /// （后续帧：材质已存，直接 SetVector 刷新）。故调用顺序对 MirrorPool 不构成约束。
+        public void SetClipBox(uint maskContext, Vector4 clipBox)
+        {
+            _clipBoxByCtx[maskContext] = clipBox;
+            foreach (var kv in _cache)
+                if (kv.Key.Ctx == maskContext) kv.Value.SetVector("_ClipBox", clipBox);
+        }
 
         public void Clear()
         {
@@ -55,6 +68,7 @@ namespace LoomGUI
             readonly Texture _tex;
             readonly uint _ctx;
             public Key(int p, Texture t, uint c) { _program = p; _tex = t; _ctx = c; }
+            public uint Ctx => _ctx;   // SetClipBox 按 ctx 反查已缓存 material（独立于 program/tex）。
             public override int GetHashCode() => System.HashCode.Combine(_program, _tex, (int)_ctx);
             public override bool Equals(object o) => o is Key k
                 && k._program == _program
