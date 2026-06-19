@@ -12,6 +12,9 @@ use ttf_parser::Face;
 #[derive(Debug, Clone, Serialize)]
 pub struct Glyph {
     pub glyph_id: u16,
+    /// Unicode 码点（v1a Phase 2 新增：Unity `Font.GetCharacterInfo(char)` 按码点查，
+    /// 非 ttf glyph_id）。`measure_text` 遍历 `content.chars()` 时 `c as u32` 填入。
+    pub codepoint: u32,
     /// pen x（已累加 advance + 已应用 align 偏移）。
     pub x: f32,
     /// 行内 pen y（= line_y，未加 baseline）。
@@ -252,6 +255,7 @@ pub fn measure_text(
                 .unwrap_or((0.0, 0.0));
             glyphs.push(Glyph {
                 glyph_id: gid.0,
+                codepoint: ch as u32,
                 x: pen_x,
                 y: line_y,
                 bearing_x: bx,

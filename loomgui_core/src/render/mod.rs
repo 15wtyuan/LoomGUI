@@ -17,6 +17,7 @@ use node::*;
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+use taffy::style::LengthPercentage;
 
 /// 遍历 Scene → `Vec<RenderNode>`。
 ///
@@ -79,7 +80,7 @@ pub fn build_render_nodes(scene: &Scene, font: &Font) -> Vec<RenderNode> {
             }
             NodeKind::Text { content } => {
                 let s = &n.style;
-                let layout = measure_text(
+                let mut layout = measure_text(
                     content,
                     s.font_size,
                     s.line_height,
@@ -89,6 +90,17 @@ pub fn build_render_nodes(scene: &Scene, font: &Font) -> Vec<RenderNode> {
                     Some(rect.w),
                     font,
                 );
+                // §4.3：pen 必须 GO-local（相对节点 GO 原点 = layout_rect 原点）。
+                // measure_text 产 glyph 坐标相对 content-box 原点（border+padding 内）。
+                // 烤 content 偏移 = (border_left + padding_left, border_top + padding_top)
+                // 进每个 glyph 的 (x, y)，让序列化的 pen_x/pen_y 直接可摆（Unity 不 re-base）。
+                let off_x = resolve_lp(s.taffy_style.border.left)
+                    + resolve_lp(s.taffy_style.padding.left);
+                let off_y = resolve_lp(s.taffy_style.border.top)
+                    + resolve_lp(s.taffy_style.padding.top);
+                if off_x != 0.0 || off_y != 0.0 {
+                    bake_content_offset(&mut layout, off_x, off_y);
+                }
                 rn.payload = NodePayload::Text {
                     layout,
                     font_size: s.font_size,
@@ -110,6 +122,33 @@ fn hash_str(s: &str) -> u32 {
     let mut h = DefaultHasher::new();
     s.hash(&mut h);
     (h.finish() & 0xFFFF) as u32
+}
+
+/// 把 taffy `LengthPercentage` 解析为 px。
+///
+/// - `Length(v)` → v。
+/// - `Percent(_)` → 0.0。**已知缺口**（记 ledger）：渲染阶段无父 content-box 宽度上下文，
+///   无法解析百分比的 padding/border。v0 `style::mapping::parse_four` 对 padding/border
+///   只产 `Length`（裸数字/px），故实际不会命中 Percent 分支；若未来 CSS 允许百分比
+///   padding/border，需在 layout 阶段把解析结果写回 ResolvedStyle（v1b 补）。
+fn resolve_lp(lp: LengthPercentage) -> f32 {
+    match lp {
+        LengthPercentage::Length(v) => v,
+        LengthPercentage::Percent(_) => 0.0,
+    }
+}
+
+/// 烤 content 偏移进 TextLayout 每个 glyph 的 (x, y)（pen = GO-local）。
+/// layout 是刚由 measure_text 产的 owned 值，直接 mutate。
+fn bake_content_offset(layout: &mut crate::text::layout::TextLayout, off_x: f32, off_y: f32) {
+    for line in &mut layout.lines {
+        for run in &mut line.runs {
+            for g in &mut run.glyphs {
+                g.x += off_x;
+                g.y += off_y;
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -268,6 +307,68 @@ mod tests {
                 assert_eq!(*font_size, 16.0);
                 assert_eq!(*program, 1);
                 assert!(!layout.lines.is_empty());
+            }
+            _ => panic!("expected Text payload"),
+        }
+    }
+
+    /// §4.3：pen 必须 GO-local——measure_text 产 content-box 相对坐标，
+    /// build_render_nodes 烤 (border_left+padding_left, border_top+padding_top) 偏移。
+    /// 设 padding=4px、border=2px → content 偏移 (6, 6)，每 glyph 的 (x,y) 应 +6。
+    #[test]
+    fn build_text_bakes_content_offset_into_glyph_pen() {
+        let font = match test_font() {
+            Some(f) => f,
+            None => {
+                eprintln!("skip: no test font");
+                return;
+            }
+        };
+        let mut scene = Scene {
+            roots: vec![NodeId(0)],
+            nodes: vec![],
+        };
+        let mut n = Node::default();
+        n.id = NodeId(0);
+        n.kind = NodeKind::Text {
+            content: "AB".into(),
+        };
+        n.style.font_size = 16.0;
+        // padding/border 四向 4px/2px → content 偏移 left=2+4=6, top=2+4=6。
+        n.style.taffy_style.padding = taffy::geometry::Rect {
+            left: taffy::style::LengthPercentage::Length(4.0),
+            right: taffy::style::LengthPercentage::Length(4.0),
+            top: taffy::style::LengthPercentage::Length(4.0),
+            bottom: taffy::style::LengthPercentage::Length(4.0),
+        };
+        n.style.taffy_style.border = taffy::geometry::Rect {
+            left: taffy::style::LengthPercentage::Length(2.0),
+            right: taffy::style::LengthPercentage::Length(2.0),
+            top: taffy::style::LengthPercentage::Length(2.0),
+            bottom: taffy::style::LengthPercentage::Length(2.0),
+        };
+        n.layout_rect = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 100.0,
+            h: 20.0,
+        };
+        scene.nodes.push(n);
+
+        let rns = build_render_nodes(&scene, &font);
+        match &rns[0].payload {
+            NodePayload::Text { layout, .. } => {
+                let g = &layout.lines[0].runs[0].glyphs;
+                assert_eq!(g.len(), 2, "AB = 2 glyphs");
+                // 每 glyph 的 y 原 = line.y(0)，+content offset(6) = 6.0。
+                assert_eq!(g[0].y, 6.0, "pen_y 烤 content 偏移 (border+padding top=6)");
+                assert_eq!(g[1].y, 6.0);
+                // 首 glyph x 原 = 0（Left align），+6 = 6.0；次 glyph x 应 > 6（advance）。
+                assert_eq!(g[0].x, 6.0, "首 glyph pen_x = align 偏移0 + content 偏移6");
+                assert!(g[1].x > 6.0, "次 glyph pen_x > 6（含 advance + 偏移）");
+                // codepoint 也顺带验（T3 Step 1）。
+                assert_eq!(g[0].codepoint, b'A' as u32);
+                assert_eq!(g[1].codepoint, b'B' as u32);
             }
             _ => panic!("expected Text payload"),
         }

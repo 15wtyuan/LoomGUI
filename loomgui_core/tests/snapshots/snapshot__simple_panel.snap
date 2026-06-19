@@ -1,5 +1,6 @@
 ---
 source: loomgui_core/tests/snapshot.rs
+assertion_line: 47
 expression: json
 ---
 [
@@ -240,6 +241,7 @@ expression: json
                   "glyphs": [
                     {
                       "glyph_id": 55,
+                      "codepoint": 84,
                       "x": 0.0,
                       "y": 0.0,
                       "bearing_x": -0.046875,
@@ -247,6 +249,7 @@ expression: json
                     },
                     {
                       "glyph_id": 76,
+                      "codepoint": 105,
                       "x": 9.28125,
                       "y": 0.0,
                       "bearing_x": 1.5078125,
@@ -254,6 +257,7 @@ expression: json
                     },
                     {
                       "glyph_id": 87,
+                      "codepoint": 116,
                       "x": 13.7265625,
                       "y": 0.0,
                       "bearing_x": 0.4296875,
@@ -261,6 +265,7 @@ expression: json
                     },
                     {
                       "glyph_id": 79,
+                      "codepoint": 108,
                       "x": 20.0,
                       "y": 0.0,
                       "bearing_x": 1.5078125,
@@ -268,6 +273,7 @@ expression: json
                     },
                     {
                       "glyph_id": 72,
+                      "codepoint": 101,
                       "x": 24.445312,
                       "y": 0.0,
                       "bearing_x": 0.8828125,
@@ -428,6 +434,7 @@ expression: json
                   "glyphs": [
                     {
                       "glyph_id": 50,
+                      "codepoint": 79,
                       "x": 0.0,
                       "y": 0.0,
                       "bearing_x": 0.8984375,
@@ -435,6 +442,7 @@ expression: json
                     },
                     {
                       "glyph_id": 46,
+                      "codepoint": 75,
                       "x": 12.59375,
                       "y": 0.0,
                       "bearing_x": 1.5703125,

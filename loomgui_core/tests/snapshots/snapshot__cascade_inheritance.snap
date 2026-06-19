@@ -1,5 +1,6 @@
 ---
 source: loomgui_core/tests/snapshot.rs
+assertion_line: 61
 expression: json
 ---
 [
@@ -141,6 +142,7 @@ expression: json
                   "glyphs": [
                     {
                       "glyph_id": 75,
+                      "codepoint": 104,
                       "x": 0.0,
                       "y": 0.0,
                       "bearing_x": 1.8164062,
@@ -148,6 +150,7 @@ expression: json
                     },
                     {
                       "glyph_id": 76,
+                      "codepoint": 105,
                       "x": 12.675781,
                       "y": 0.0,
                       "bearing_x": 1.8847656,
