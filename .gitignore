@@ -22,6 +22,7 @@ v0_snapshot.json
 *.aab
 *.unityproj
 *.sln
+*.slnx
 *.csproj
 *.user
 *.pidb
@@ -37,6 +38,7 @@ crashlytics-build.properties
 # ===== Rust↔Unity 产物 =====
 # csbindgen 生成的 C# 绑定（由 Rust 侧生成，不入库）
 **/LoomGUI*Bindings*.cs
+**/LoomGUI*Bindings*.cs.meta
 # native 库产物（按需，若想入库 prebuilt 可注释掉）
 /**/*.dll
 /**/*.dylib
