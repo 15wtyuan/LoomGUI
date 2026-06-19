@@ -17,7 +17,7 @@ namespace LoomGUI
 
         public Material Get(int program, Texture texture, uint maskContext)
         {
-            var key = new Key(program, texture ? texture.GetInstanceID() : 0, maskContext);
+            var key = new Key(program, texture ? texture.GetEntityId() : 0, maskContext);
             if (!_cache.TryGetValue(key, out var mat))
             {
                 mat = new Material(_shader);
