@@ -4,8 +4,11 @@ using UnityEngine;
 namespace LoomGUI
 {
     /// 渲染树 → GameObject 镜像 diff（§14.6）。每帧 O(n)：标 stale → 遍历命中清 stale/更新 → 余销毁。
-    /// GO 按 parent_id 巢状；localPosition=(local_x,local_y)；sortingOrder=sort_key。
-    /// Mesh 顶点已由 Rust（Task 2 blob.rs）re-base 到节点本地空间，此处按 (x,y,0) 上传。
+    /// flatten：所有 GO 挂 root（§4.2）；localPosition=(local_x,local_y) 绝对 design；sortingOrder=sort_key。
+    /// blob local_x/local_y 是绝对 design（layout/mod.rs::write_back 递归累加父 origin）→
+    /// 巢状 + 绝对 localPosition 会双计父；flatten 后 world = root(绝对) = 正确，与 clip（绝对 design→root）一致。
+    /// parent_id 仍在 blob 列但 Phase 2 渲染不用（v1c 事件再用）。
+    /// Mesh 顶点已由 Rust（blob.rs）re-base 到节点本地空间，此处按 (x,y,0) 上传。
     /// Phase 1：只渲染 payload_kind=1（Mesh）；Text(2)/Unchanged(0) 跳过。
     sealed class RenderObj
     {
@@ -50,11 +53,10 @@ namespace LoomGUI
                 }
                 ro.Stale = false;
 
-                // 巢状：SetParent 按 parent_id
-                Transform parent = root;
-                int pid = blob.ParentId(i);
-                if (pid >= 0 && _pool.TryGetValue((uint)pid, out var pro)) parent = pro.Go.transform;
-                ro.Go.transform.SetParent(parent, false);
+                // flatten（§4.2）：所有节点挂 root，localPosition=绝对 design（避免巢状双计父）。
+                // blob local_x/local_y 是绝对 design 坐标；root scale=(sf,-sf,sf) 映射 design→world。
+                // parent_id 仍在 blob 列但 Phase 2 渲染不用（v1c 事件再用）。
+                ro.Go.transform.SetParent(root, false);
                 ro.Go.transform.localPosition = new Vector3(blob.LocalX(i), blob.LocalY(i), 0f);
                 ro.Go.transform.localScale = Vector3.one;
 
