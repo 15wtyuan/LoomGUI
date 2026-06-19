@@ -116,6 +116,14 @@ pub extern "C" fn loomgui_stage_borrow_frame(
         return std::ptr::null();
     }
     let sh = unsafe { &*h };
+    // 未 tick 过：frame_blob 是空 Vec，as_ptr() 返回非空悬挂哨兵（违反"未 tick→null"契约）。
+    // 显式判空 → null + len=0，与 null-handle 分支一致。
+    if sh.frame_blob.is_empty() {
+        if !out_len.is_null() {
+            unsafe { *out_len = 0 };
+        }
+        return std::ptr::null();
+    }
     if !out_len.is_null() {
         unsafe { *out_len = sh.frame_blob.len() };
     }
@@ -183,6 +191,20 @@ mod abi_tests {
         unsafe {
             assert_eq!(&*(ptr as *const u8), &0x4Cu8); // magic 第一字节 'L'
         }
+        loomgui_stage_free(h);
+    }
+
+    /// 契约：从未 tick 过的句柄 borrow_frame 必须返回 null + len=0
+    /// （空 Vec::as_ptr() 是非空悬挂哨兵，Fix-1 显式判空锁住"未 tick→null"契约）。
+    #[test]
+    fn borrow_frame_never_ticked_returns_null() {
+        let (fp, fplen) = font_path();
+        let h = loomgui_stage_new(fp.as_ptr() as *const u8, fplen, 200.0, 100.0);
+        assert!(!h.is_null());
+        let mut len = 1usize; // 故意非 0，确认被覆写为 0
+        let ptr = loomgui_stage_borrow_frame(h, &mut len);
+        assert!(ptr.is_null(), "未 tick 过 borrow_frame 必须 null");
+        assert_eq!(len, 0, "未 tick 过 out_len 必须 0");
         loomgui_stage_free(h);
     }
 }

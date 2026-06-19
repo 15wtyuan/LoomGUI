@@ -125,6 +125,9 @@ namespace LoomGUI
         void ConfigureTransforms()
         {
             float sw = Screen.width, sh = Screen.height;
+            // 注：这是 shrink-to-fit（取较小缩放比，保证完整可见 + 留白 letterbox），
+            // ≈ CanvasScaler MatchWidthOrHeight 在 match≈0.5 但带 letterboxing，
+            // 并非字面意义的 MatchWidthOrHeight 插值缩放。v1d responsive 再重审（可能改为 cover/contain 选项）。
             float sf = Mathf.Min(sw / _designSize.x, sh / _designSize.y);
 
             transform.localScale = new Vector3(sf, -sf, sf);
