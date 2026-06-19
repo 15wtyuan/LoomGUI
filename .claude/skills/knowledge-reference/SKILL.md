@@ -12,6 +12,8 @@ description: >
 
 LoomGUI 项目实操知识库：架构索引、各层机制、依赖 API 适配踩坑、AI 可预测性约束、踩坑记录、调试技巧、已知问题。
 
+> **★ 工作准则（牢记）：动任何机制前先对照 fgui 源码。** LoomGUI 的渲染/对象模型/批合/事件/动画/资源管线全面借鉴 FairyGUI（参考实现 `temp/FairyGUI-unity/`）。**实现任何功能前**先 grep/读 fgui 对应文件看它怎么做的，再定 LoomGUI 设计——避免走歪。本 session 因没先看 fgui 的 sortingOrder/rect-mask/MaterialManager，初版设计走了弯路（误用 z 排序、误以为 rect mask 要独立 GO、绘制序想复杂）。对照时注意 fgui 是 Built-in RP（URP/shader/材质 API 要适配，见 §3.5/3.6）。
+
 ## 0. 本文件 vs docs 分工（先读这个）
 
 | 文档 | 性质 | 何时读 |
