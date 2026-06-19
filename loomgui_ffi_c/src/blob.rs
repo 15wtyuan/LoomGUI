@@ -63,13 +63,13 @@ pub fn build_blob(nodes: &[RenderNode]) -> Vec<u8> {
                     mesh_arena.extend_from_slice(&u[1].to_le_bytes());
                 }
                 for c in colors {
-                    // §4.2b：shader 只做 tex2D * v.color，tint×alpha 必须 baked 进顶点色。
-                    // out_color = color × color_tint（逐分量），alpha 分量再 × rn.alpha。
-                    let tint = &rn.color_tint;
-                    let o0 = c[0] * tint[0];
-                    let o1 = c[1] * tint[1];
-                    let o2 = c[2] * tint[2];
-                    let o3 = c[3] * tint[3] * rn.alpha;
+                    // §4.2b：shader 做 tex2D * v.color。v0 已把 background_color 烤进 mesh
+                    // colors（背景色块=bg-color，图片=白）。color_tint(style.color)是前景/文本色，
+                    // 不该乘背景——默认黑 color_tint 会把红背景涂黑。仅 × node opacity(alpha)。
+                    let o0 = c[0];
+                    let o1 = c[1];
+                    let o2 = c[2];
+                    let o3 = c[3] * rn.alpha;
                     mesh_arena.extend_from_slice(&o0.to_le_bytes());
                     mesh_arena.extend_from_slice(&o1.to_le_bytes());
                     mesh_arena.extend_from_slice(&o2.to_le_bytes());
@@ -212,12 +212,12 @@ mod tests {
         assert_eq!(view.parent_id(0), -1);
     }
 
-    /// §4.2b：mesh 顶点色须 baked color_tint×alpha；shader 只做 tex2D*v.color。
-    /// tint=[0.5,0.5,0.5,1.0] alpha=0.5 bg=[1,0,0,1]
-    /// → 逐分量 out_rgb = bg.rgb × tint.rgb，out_a = bg.a × tint.a × alpha
-    /// → 首顶点色 = [1*0.5, 0*0.5, 0*0.5, 1*1.0*0.5] = [0.5, 0.0, 0.0, 0.5]。
+    /// §4.2b：mesh 顶点色 = background_color（**不乘 color_tint**——那是前景/文本色，
+    /// 默认黑，乘了会把红背景涂黑），仅 alpha 分量 × node opacity。shader 做 tex2D*v.color。
+    /// tint=[0.5,0.5,0.5,1.0]（应被忽略）alpha=0.5 bg=[1,0,0,1]
+    /// → 首顶点色 = [1.0, 0.0, 0.0, 1.0×0.5] = [1.0, 0.0, 0.0, 0.5]（红，半透明）。
     #[test]
-    fn mesh_colors_bake_tint_times_alpha() {
+    fn mesh_colors_bake_alpha_not_tint() {
         let blob = build_blob(&[mesh_node_tinted(
             0,
             [0.5, 0.5, 0.5, 1.0],
@@ -227,9 +227,9 @@ mod tests {
         let view = TestView::parse(&blob);
         let colors = view.mesh_colors(0);
         assert_eq!(colors.len(), 4);
-        // 首顶点色 = background × color_tint（逐分量），alpha 分量再 × rn.alpha。
-        assert_eq!(colors[0], [0.5, 0.0, 0.0, 0.5]);
-        // alpha 列保留原 opacity 值（不随烘焙变）。
+        // 首顶点色 = background（rgb 不乘 color_tint），alpha × rn.opacity。
+        assert_eq!(colors[0], [1.0, 0.0, 0.0, 0.5]);
+        // alpha 列保留原 opacity 值。
         let alpha_o = view.col_off[3];
         let alpha = f32::from_le_bytes(view.buf[alpha_o..alpha_o + 4].try_into().unwrap());
         assert_eq!(alpha, 0.5);
