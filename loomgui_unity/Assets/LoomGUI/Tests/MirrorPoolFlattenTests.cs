@@ -34,10 +34,13 @@ namespace LoomGUI.Tests
             b.AddRange(System.BitConverter.GetBytes(2u));
 
             const int HeaderLen = 12 + 13 * 4 + 2 * 4 + 2 * 4 + 2 * 4; // = 88
+            const int NodeCount = 2;
             int colOff = HeaderLen;
             int[] offs = new int[13];
             int[] elemSize = { 4, 4, 1, 4, 4, 4, 4, 4, 1, 4, 4, 4, 4 };
-            for (int i = 0; i < 13; i++) { offs[i] = colOff; colOff += elemSize[i]; }
+            // SOA（列优先，镜像 blob.rs/FrameBlob）：每列跨 NodeCount×elemSize 字节，列内 node0/node1 紧挨。
+            // 旧版按 1 节点 elemSize 递进 + AoS 写数据 → 多节点读串列（SetTriangles idx 错），已修。
+            for (int i = 0; i < 13; i++) { offs[i] = colOff; colOff += NodeCount * elemSize[i]; }
             int arenaOff = colOff;
 
             // mesh arena：2 个 mesh，每个 4 verts / 6 idx（顶点 re-base 到本地：(0,0)(w,0)(w,h)(0,h)）。
@@ -88,35 +91,44 @@ namespace LoomGUI.Tests
             b.AddRange(System.BitConverter.GetBytes(clipOff));               // clip_table_off
             b.AddRange(System.BitConverter.GetBytes(4u));                    // clip_table_len（仅 clip_count）
 
-            // 列数据 node 0 = parent
-            b.AddRange(System.BitConverter.GetBytes(parentId));              // node_id
-            b.AddRange(System.BitConverter.GetBytes(-1));                    // parent_id（无父）
-            b.Add(1);                                                        // visible
-            b.AddRange(System.BitConverter.GetBytes(1f));                    // alpha
-            b.AddRange(System.BitConverter.GetBytes(sortKey));               // sort_key
-            b.AddRange(System.BitConverter.GetBytes(px));                    // local_x
-            b.AddRange(System.BitConverter.GetBytes(py));                    // local_y
-            b.AddRange(System.BitConverter.GetBytes(0u));                    // mask_context
-            b.Add(1);                                                        // payload_kind = Mesh
-            b.AddRange(System.BitConverter.GetBytes(0u));                    // mesh_off
-            b.AddRange(System.BitConverter.GetBytes((uint)parentMeshLen));   // mesh_len
-            b.AddRange(System.BitConverter.GetBytes(0u));                    // text_off
-            b.AddRange(System.BitConverter.GetBytes(0u));                    // text_len
-
-            // 列数据 node 1 = child
-            b.AddRange(System.BitConverter.GetBytes(childId));               // node_id
-            b.AddRange(System.BitConverter.GetBytes((int)parentId));         // parent_id = parent（链）
-            b.Add(1);                                                        // visible
-            b.AddRange(System.BitConverter.GetBytes(1f));                    // alpha
-            b.AddRange(System.BitConverter.GetBytes(sortKey));               // sort_key
-            b.AddRange(System.BitConverter.GetBytes(cx));                    // local_x
-            b.AddRange(System.BitConverter.GetBytes(cy));                    // local_y
-            b.AddRange(System.BitConverter.GetBytes(0u));                    // mask_context
-            b.Add(1);                                                        // payload_kind = Mesh
-            b.AddRange(System.BitConverter.GetBytes((uint)childMeshOff));    // mesh_off
-            b.AddRange(System.BitConverter.GetBytes((uint)childMeshLen));    // mesh_len
-            b.AddRange(System.BitConverter.GetBytes(0u));                    // text_off
-            b.AddRange(System.BitConverter.GetBytes(0u));                    // text_len
+            // 列数据 SOA（列优先，镜像 blob.rs/FrameBlob）：每列先 node0 再 node1。列序同 elemSize。
+            // col 0 node_id
+            b.AddRange(System.BitConverter.GetBytes(parentId));              // node0
+            b.AddRange(System.BitConverter.GetBytes(childId));               // node1
+            // col 1 parent_id
+            b.AddRange(System.BitConverter.GetBytes(-1));                    // node0 无父
+            b.AddRange(System.BitConverter.GetBytes((int)parentId));         // node1 链 parent
+            // col 2 visible
+            b.Add(1); b.Add(1);
+            // col 3 alpha
+            b.AddRange(System.BitConverter.GetBytes(1f));
+            b.AddRange(System.BitConverter.GetBytes(1f));
+            // col 4 sort_key
+            b.AddRange(System.BitConverter.GetBytes(sortKey));
+            b.AddRange(System.BitConverter.GetBytes(sortKey));
+            // col 5 local_x
+            b.AddRange(System.BitConverter.GetBytes(px));                    // node0
+            b.AddRange(System.BitConverter.GetBytes(cx));                    // node1
+            // col 6 local_y
+            b.AddRange(System.BitConverter.GetBytes(py));
+            b.AddRange(System.BitConverter.GetBytes(cy));
+            // col 7 mask_context
+            b.AddRange(System.BitConverter.GetBytes(0u));
+            b.AddRange(System.BitConverter.GetBytes(0u));
+            // col 8 payload_kind
+            b.Add(1); b.Add(1);                                              // Mesh
+            // col 9 mesh_off
+            b.AddRange(System.BitConverter.GetBytes(0u));                    // node0
+            b.AddRange(System.BitConverter.GetBytes((uint)childMeshOff));    // node1
+            // col 10 mesh_len
+            b.AddRange(System.BitConverter.GetBytes((uint)parentMeshLen));
+            b.AddRange(System.BitConverter.GetBytes((uint)childMeshLen));
+            // col 11 text_off
+            b.AddRange(System.BitConverter.GetBytes(0u));
+            b.AddRange(System.BitConverter.GetBytes(0u));
+            // col 12 text_len
+            b.AddRange(System.BitConverter.GetBytes(0u));
+            b.AddRange(System.BitConverter.GetBytes(0u));
 
             b.AddRange(arena);
             b.AddRange(System.BitConverter.GetBytes(0u));                    // clip_count = 0
