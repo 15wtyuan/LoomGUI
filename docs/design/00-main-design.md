@@ -320,7 +320,7 @@ taffy 对"尺寸取决于内容"的节点回调 `MeasureFunc(known_dimensions) -
 
 ### 8.1 坐标系（核心唯一真相源）
 - 核心统一**左上原点、y 向下**。**核心代码不出现任何 `height-y` 翻转**。
-- 翻转是**后端根 Stage 一次性 y-flip 变换**：Unity 根 GameObject 挂 (1,-1,1) scale（fgui 同款）；Godot flip 矩阵=单位矩阵（2D 本就左上 y 下）。
+- 翻转是**后端根 Stage 一次性 y-flip 变换**：Unity 根 GameObject 挂 (1,-1,1) scale（LoomGUI 自选；比 fgui 逐节点 `y=-y` 取负更干净——只翻一次；副作用：winding 反转 → Unity shader 须 `Cull Off`）；Godot flip 矩阵=单位矩阵（2D 本就左上 y 下）。
 - 后端镜像时所有坐标都在核心坐标系下，由根 Stage 统一翻转，不在 mesh/输入/命中分别翻转。
 
 ### 8.2 几何生成：VertexBuffer + MeshFactory（在核心）
@@ -622,7 +622,7 @@ csbindgen 是为 Unity/IL2CPP 设计的主流绑定生成器（Cysharp MagicPhys
 ### 14.4 Unity 后端职责
 1. MonoBehaviour 驱动：每帧 `set_input` + `tick(dt)` → 取 `render_nodes` → 同步镜像。
 2. **GameObject 镜像池**：`node_id → GameObject`，diff 渲染树增删复用；每节点 `MeshFilter+MeshRenderer`。
-3. **同步**：上传 mesh 到 MeshFilter（非文本）；文本据 TextLayout 光栅化+拼 quad；按 `(program+flags+blend+texture+mask_context)` 从 DrawState 缓存（MaterialManager）取/建 Material；设 transform、sortingOrder、blend/stencil、clip uniform。rect 遮罩用 stencil（Unity 的实现选择）。
+3. **同步**：上传 mesh 到 MeshFilter（非文本）；文本据 TextLayout 光栅化+拼 quad；按 `(program+flags+blend+texture+mask_context)` 从 DrawState 缓存（MaterialManager）取/建 Material；设 transform、sortingOrder、blend/stencil、clip uniform。rect 遮罩用 shader uniform `_ClipBox` discard（§8.6；shape mask 才用 stencil）。
 4. 输入采集：Unity 新/旧输入系统 → 扁平事件（含 IME character）。
 5. 资源加载：Addressables/YooAsset → 纹理上传 → 注册 TexId。字体用包声明的同一 ttf。
 6. 坐标：根 Stage GameObject 挂 (1,-1,1) scale 一次性 y-flip。
