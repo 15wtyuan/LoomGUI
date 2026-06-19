@@ -1,0 +1,8 @@
+{
+    "name": "LoomGUI.Runtime",
+    "rootNamespace": "LoomGUI",
+    "references": ["LoomGUI.Bindings"],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": true
+}
