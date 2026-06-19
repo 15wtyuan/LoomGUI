@@ -63,10 +63,17 @@ pub fn build_blob(nodes: &[RenderNode]) -> Vec<u8> {
                     mesh_arena.extend_from_slice(&u[1].to_le_bytes());
                 }
                 for c in colors {
-                    mesh_arena.extend_from_slice(&c[0].to_le_bytes());
-                    mesh_arena.extend_from_slice(&c[1].to_le_bytes());
-                    mesh_arena.extend_from_slice(&c[2].to_le_bytes());
-                    mesh_arena.extend_from_slice(&c[3].to_le_bytes());
+                    // §4.2b：shader 只做 tex2D * v.color，tint×alpha 必须 baked 进顶点色。
+                    // out_color = color × color_tint（逐分量），alpha 分量再 × rn.alpha。
+                    let tint = &rn.color_tint;
+                    let o0 = c[0] * tint[0];
+                    let o1 = c[1] * tint[1];
+                    let o2 = c[2] * tint[2];
+                    let o3 = c[3] * tint[3] * rn.alpha;
+                    mesh_arena.extend_from_slice(&o0.to_le_bytes());
+                    mesh_arena.extend_from_slice(&o1.to_le_bytes());
+                    mesh_arena.extend_from_slice(&o2.to_le_bytes());
+                    mesh_arena.extend_from_slice(&o3.to_le_bytes());
                 }
                 for ix in indices {
                     mesh_arena.extend_from_slice(&(*ix as u32).to_le_bytes());
@@ -146,6 +153,35 @@ mod tests {
         }
     }
 
+    /// 同 mesh_node 但可指定 color_tint / alpha / vertex colors（用于 §4.2b tint×alpha 烘焙测试）。
+    fn mesh_node_tinted(
+        id: u32,
+        tint: [f32; 4],
+        alpha: f32,
+        bg: [f32; 4],
+    ) -> RenderNode {
+        RenderNode {
+            node_id: id,
+            parent_id: None,
+            visible: true,
+            alpha,
+            grayed: false,
+            color_tint: tint,
+            transform: NodeTransform::default(),
+            blend: BlendMode::Normal,
+            mask_context: MaskContext(0),
+            sort_key: id,
+            payload: NodePayload::Mesh {
+                verts: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+                uvs: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+                colors: vec![bg; 4],
+                indices: vec![0, 1, 2, 0, 2, 3],
+                texture: 0,
+                program: 0,
+            },
+        }
+    }
+
     #[test]
     fn build_blob_has_magic_and_count() {
         let blob = build_blob(&[mesh_node(0, None, 10.0, 20.0, 5.0, 5.0)]);
@@ -174,6 +210,29 @@ mod tests {
         let blob = build_blob(&[mesh_node(0, None, 0.0, 0.0, 1.0, 1.0)]);
         let view = TestView::parse(&blob);
         assert_eq!(view.parent_id(0), -1);
+    }
+
+    /// §4.2b：mesh 顶点色须 baked color_tint×alpha；shader 只做 tex2D*v.color。
+    /// tint=[0.5,0.5,0.5,1.0] alpha=0.5 bg=[1,0,0,1]
+    /// → 逐分量 out_rgb = bg.rgb × tint.rgb，out_a = bg.a × tint.a × alpha
+    /// → 首顶点色 = [1*0.5, 0*0.5, 0*0.5, 1*1.0*0.5] = [0.5, 0.0, 0.0, 0.5]。
+    #[test]
+    fn mesh_colors_bake_tint_times_alpha() {
+        let blob = build_blob(&[mesh_node_tinted(
+            0,
+            [0.5, 0.5, 0.5, 1.0],
+            0.5,
+            [1.0, 0.0, 0.0, 1.0],
+        )]);
+        let view = TestView::parse(&blob);
+        let colors = view.mesh_colors(0);
+        assert_eq!(colors.len(), 4);
+        // 首顶点色 = background × color_tint（逐分量），alpha 分量再 × rn.alpha。
+        assert_eq!(colors[0], [0.5, 0.0, 0.0, 0.5]);
+        // alpha 列保留原 opacity 值（不随烘焙变）。
+        let alpha_o = view.col_off[3];
+        let alpha = f32::from_le_bytes(view.buf[alpha_o..alpha_o + 4].try_into().unwrap());
+        assert_eq!(alpha, 0.5);
     }
 
     // —— 测试用解析器（镜像 C# FrameBlob 逻辑，验 Rust 布局正确）——
@@ -206,15 +265,34 @@ mod tests {
         }
         /// 读节点 i 的 mesh 顶点（arena 段：vert_count, idx_count, verts[], uvs[], colors[], indices[]）。
         fn mesh_verts(&self, i: usize) -> Vec<[f32; 2]> {
-            let seg = self.arena_off + u32::from_le_bytes(
-                self.buf[self.col_off[9] + i * 4..][0..4].try_into().unwrap()) as usize; // mesh_off
-            let vc = u32::from_le_bytes(self.buf[seg..seg + 4].try_into().unwrap()) as usize;
-            let mut p = seg + 8; // 跳 vert_count + idx_count
+            let (seg, vc) = self.mesh_seg(i);
+            let mut p = seg + 8; // 跳 vert_count + idx_count，直接读 verts[]
             (0..vc).map(|_| {
                 let vx = f32::from_le_bytes(self.buf[p..p + 4].try_into().unwrap()); p += 4;
                 let vy = f32::from_le_bytes(self.buf[p..p + 4].try_into().unwrap()); p += 4;
                 [vx, vy]
             }).collect()
+        }
+        /// 读节点 i 的 mesh 顶点色（§4.2b：已 baked color_tint×alpha）。
+        fn mesh_colors(&self, i: usize) -> Vec<[f32; 4]> {
+            let (seg, vc) = self.mesh_seg(i);
+            let mut p = seg + 8;
+            // verts + uvs 各 vc*2 f32。
+            p += vc * 2 * 4 * 2;
+            (0..vc).map(|_| {
+                let r = f32::from_le_bytes(self.buf[p..p + 4].try_into().unwrap()); p += 4;
+                let g = f32::from_le_bytes(self.buf[p..p + 4].try_into().unwrap()); p += 4;
+                let b = f32::from_le_bytes(self.buf[p..p + 4].try_into().unwrap()); p += 4;
+                let a = f32::from_le_bytes(self.buf[p..p + 4].try_into().unwrap()); p += 4;
+                [r, g, b, a]
+            }).collect()
+        }
+        /// 返回节点 i 的 mesh 段起始偏移 + vert_count。
+        fn mesh_seg(&self, i: usize) -> (usize, usize) {
+            let seg = self.arena_off + u32::from_le_bytes(
+                self.buf[self.col_off[9] + i * 4..][0..4].try_into().unwrap()) as usize; // mesh_off
+            let vc = u32::from_le_bytes(self.buf[seg..seg + 4].try_into().unwrap()) as usize;
+            (seg, vc)
         }
     }
 }
