@@ -68,7 +68,7 @@ namespace LoomGUI
             // ③ 余 stale 销毁
             var dead = new List<uint>();
             foreach (var kv in _pool) if (kv.Value.Stale) dead.Add(kv.Key);
-            foreach (var id in dead) { Object.Destroy(_pool[id].Go); _pool.Remove(id); }
+            foreach (var id in dead) { TearDown(_pool[id]); _pool.Remove(id); }
         }
 
         static RenderObj NewRenderObj(Transform root)
@@ -101,8 +101,23 @@ namespace LoomGUI
 
         public void Clear()
         {
-            foreach (var kv in _pool) Object.Destroy(kv.Value.Go);
+            foreach (var kv in _pool) TearDown(kv.Value);
             _pool.Clear();
+        }
+
+        // Edit-mode-safe 销毁：T8 LoomStage 挂 [ExecuteAlways]，Sync/Clear 会在 Edit mode 跑；
+        // Object.Destroy 在 Edit mode 非法（须 DestroyImmediate）。
+        static void TearDown(RenderObj ro)
+        {
+            DestroyObj(ro.Mesh);   // new Mesh() 是独立 UnityEngine.Object，须显式销毁，否则泄漏
+            DestroyObj(ro.Go);
+        }
+
+        static void DestroyObj(Object o)
+        {
+            if (o == null) return;
+            if (Application.isPlaying) Object.Destroy(o);
+            else Object.DestroyImmediate(o);
         }
     }
 }

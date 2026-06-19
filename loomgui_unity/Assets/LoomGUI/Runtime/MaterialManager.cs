@@ -39,7 +39,11 @@ namespace LoomGUI
 
         public void Clear()
         {
-            foreach (var kv in _cache) Object.Destroy(kv.Value);
+            foreach (var kv in _cache)
+            {
+                if (Application.isPlaying) Object.Destroy(kv.Value);
+                else Object.DestroyImmediate(kv.Value);   // [ExecuteAlways] 编辑器预览走 Edit mode
+            }
             _cache.Clear();
         }
 
