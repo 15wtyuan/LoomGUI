@@ -282,12 +282,19 @@ namespace LoomGUI
             }
         }
 
-        // Domain reload 保护（§4.3e / §4.6）。SubsystemRegistration 在 Domain reload 时跑（关闭 Domain
-        // Reload 仍跑）。Phase 2 最小：清 TextRasterizer 静态 font 版本号（atlas rebuild 计数器）。
-        // native 全局态 Phase 2 暂无（Stage per-handle，stage_free drop）；loomgui_shutdown 接线留 T8。
+        // Domain reload 保护（§4.3e / §4.6 / G13，照 fgui Stage.cs:86）。SubsystemRegistration 在
+        // Domain reload 时跑（关闭 Domain Reload 仍跑——这正是本 hook 存在的根因：关 reload 时 C#
+        // 静态活过 Play，但 native 状态可能悬空）。Phase 2：
+        //   1. Native.loomgui_shutdown() — native 全局态当前为空（Stage per-handle，stage_free drop），
+        //      但 hook 必须接——v1b 引入 global texture/font registry 时此处自动清，无需再改接线。
+        //      （注意：Font 的 Box::leak 是真泄漏，每次 Stage 创建 leak 一份字体字节——不可由 shutdown
+        //      回收，需字体缓存化才能根治。×20 域重载测观察内存增长决定是否 Phase 2 内做。）
+        //   2. TextRasterizer.ResetStatic() — 清 C# 静态 s_fontVersion（atlas rebuild 计数器）。
+        //   （MaterialManager/MirrorPool 都是 per-instance，随 MonoBehaviour OnDestroy 销毁，无 static。）
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
         static void ResetStatics()
         {
+            Native.loomgui_shutdown();
             TextRasterizer.ResetStatic();
         }
     }

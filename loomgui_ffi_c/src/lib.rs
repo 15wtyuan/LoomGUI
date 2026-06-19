@@ -129,7 +129,21 @@ pub extern "C" fn loomgui_stage_borrow_frame(
     sh.frame_blob.as_ptr()
 }
 
-/// 全局 shutdown。Phase 1 空实现，Phase 2 填资源回收。
+/// 全局 shutdown（Domain reload hook）。C# `LoomStage.ResetStatics`（SubsystemRegistration）
+/// 调用本函数——即使当前核心无全局态，hook 必须存在：v1b 引入 global texture/font registry
+/// 时此处自动清，无需再改接线。
+///
+/// **v1a：near-no-op（诚实）。**核心无全局 native 态——Stage 是 per-handle（`loomgui_stage_free`
+/// drop 全部 Stage 拥有的内存）。
+///
+/// **注意：Font 的 `Box::leak`（`text/layout.rs:76`）是真泄漏**——`bytes.clone()` 后 leak 取
+/// `'static` 切片喂 ttf-parser Face，原 Vec 虽被 `_bytes` 持有但与 leaked 切片**不是同一份**，
+/// Stage drop 时 `_bytes` 释放的是 clone 来源而非 leaked 副本。每次 Stage 创建（`loomgui_stage_new`
+/// → Font）都 leak 一份字体字节。这是 v0 已知简化（§4.6），**不可由 shutdown 回收**（leak 切片
+/// 无 handle 跟踪）——除非 Stage 句柄侧记录 leaked ptr 并在此处显式 `Box::from_raw` 释放，但
+/// v1a 不做（×20 域重载测的内存观测将决定是否 Phase 2 内做字体缓存化为进程单例）。
+///
+/// **v1b：**全局 texture/font registry（进程级单例缓存化后）将在此清——届时填实现。
 #[no_mangle]
 pub extern "C" fn loomgui_shutdown() {}
 

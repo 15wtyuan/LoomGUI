@@ -144,5 +144,33 @@ namespace LoomGUI.Tests
             TextRasterizer.ResetStatic();
             Assert.AreEqual(0, TextRasterizer.FontVersion, "ResetStatic 归零（Domain reload 语义）");
         }
+
+        /// ResetStatic 契约（T8 / §4.3e Domain reload 保护）：任意非零版本 → 调一次归零；
+        /// 再调一次仍 0（幂等）；多次 OnRebuilt 累积后归零仍生效。锁 SubsystemRegistration 复位语义。
+        /// （SubsystemRegistration 属性本身 editor-triggered、EditMode 无法 headless 触发——本测
+        /// 验 ResetStatic 行为本身；LoomStage.ResetStatics 的接线由 diff/code review 锁定。）
+        [Test]
+        public void ResetStatic_ZerosFontVersion_FromAnyNonzeroState()
+        {
+            // 预置一个非零状态（模拟若干次 atlas rebuild 累积）。
+            TextRasterizer.OnRebuilt(null);
+            TextRasterizer.OnRebuilt(null);
+            TextRasterizer.OnRebuilt(null);
+            Assert.AreNotEqual(0, TextRasterizer.FontVersion, "前置：三次 OnRebuilt 后版本非 0");
+
+            // ResetStatic → 必须归零（Domain reload 后下帧视为全新版本基线）。
+            TextRasterizer.ResetStatic();
+            Assert.AreEqual(0, TextRasterizer.FontVersion, "ResetStatic 必须把版本归零");
+
+            // 幂等：再调一次仍 0（不应变负 / 抛异常）。
+            TextRasterizer.ResetStatic();
+            Assert.AreEqual(0, TextRasterizer.FontVersion, "ResetStatic 幂等——已为 0 再调仍 0");
+
+            // 归零后 OnRebuilt 从 0 重新累加（基线已复位，不是继续旧计数）。
+            TextRasterizer.OnRebuilt(null);
+            Assert.AreEqual(1, TextRasterizer.FontVersion, "归零后 OnRebuilt 从 1 重新计");
+
+            TextRasterizer.ResetStatic(); // 测试隔离：结束归零，避免污染其他测。
+        }
     }
 }
