@@ -38,8 +38,8 @@ loomgui/                      # workspace
 │   ├── examples/v0_snapshot.rs
 │   └── tests/{snapshot.rs, fixtures/DejaVuSans.ttf, snapshots/}
 ├── loomgui_pkg/              # 打包器（v1 第一阶段）
-├── loomgui_ffi_c/            # C ABI（v1）
-├── loomgui_unity/            # csbindgen + Unity 后端（v1）
+├── loomgui_ffi_c/            # C ABI + csbindgen（v1a Phase 1 ✅ 已实现）
+├── loomgui_unity/            # Unity 6.5 URP 后端（v1a Phase 1 ✅ 已实现）
 └── loomgui_editor/           # 编辑器（v2+）
 ```
 
@@ -94,6 +94,18 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 - `Stage::new(font_path, root_size)` → `load_inline(html, css)` → `tick_and_render()` → `Vec<RenderNode>` → `render_json()`。
 - 静态首帧：tick 接空输入、dt=0。
 
+### 2.8 FFI（loomgui_ffi_c，主文档 §14，v1a Phase 1）
+- `extern "C"` 薄包装 + opaque `*mut StageHandle`；csbindgen 扫 `src/lib.rs` 生成 C# `Native` 类。
+- ABI：`stage_new/free/load_html/tick/borrow_frame/shutdown`。string 走 UTF-8 `*const u8`+len；`borrow_frame(h, *mut usize) -> *const u8` 返 Rust 拥有的帧 blob（下 tick 失效；未 tick 返 null+len=0）。
+- `StageHandle{ stage, frame_blob: Vec<u8> }`——tick 时 `build_blob` 覆写 frame_blob。
+- `build_blob(&[RenderNode]) -> Vec<u8>`：SOA 公共头 11 列（node_id/parent_id(i32,-1=none)/visible/alpha/sort_key/local_x/local_y/mask_context/payload_kind/mesh_off/mesh_len）+ mesh arena（vert_count/idx_count/verts/uvs/colors/indices）。**mesh 顶点 re-base 到节点本地**（减 transform.x/y——C# 巢状 GO 靠 localPosition 定位）。全 LE。
+
+### 2.9 Unity 后端（loomgui_unity，主文档 §14，v1a Phase 1）
+- `FrameBlob`（BitConverter 解析 blob）→ `MirrorPool.Sync`（`Dictionary<uint,RenderObj>` O(n) stale-flag diff：标 stale→遍历命中清 stale/更新→余销毁；按 `parent_id` 巢状 GO，`localPosition=(local_x,local_y)`，`sortingOrder=sort_key`，mesh 上传，payload_kind 2/0 跳过）。
+- `MaterialManager`：key=(program, texture, mask_context)，同 key 复用 Material。**tint×alpha 已 baked 进顶点色（Rust 侧）**，材质只带 texture+clip_box+blend（SrcAlpha/OneMinusSrcAlpha）。
+- `LoomStage`（`[ExecuteAlways]` MonoBehaviour）：LateUpdate `tick→borrow_frame→Marshal.Copy→FrameBlob→MirrorPool.Sync`。根 GO `localScale=(sf,-sf,sf)`（shrink-to-fit sf=min(sw/dw,sh/dh) + y-flip 合一）+ `localPosition=(-sw/2,sh/2,0)`；UI 相机正交 `orthoSize=sh/2` `cullingMask=1<<6`(LoomUI) **独立于根**（不 SetParent）。shader `Cull Off`（根翻转 winding）。
+- URP unlit shader：`col=tex2D×v.color`、`Cull Off`、`ZWrite Off`、`Blend[_Src][_Dst]` property、`CLIPPED` variant（rect mask `_ClipBox` discard，Phase 2 启用）。图片 v1a 占位 1×1 白贴图；Text Phase 2。
+
 ## 3. 依赖 API 适配踩坑（v0 最大教训）
 
 > **plan/brief 写的 API 草稿常与实际 crate 版本不符**。遇编译错按本节对照，**勿硬改依赖版本**，按 crate 实际源码（`~/.cargo/registry/src/<crate>-<ver>/src/`）调。
@@ -125,6 +137,20 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 - `Html::parse_document` → `select("body")` → `children()` 迭代。
 - `ElementRef::value()` 取 Element，`.attrs()` 取属性迭代。
 - `<img>` 是 void 元素（无闭合标签），src 从 `attrs` 取非 text。
+
+### 3.5 csbindgen 1.9（loomgui_ffi_c/build.rs + 生成 LoomGUIBindings.cs）
+- 默认生成 **`internal`** 类型（`Native` 类、`StageHandle` 结构）→ 跨程序集（LoomGUI.Bindings→LoomGUI.Runtime）访问须 `[assembly: InternalsVisibleTo("LoomGUI.Runtime")]`（放 AssemblyInfo.cs）。
+- 类型映射：`*const u8`→`byte*`、`*mut usize`→`nuint*`、opaque `*mut T`→`T*`（**类型化指针非 IntPtr**）。`csharp_use_function_pointer(false)` 切 Mono 模式。
+- `CString::as_ptr()` 返 `*const c_char`(i8)，签名为 `*const u8` 时须 `as *const u8` cast。
+- build.rs 跑两次（OUT_DIR 必成 `.expect`；Unity 目录那次失败要 `cargo:warning=` 勿 `let _ =` 吞错）。
+- C# `fixed(T* p=&localVar)` **非法**（CS0213 "already fixed"）——局部栈上已固定，直接 `&localVar` 传；`fixed` 只 pin 托管对象（数组/string）。
+
+### 3.6 Unity 6.5（6000.5）C# API
+- `Object.GetInstanceID()` **废弃**→`GetEntityId()`，后者返 **`EntityId`（非 int）**，`EntityId→int` 隐式转换**也废弃**（"将来不能 int 表示"）。**绕开整条**：缓存 key 直接持 Object 引用（`Dictionary<Texture,...>`，Unity 对象引用同一性），别碰任何 id API。
+- **EditMode 禁 `Object.Destroy`**（报 "Destroy may not be called from edit mode"），须 `DestroyImmediate`。`[ExecuteAlways]` 组件生产代码 EditMode 也跑 → `Application.isPlaying ? Destroy : DestroyImmediate`（Mesh 是独立 UnityEngine.Object，GO 销毁不连带，须显式销毁防泄漏）。
+- `Camera.nearClipPlane` **须 >0**（负值抛异常）。
+- Unity 开着**锁 native `.dll`**——重建/拷 `.dll` 须先关 Unity（锁文件 `Temp/UnityLockfile` 可能残留非真锁，以能否 `rm` 为准）。
+- 生成物 gitignore：`.slnx`(6.5 解决方案)、csbindgen `.cs` 绑定及其 `.cs.meta`；`.dll`（`!**/Plugins/**/*.dll` 白名单）入库；`.meta` 是 Unity 资产元数据须入库。
 
 ## 4. AI 可预测性核心约束（首要准则，勿违背）
 
@@ -186,11 +212,18 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 ### 坑 8：snapshot 绑系统 arial.ttf
 **症状**：Linux CI（DejaVuSans 无 arial）snapshot 漂移。
 **根因**：测试字体试系统路径。
-**解决**：锁仓库内 `tests/fixtures/DejaVuSans.ttf` + `env!(CARGO_MANIFEST_DIR)`；fixture 用 ASCII（DejaVuSans 无 CJK）。
+**解决**：锁仓库内 `tests/fixtures/DejaVuSans.ttf` + `env!("CARGO_MANIFEST_DIR")`；fixture 用 ASCII（DejaVuSans 无 CJK）。
 **教训**：测试产物跨平台一致就锁仓库内资源；CJK 渲染验证留 v1（需 CJK 字体）。
+
+### 坑 9：color_tint 把背景色块涂黑（v1a T8）
+**症状**：PlayMode 红背景块渲成黑色。
+**根因**：v0 `ResolvedStyle::default().color=[0,0,0,1]`（CSS `color` 默认黑，是**前景/文本色**）；blob 烘焙 `bg×color_tint×alpha` 把红背景乘成不透明黑。
+**解决**：build_blob **不乘 color_tint**——顶点色 = background_color，仅 `alpha×node opacity`。color_tint 是文本色（Phase 2 文本用）。
+**教训**：mesh colors 已是最终色（bg-color / 图片白），别再叠 color_tint；§4.2b「tint×alpha 烘焙」指**文本/图片** tint，非背景色块。
 
 ## 6. 调试/验证技巧
 
+- **★ 实现 v1+ 后端/渲染/对象模型前，先参考 `temp/FairyGUI-unity/` 源码**（对照机制、避免走歪——本 session 因没先看 fgui 的 sortingOrder/rect-mask/MaterialManager，初版设计走了弯路：误用 z 排序、误以为 rect mask 要独立 GO、把绘制序想复杂）。
 - `cargo test -p loomgui_core`：全量（v0 ~52 测试）。
 - `cargo run --example v0_snapshot`：端到端产 `v0_snapshot.json`。
 - insta 快照：`INSTA_UPDATE=always cargo test --test snapshot` 首次接受，再裸跑锁定。
@@ -198,6 +231,9 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 - 改 `ResolvedStyle` 默认/映射后，跑 layout + snapshot 测试看布局变化。
 - taffy 布局调试：看 `Node.layout_rect`（solve 回写的绝对坐标）。
 - 查 crate 实际 API：`~/.cargo/registry/src/<crate>-<ver>/src/`。
+- Rust→Unity 闭环：改 Rust 后 `cargo build -p loomgui_ffi_c --release` → 关 Unity → `cp target/release/loomgui_ffi_c.dll loomgui_unity/Assets/Plugins/LoomGUI/`。
+- Unity 验证：Test Runner EditMode（`Window→General→Test Runner`）；PlayMode 看 Game 视图渲染；PlayMode 前确认 `.dll` 是最新版。
+- 跨语言 round-trip：Rust `build_blob` ↔ C# `FrameBlob` 靠手搓 blob byte[] 的 EditMode 测互验（blob 布局是 Rust↔C# 契约，两端须字节级一致；改列/偏移必同步）。
 
 ## 7. 已知问题/未完成（v0 ledger）
 
@@ -213,16 +249,25 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 - border_width 仅取 top（非均匀 border）。
 - opacity % 语义（`50%`→50.0 非 0.5，brief 原行为）。
 
-**v0 defer → v1 阶段**：
-- 打包器 loomgui_pkg（v1 第一阶段，G1）：v0 内存直通。
-- 纹理加载（后端职责，G7）：v0 占位 tex_id。
-- FFI csbindgen + SOA arena（G11）：v0 纯 Rust。
-- event/命中/输入（G4）：v0 静态。
-- anim GTween/ScrollPane（§11/§12.7）：v0 静态。
-- Unity 后端镜像（G9-G14）：v0 无引擎。
+**v1a Phase 1 ✅ 完成（merged main @ 7920bbd）**：FFI crate（loomgui_ffi_c：csbindgen + SOA blob）+ Unity 6.5 URP 后端镜像（FrameBlob/MirrorPool/MaterialManager/LoomStage/shader）。静态色块在 Unity Game 视图真渲染——**v1 最大风险缝闭合**。spec `docs/superpowers/specs/2026-06-19-v1a-unity-render-design.md`、plan `docs/superpowers/plans/2026-06-19-v1a-unity-render-phase1.md`。
+
+**v1a Phase 1 defer → Phase 2**（v1a 只渲静态色块）：
+- rect mask：`_ClipBox` shader discard + mask_context 材质 + CLIPPED keyword（shader variant 已预留）。
+- 文本：`Font.RequestCharactersInTexture`+`GetCharacterInfo` 取 UV/bbox（**丢弃 Unity advance**，位置按 Rust TextLayout）+ `Font.textureRebuilt` 监听 atlas rebuild 重取 UV。
+- 500 节点静态压测。
+- Domain reload 完整保护：`[RuntimeInitializeOnLoadMethod(SubsystemRegistration)]` 调 `loomgui_shutdown` + 清 C# 缓存（v1a 仅占位）。
+
+**v1a Phase 1 perf defer → v1e**（spec §2 显式 defer）：
+- `MirrorPool.UploadMesh` 每帧分配 `Vector3[]/Color[]/int[]`（改 List 池化 + `SetVertices(List)`）。
+- shader 非 CLIPPED 路径无条件算 clipPos（fgui 用 `#ifdef` 守卫）。
+- ArrayPool 帧拷贝（v1a 先 `new byte[]`）、冷帧/换页帧 FFI ≤2ms。
+
+**v1 其余 defer（v0 起，未动）**：
+- 打包器 loomgui_pkg + 真纹理加载（v1b，G1/G7）。
+- event/命中/输入（v1c，G4）、anim GTween/ScrollPane（v1d，§11/§12.7）。
 - NativeHost/virtualization/shape mask：v1.x。
 
-完整 defer 表见 `docs/superpowers/specs/2026-06-18-v0-skeleton-design.md` §7。
+完整 defer 表见各 spec §7；v1a Phase 1 实现 ledger 见 `.git/sdd/progress.md`。
 
 ## 维护
 
