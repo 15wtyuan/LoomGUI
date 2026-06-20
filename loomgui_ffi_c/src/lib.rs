@@ -6,7 +6,7 @@ pub mod blob;
 use std::ffi::CString;
 use loomgui_core::stage::Stage;
 
-/// 版本字符串（C null-terminated `b"v1b\0"`）。Task 1 工具链 round-trip 用。
+/// 版本字符串（C null-terminated `b"v1b.2\0"`）。Task 1 工具链 round-trip 用。
 ///
 /// 返回 `*const u8`（csbindgen 映射为 C# `byte*`）；CString::as_ptr 给的是
 /// `*const c_char`（i8），这里 cast 对齐签名。OnceLock 缓存，避免每次分配+泄漏。
@@ -14,7 +14,7 @@ use loomgui_core::stage::Stage;
 pub extern "C" fn loomgui_version() -> *const u8 {
     static VERSION: std::sync::OnceLock<CString> = std::sync::OnceLock::new();
     VERSION
-        .get_or_init(|| CString::new("v1b").unwrap())
+        .get_or_init(|| CString::new("v1b.2").unwrap())
         .as_ptr() as *const u8
 }
 
@@ -116,6 +116,50 @@ pub extern "C" fn loomgui_stage_load_package(
     }
 }
 
+/// 注册纹理：core 分配 tex_id（src 幂等），存 w/h 供 measure。返回 tex_id(>=1)；
+/// 非 UTF-8 src / null → 返回 0（哨兵，不 panic）。
+#[no_mangle]
+pub extern "C" fn loomgui_stage_register_texture(
+    h: *mut StageHandle,
+    src: *const u8,
+    src_len: usize,
+    width: u32,
+    height: u32,
+) -> u32 {
+    if h.is_null() || src.is_null() { return 0; }
+    let sh = unsafe { &mut *h };
+    let bytes = unsafe { std::slice::from_raw_parts(src, src_len) };
+    match std::str::from_utf8(bytes) {
+        Ok(s) => sh.stage.textures.register(s, width, height),
+        Err(_) => 0,
+    }
+}
+
+/// collect：scene 中 Image src 去重后的数量（DFS 先序）。
+#[no_mangle]
+pub extern "C" fn loomgui_stage_image_src_count(h: *const StageHandle) -> usize {
+    if h.is_null() { return 0; }
+    let sh = unsafe { &*h };
+    sh.stage.image_srcs().len()
+}
+
+/// collect：第 index 个 Image src 的 UTF-8 串指针；*out_len = 字节长。
+/// OOB / null → null。串归 Stage 拥有，下次 load 前有效。
+#[no_mangle]
+pub extern "C" fn loomgui_stage_image_src_at(
+    h: *const StageHandle,
+    index: usize,
+    out_len: *mut usize,
+) -> *const u8 {
+    if h.is_null() { return std::ptr::null(); }
+    let sh = unsafe { &*h };
+    let srcs = sh.stage.image_srcs();
+    if index >= srcs.len() { return std::ptr::null(); }
+    let s = &srcs[index];
+    if !out_len.is_null() { unsafe { *out_len = s.len(); } }
+    s.as_ptr()
+}
+
 /// 跑一帧 tick_and_render → build_blob 写入缓存。v0 无 dt 语义（忽略）。
 #[no_mangle]
 pub extern "C" fn loomgui_stage_tick(h: *mut StageHandle, _dt: f32) {
@@ -182,7 +226,7 @@ mod tests {
     fn version_returns_c_string_v1b() {
         unsafe {
             let s = CStr::from_ptr(loomgui_version() as *const i8);
-            assert_eq!(s.to_str().unwrap(), "v1b");
+            assert_eq!(s.to_str().unwrap(), "v1b.2");
         }
     }
 }
@@ -271,6 +315,57 @@ mod abi_tests {
         let ptr = loomgui_stage_borrow_frame(h, &mut len);
         assert!(ptr.is_null(), "未 tick 过 borrow_frame 必须 null");
         assert_eq!(len, 0, "未 tick 过 out_len 必须 0");
+        loomgui_stage_free(h);
+    }
+
+    /// register_texture：core 分配单调 tex_id（src 幂等）；collect 返 scene 的 Image src。
+    #[test]
+    fn register_texture_and_collect_image_srcs() {
+        use loomgui_core::asset::write_package;
+        use loomgui_core::scene::{NodeKind, Scene};
+        use loomgui_core::style::resolved::ResolvedStyle;
+
+        let (fp, fplen) = font_path();
+        // 手搓含两个 Image（src 不同）+ 一个 Container 的 scene。
+        let entries = vec![
+            (None, NodeKind::Container, ResolvedStyle::default()),
+            (Some(0), NodeKind::Image { src: "a.png".into() }, ResolvedStyle::default()),
+            (Some(0), NodeKind::Image { src: "b.png".into() }, ResolvedStyle::default()),
+            (Some(0), NodeKind::Image { src: "a.png".into() }, ResolvedStyle::default()), // 重复 src
+        ];
+        let pkg = write_package(&Scene::build(&entries), (100.0, 50.0));
+
+        let h = loomgui_stage_new(fp.as_ptr() as *const u8, fplen, 100.0, 50.0);
+        assert!(!h.is_null());
+        assert_eq!(loomgui_stage_load_package(h, pkg.as_ptr(), pkg.len()), 0);
+
+        // collect：去重后 2 个 src（a.png, b.png），DFS 先序。
+        // 注意 image_src_at 返 String::as_ptr（非 null-terminated）+ *out_len，
+        // 故用 slice::from_raw_parts + from_utf8 读，不能用 CStr（String 无 trailing \0）。
+        let count = loomgui_stage_image_src_count(h);
+        assert_eq!(count, 2, "去重后 2 个 Image src");
+        let mut len0 = 0usize;
+        let p0 = loomgui_stage_image_src_at(h, 0, &mut len0);
+        let s0 = unsafe { std::str::from_utf8(std::slice::from_raw_parts(p0, len0)).unwrap() };
+        assert_eq!(s0, "a.png");
+        let mut len1 = 0usize;
+        let p1 = loomgui_stage_image_src_at(h, 1, &mut len1);
+        let s1 = unsafe { std::str::from_utf8(std::slice::from_raw_parts(p1, len1)).unwrap() };
+        assert_eq!(s1, "b.png");
+        // OOB → null
+        assert!(loomgui_stage_image_src_at(h, 99, &mut len0).is_null());
+
+        // register：单调 tex_id，src 幂等。
+        let a = "a.png";
+        let b = "b.png";
+        let id1 = loomgui_stage_register_texture(h, a.as_ptr() as *const u8, a.len(), 10, 20);
+        let id2 = loomgui_stage_register_texture(h, b.as_ptr() as *const u8, b.len(), 30, 40);
+        let id3 = loomgui_stage_register_texture(h, a.as_ptr() as *const u8, a.len(), 999, 999); // 幂等
+        assert_eq!(id1, 1);
+        assert_eq!(id2, 2);
+        assert_eq!(id3, 1, "同 src 幂等返回同 id");
+        assert_ne!(id1, 0);
+
         loomgui_stage_free(h);
     }
 }
