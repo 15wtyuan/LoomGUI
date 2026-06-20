@@ -45,7 +45,13 @@ namespace LoomGUI.Tests
                 arena.AddRange(System.BitConverter.GetBytes(1f));
                 arena.AddRange(System.BitConverter.GetBytes(1f));
             }
-            arena.AddRange(System.BitConverter.GetBytes(new uint[] { 0, 1, 2, 0, 2, 3 }));
+            // 索引：逐个 GetBytes（BitConverter 无 uint[] 重载，数组语法会被当 bool）。
+            arena.AddRange(System.BitConverter.GetBytes(0u));
+            arena.AddRange(System.BitConverter.GetBytes(1u));
+            arena.AddRange(System.BitConverter.GetBytes(2u));
+            arena.AddRange(System.BitConverter.GetBytes(0u));
+            arena.AddRange(System.BitConverter.GetBytes(2u));
+            arena.AddRange(System.BitConverter.GetBytes(3u));
             int arenaLen = arena.Count - segOff;
 
             foreach (var o in offs) b.AddRange(System.BitConverter.GetBytes(o));
