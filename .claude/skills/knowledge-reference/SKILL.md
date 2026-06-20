@@ -84,11 +84,12 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 
 ### 2.5 layout（§7）
 - taffy 0.5 集成（**API 见 §3.1，与草稿差异大**）。
-- MeasureFunc：文本调 `measure_text`，图片用声明尺寸或占位 64×64。
+- MeasureFunc：文本调 `measure_text`；**Image 三档（v1b.2）**：CSS `Dimension::Length` > registry 真实 w/h > 64×64 兜底。`solve(scene,font,root,&TextureRegistry)` 4 参。
 - `solve` 就地写 `layout_rect`（绝对坐标，父 origin 累加）+ `clip_rect`。
+- **measure 陷阱（v1b.2 测设计）**：`solve` 把**根节点** taffy size 强制覆盖为 root_size（`set_style`）→ Image 作根时 intrinsic 被 viewport 覆盖（测须包 Container 根、Image 作子叶）；默认 `align-items:Stretch`（column 容器）会把无显式宽子项 cross 轴拉伸 → 测无 CSS 尺寸的 Image 须设 `align_self:FlexStart` 禁 stretch。
 
 ### 2.6 render（§8）
-- `build_render_nodes`：Container/Button→Mesh quad(背景色)，Image→Mesh quad(占位 tex_id=hash(src))，Text→TextLayout 装 Text payload。
+- `build_render_nodes(scene, font, &TextureRegistry)`：Container/Button→Mesh quad(背景色)，Image→Mesh quad（**tex_id 查注册表，未注册=0 哨兵→后端白占位**；v1b.2 前 v0 占位是 hash(src) 已删），Text→TextLayout 装 Text payload。
 - `assign_sort_keys`：DFS 单计数器 sort_key，clip 的 Container 是 BatchingRoot 开新 mask_context。
 - v0 保序（无 FairyBatching AABB 重排，v1.x 优化）。
 
@@ -100,7 +101,8 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 - `extern "C"` 薄包装 + opaque `*mut StageHandle`；csbindgen 扫 `src/lib.rs` 生成 C# `Native` 类。
 - ABI：`stage_new/free/load_html/tick/borrow_frame/shutdown`。string 走 UTF-8 `*const u8`+len；`borrow_frame(h, *mut usize) -> *const u8` 返 Rust 拥有的帧 blob（下 tick 失效；未 tick 返 null+len=0）。
 - `StageHandle{ stage, frame_blob: Vec<u8> }`——tick 时 `build_blob` 覆写 frame_blob。
-- `build_blob(&FrameData) -> Vec<u8>`（**v2**, version=2）：SOA 公共头 **13 列**（v1 的 11 + `text_off`/`text_len`）+ mesh arena + **text_arena**（per text 节点 `font_size:u32|color:f32×4|glyph_count:u32|glyphs[{codepoint,pen_x,pen_y}]`）+ **clip 表**（`context_id→design rect`，嵌套交集）。magic+version 进 header，C# `FrameBlob.IsValid` 校验（防 stale v1 blob）。**mesh 顶点 re-base 到节点本地**（减 transform.x/y）。全 LE。改 blob 格式必重编+换 .dll（坑 10）。
+- `build_blob(&FrameData) -> Vec<u8>`（**v3**, version=3，v1b.2）：SOA 公共头 **14 列**（v2 的 13 + `tex_id:u32` 末列——Image→真 tex_id，其余=0）+ mesh arena + **text_arena**（per text 节点 `font_size:u32|color:f32×4|glyph_count:u32|glyphs[{codepoint,pen_x,pen_y}]`）+ **clip 表**（`context_id→design rect`，嵌套交集）。`num_col_offsets=columns.len()` 自动传播列数→header_len=92。magic+version 进 header，C# `FrameBlob.IsValid` 校验（防 stale v2 blob）。**mesh 顶点 re-base 到节点本地**（减 transform.x/y）。全 LE。改 blob 格式必重编+换 .dll（坑 10）+ C# fixture 同步（坑 17）。
+- v1b.2 FFI 新增（常驻不 gate）：`register_texture(h,src,len,w,h)->u32`（core 分配 tex_id>=1，src 幂等，非 UTF-8→0）、`image_src_count(h)->usize` / `image_src_at(h,i,*out_len)->*const u8`（collect scene 的 Image src，DFS 先序去重）。**`image_src_at` 返 `String::as_ptr()` 无尾 NUL + out_len**——C# 必 len-based 读（坑 16）。
 
 ### 2.9 Unity 后端（loomgui_unity，主文档 §14，v1a Phase 1）
 - `FrameBlob`（BitConverter 解析 v2 blob，`IsValid` 校验 magic+version）→ `MirrorPool.Sync`（`Dictionary<uint,RenderObj>` O(n) stale-flag diff）。**flatten（Phase 2）**：所有 GO 挂**根**（非巢状——local_x/local_y 是绝对 design 坐标，巢状 SetParent 会双计父位置，坑见 §2.11/Phase 1 单节点未暴露），`localPosition=绝对`、`sortingOrder=sort_key`；kind=1 Mesh / kind=2 Text（→TextRasterizer）/ kind=0 跳过。**buffer 复用**：RenderObj 持可复用 List，`SetVertices(List)` 零 alloc（T7，500 节点压测）。
@@ -128,6 +130,13 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 - **parse feature gate**：`scraper`/`cssparser` optional + `parse` feature（default on）。gate 在 parse 后：`parse/` 模块 + `style::cascade` + `build_scene`/`gather_rec` + `Stage::load_inline` + 用 parse 的测。常驻：`ResolvedStyle`/`TextAlign`/`Scene::build`/`mapping`/layout/render/text/scene/stage(除 load_inline)/asset。`loomgui_ffi_c`：`load_package` 常驻、`load_html` gate；**dev .dll 仍带 parse**（PlayMode inline 迭代要），gate 价值=架构正确 + 将来精简 build。构建矩阵门：`cargo build -p loomgui_{core,ffi_c} --no-default-features` 皆编。
 - **黄金等价测**（最强门）：`pkg→load_package→render_json` == `inline load_inline→render_json`（包路径与 inline 渲染逐节点等价，验收 #6）。fixture 覆盖 div/text/img/rect mask。
 - `loomgui_pkg` CLI（不引 clap，`std::env::args`）：`pack(html,css,root_size)` = `parse_html→parse_css→resolve_styles→build_scene→write_package`。packager **不**加载字体/不 solve/不 render。
+
+### 2.13 纹理注册层（v1b.2，§8.3/§14.3）
+- **TexId 是 FFI 代价**：fgui 单进程按 NTexture 对象引用纹理；LoomGUI Rust core + Unity 跨 FFI，blob 必用整数 id → core 持 `TextureRegistry{src→TexMeta{tex_id,w,h}, next_id}`（per Stage，纯 id+维度表无 GPU），Unity 持 `Dictionary<tex_id,Texture2D>`，握手靠 register/collect。
+- **registry 由 measure 强制**（非为 blob）：真实尺寸测量要每 src 的 w/h → core 必有 src→dims 表；register(src,w,h) 主因报维度，tex_id 顺带分配。故即便 blob 改带 src 串，core 仍要 register。
+- **注册握手**（LoomStage Awake，`_usePackage` 后、首 tick 前）：collect srcs → Unity `File.ReadAllBytes`+`Texture2D.LoadImage` → `register_texture` → 建 `_texMap`；缺图/坏图 try/catch→LogError+跳过（白占位）；OnDestroy Dispose 全部（`isPlaying?Destroy:DestroyImmediate`，坑 11 ExecuteAlways 泄漏）。
+- **5-hop tex_id 流**：render 查表填 `NodePayload::Mesh.texture` → blob v3 `col_tex_id` 列 → C# `FrameBlob.TexId(i)` → MirrorPool `texMap[tid]` 查表 → `mm.Get(0,tex,ctx)`。tex_id=0 哨兵→白占位。shader/MaterialManager **零改**（`tex2D×v.color` 已支持纯色块 tex_id=0 + 真图 tex_id>=1 两路）。
+- **散图外部文件**（非嵌包）：src 当 StreamingAssets 相对路径；改 PNG 内容 PlayMode 即变（纹理不进 .pkg.bin）。图集（TextureView UV region + refcount）留 v1b.3/C。
 
 ## 3. 依赖 API 适配踩坑（v0 最大教训）
 
@@ -289,6 +298,30 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 **解决**：包改独立 magic `"LPKG"`(0x474B504C，磁盘字节 `4C 50 4B 47`)。planning 期 grep 现有 magic 才发现。
 **教训**：新增二进制格式先 `grep -r 'MAGIC\|0x4D4F4F4C' src/` 确认 magic 唯一；formatVersion 是「同格式的版本」，magic 是「这是哪种格式」，两者正交。
 
+### 坑 16：FFI 返 String::as_ptr() 无尾 NUL，C# NUL-scan 读越界（v1b.2）
+**症状**：`image_src_at` 返 src 串指针，C# 用 `PtrStringAnsi(ptr)` 或 Rust 测用 `CStr::from_ptr` 读 → 越界读到 `Utf8Error{valid_up_to>N}` 或乱码。
+**根因**：Rust `String`/`Vec<u8>` 缓冲**无尾 `\0`**；`PtrStringAnsi`/`CStr` 靠 NUL-scan 会越过 stage 缓存末尾。
+**解决**：FFI 同时返 `*out_len`（字节长）；C# 用 `Encoding.UTF8.GetString(ptr,(int)len)`，Rust 测用 `slice::from_raw_parts(p,len)`+`from_utf8`。同 `borrow_frame` 的 ptr+len 契约。
+**教训**：Rust FFI 返字符串一律 ptr+len（不靠 NUL）；C# 侧禁用 NUL-scan 读法。任何新 len-based 串返回（font/资源名）照此。
+
+### 坑 17：bump blob version 须同步所有手搓 C# fixture，漏一个 4 字节 skew（v1b.2）
+**症状**：blob v2→v3 加 tex_id 列，Rust `blob.rs` + C# `FrameBlob.cs` 都改了，但 `FrameBlobV2Tests.BuildMinimalV2Blob` 只升 header（14 列）没补 tex_id 列写 → data 13 列 vs header 14 列 → 4 字节 skew，`ReadMesh` 把 idx_count 读成 vert_count，`ClipCount` 读越界。
+**根因**：手搓 blob byte[] 的 C# 测 fixture 散落多文件多 builder（FrameBlobTests/FrameBlobV2Tests×2/MirrorPoolFlattenTests/MirrorPoolTests×2）；version bump 后 `ExpectedVersion` 变，所有产「应被接受」blob 的 builder 都要升，task review 只抽查漏了一个。
+**解决**：bump version 时 grep 全 C# 测目录 `version=2u`/`HeaderLen = 88`/`elemSize = {`（13 项）/`13 \* 4`，逐 builder 升（version/HeaderLen/offs 数组/elemSize 项数/loop 边界/补 tex_id 列写）；Rust 侧 `num_col_offsets=columns.len()` 自动传播，C# arena offset 基准 `12+14*4` 也要改。
+**教训**：blob 是 Rust↔C# 字节契约，version bump = 全仓 fixture 同步事件；靠 grep 枚举所有 builder，不能只改抽查的。reviewer 字节级核每个 builder 的 header 列数==data 列数。
+
+### 坑 18：`using System;` 引入 System.Object，裸 `Object` 与 UnityEngine.Object 歧义（v1b.2）
+**症状**：LoomStage.cs 加 `using System;`（为 `Encoding`/`Exception`）后，6 处裸 `Object.Destroy`/`DestroyImmediate` 编译报 CS0104 `'Object' is an ambiguous reference between 'UnityEngine.Object' and 'object'`。
+**根因**：`System.Object`（C# `object` 关键字的类型）与 `UnityEngine.Object` 同名；两个 using 都在时裸 `Object` 二义。
+**解决**：全限定 `UnityEngine.Object.Destroy/DestroyImmediate`（不动 using——`System` 还要 `Array.Empty`/`Encoding`）。MirrorPool.cs 无 `using System;` 故裸 `Object` 无歧义。
+**教训**：Unity C# 文件若同时 `using System;`+`using UnityEngine;`，裸 `Object` 必歧义——直接全限定 `UnityEngine.Object`。
+
+### 坑 19：BitConverter.GetBytes 无数组 overload，手搓 blob 索引数组写法错（v1b.2）
+**症状**：C# 测 `BitConverter.GetBytes(new uint[]{0,1,2,0,2,3})` 编译报 CS1503 cannot convert uint[] to bool。
+**根因**：`BitConverter.GetBytes` 只接标量（无 `uint[]` overload），最近重载是 `GetBytes(bool)`，编译器把 uint[] 当 bool。
+**解决**：逐个 `GetBytes(0u)`/`GetBytes(1u)`...（对齐 MirrorPoolFlattenTests 已验证写法）；或循环。
+**教训**：手搓 blob byte[] 的 C# 测，索引/数据数组一律逐元素 `GetBytes`，禁数组语法。
+
 ## 6. 调试/验证技巧
 
 - **★ 实现 v1+ 后端/渲染/对象模型前，先参考 `temp/FairyGUI-unity/` 源码**（对照机制、避免走歪——本 session 因没先看 fgui 的 sortingOrder/rect-mask/MaterialManager，初版设计走了弯路：误用 z 排序、误以为 rect mask 要独立 GO、把绘制序想复杂）。
@@ -304,6 +337,8 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 - Rust→Unity 闭环：改 Rust 后 `cargo build -p loomgui_ffi_c --release` → 关 Unity → `cp target/release/loomgui_ffi_c.dll loomgui_unity/Assets/Plugins/LoomGUI/`。
 - Unity 验证：Test Runner EditMode（`Window→General→Test Runner`）；PlayMode 看 Game 视图渲染；PlayMode 前确认 `.dll` 是最新版。
 - 跨语言 round-trip：Rust `build_blob` ↔ C# `FrameBlob` 靠手搓 blob byte[] 的 EditMode 测互验（blob 布局是 Rust↔C# 契约，两端须字节级一致；改列/偏移必同步）。**手搓多节点 fixture 必 SOA 列优先**（坑 12，单节点掩盖 AoS 错）。
+- **bump blob version 清单**（v1b.2，坑 17）：① Rust `blob.rs` VERSION+COLUMNS+`num_col_offsets=columns.len()`（自动传播 header_len）；② C# `FrameBlob.cs` `ExpectedVersion` + 所有 arena offset 基准（`12+14*4` 非 `13*4`）；③ grep C# 测目录**所有** builder：`version=Nu`/`HeaderLen`/`elemSize = {`/`i < N`/末列写——逐个升，header 列数==data 列数；④ 重编+关 Unity 换 .dll。
+- **stale .dll 诊断**（v1b.2）：PlayMode 全不渲 + Console 干净 → `md5sum` 对比 fresh release .dll vs `Assets/Plugins/LoomGUI/`，committed .dll 应==release（坑 10）；committed .dll md5 记在 progress ledger 便于核对。
 - **stale .dll 诊断**：PlayMode **全不渲 + Console 干净** → `md5sum target/release/loomgui_ffi_c.dll loomgui_unity/Assets/Plugins/LoomGUI/loomgui_ffi_c.dll`，不等 = stale（Rust 改 blob/ABI 格式没换 .dll，坑 10）。
 - **T7 perf 基线**：500 节点静态 ~5-8ms/帧（120-200fps，无卡顿过 §9.3）。成本 = 朴素每帧全量重传（Rust 没 dirty/Unchanged 跳过 + `ReadMesh` per-frame alloc 数组）；优化（dirty 跳静态≈0 + ArrayPool 冷帧≤2ms）归 v1e。
 - PlayMode 验前 checklist：① Rust 改过 → 重编+换 .dll（关 Unity）② LoomStage `_font` 赋值 ③ Console 看红字 ④ Hierarchy 看 GO 不累积。
@@ -316,7 +351,7 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 - 断行贪心非 UAX#14（CJK kinsoku 留 v1.x）。
 - baseline 未对 Chrome 校准（§9.1 实现期调）。
 - Font 用 `Box::leak` 不释放（多字体 v1 换 owned）。
-- tex_id 16 位 hash 碰撞（单页面无忧）。
+- ~~tex_id 16 位 hash 碰撞~~（v1b.2 已消除：registry 分配单调 tex_id，无 hash）。
 - grayed 恒 false / BlendMode 仅 Normal。
 - CSS order 排序跳过（taffy 0.5 无 order 字段，DOM 序）。
 - border_width 仅取 top（非均匀 border）。
@@ -336,10 +371,14 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 
 **v1b.1 ✅ 完成（merged main @ 5706a7b）**：打包器 `loomgui_pkg` CLI + `.pkg.bin` v1 格式（Rust-internal，§2.12）+ `Stage::load_package` + `Scene::build` 共享建树 + parse feature gate（runtime 可无 parser）+ FFI `loomgui_stage_load_package` + Unity `_usePackage` 接线。**包路径渲染 == inline 渲染（黄金等价），PlayMode 验过**——验收 #6 达成。spec `docs/superpowers/specs/2026-06-20-v1b-packager-design.md`、plan `docs/superpowers/plans/2026-06-20-v1b-packager.md`。踩坑：magic 撞 frame blob（坑 15）。
 
-**v1b 拆分**：A 打包器/二进制包/加载器（v1b.1 ✅）、**B 真纹理加载（散图→Texture2D→TexId，v1b.2 = 下一个）**、C 图集打包、D 文本 CJK/多字体（text_arena 升三表）。各自后续 spec。
+**v1b 拆分**：A 打包器/二进制包/加载器（v1b.1 ✅）、B 真纹理加载（v1b.2 ✅）、**C 图集打包（下一个）**、D 文本 CJK/多字体（text_arena 升三表）。各自后续 spec。
+
+**v1b.2 ✅ 完成（merged main @ 691835a）**：真纹理加载——core `TextureRegistry`（src→TexMeta{tex_id,w,h}，§2.13）+ render/measure 三档（CSS>真实>64）+ blob v3（14 列加 tex_id）+ FFI `register_texture`/`image_src_count`/`image_src_at`（collect）+ C# FrameBlob v3 + MirrorPool 按 tex_id 绑材质 + LoomStage collect→load PNG→register→`_texMap`。**`<img src>` 渲真像素（PlayMode 验），命中 G7**。spec `docs/superpowers/specs/2026-06-20-v1b-texture-design.md`、plan `docs/superpowers/plans/2026-06-20-v1b-texture.md`、progress `.superpowers/sdd/progress.md`。踩坑：FFI 无尾 NUL 串契约（坑 16）、blob version bump 级联 C# fixture（坑 17）、`using System;` Object 歧义（坑 18）、BitConverter 无数组 overload（坑 19）。
+
+**v1b.2 defer**：图集（TextureView UV region + refcount/on_release，v1b.3/C）、alpha 纹理、多 Stage 全局 registry、Addressables/YooAsset 异步、移动端 StreamingAssets（UnityWebRequest）、inline 路径真纹理、NPOT/压缩/mipmap。
 
 **v1 其余 defer（v0 起，未动）**：
-- 真纹理加载（v1b.2/B，G7）—— **下一个**。
+- 图集打包（v1b.3/C）—— **下一个**。
 - event/命中/输入（v1c，G4）、anim GTween/ScrollPane（v1d，§11/§12.7）。
 - NativeHost/virtualization/shape mask：v1.x。
 
