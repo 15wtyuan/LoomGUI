@@ -49,7 +49,8 @@ namespace LoomGUI
         MaterialManager _mm;
         MirrorPool _pool;
         byte[] _frameBuf;
-        // v1b.2：tex_id → Texture2D（LoadTextures 填；Sync 按 blob.TexId 查此绑真纹理）。
+        // v1b.3：tex_id → Texture2D（LoadAtlas 填；Sync 按 blob.TexId 查此绑 atlas 纹理）。
+        // 同 atlas 的多个 sprite 共享同一 Texture2D（atlas.png）→ MaterialManager key 命中同实例 → batchable。
         readonly Dictionary<uint, Texture2D> _texMap = new();
 
         // 上一帧 Screen 尺寸，检测 resize 重配根/相机。
@@ -113,9 +114,10 @@ namespace LoomGUI
             _mm = new MaterialManager(shader);
             _pool = new MirrorPool();
 
-            // v1b.2：包加载分支才 collect/load/register 真纹理（inline 分支仍白占位——
-            // inline 无 Image src 可 collect，且保 v1a 单红块场景行为不变）。
-            if (_usePackage) LoadTextures();
+            // v1b.3：collect atlas（atlas_count/info）→ load atlas.png → _texMap[atlas_tex_id]。
+            // 同 atlas 所有 sprite 共享 1 Texture2D（batchable）。inline 分支（_usePackage=false）
+            // 无 atlas 需加载——atlas_count 返 0，LoadAtlas 早退，_texMap 空（下游全 fallback）。
+            if (_usePackage) LoadAtlas();
 
             EnsureFont();
             // Font.textureRebuilt 是静态事件（§4.3 必修坑）：atlas 异步 rebuild 时 glyph UV 变。
@@ -184,64 +186,63 @@ namespace LoomGUI
         }
 
         /// <summary>
-        /// v1b.2：collect scene 的 Image src（T5 FFI）→ 读 StreamingAssets 下 PNG → register → 建 _texMap。
-        /// 缺图/坏图 → LogError 跳过（下游 fallback 白占位，不阻塞渲染）。FFI 指针操作在 unsafe 块内
-        /// （镜像 LateUpdate 的 borrow_frame 模式）。
+        /// v1b.3：collect atlas（atlas_count/info）→ 读 atlas.png → _texMap[atlas_tex_id]。
+        /// 同 atlas 所有 sprite 共享 1 Texture2D（MaterialManager key=(program,tex,ctx) →
+        /// 同 atlas 的多个节点复用同一 Material 实例 → batchable）。缺图/坏图 → LogError 跳过
+        /// （下游 tex_id 缺 → texMap.TryGetValue miss → fallback 白占位，不阻塞渲染）。
         ///
-        /// T5 string contract：image_src_at 返回 `*const u8`（**无尾 NUL**）+ 写 *out_len = 字节长。
-        /// 故 C# 侧必须 `Encoding.UTF8.GetString(ptr, (int)len)`（len-based 读），**不能**
-        /// `PtrToStringAnsi(ptr)`（NUL-scan 会越过 stage 缓存末尾读未映射内存）。
-        /// csbindgen 生成签名：`byte* loomgui_stage_image_src_at(StageHandle*, nuint index, nuint* out_len)`。
-        /// register_texture 同一 src 指针可复用（stage 缓存有效期内幂等；core 按 src 串去重分 tex_id）。
+        /// FFI 契约（T5 atlas_count/info）：
+        ///   atlas_count(StageHandle*) → nuint（甲-B scene 恒 1；无图 scene = 0）。
+        ///   atlas_info(StageHandle*, i, uint* tid, uint* w, uint* h, nuint* src_len) → byte*
+        ///     返 atlas filename UTF-8 串（**无尾 NUL**）+ *out_src_len = 字节长；
+        ///     *out_tex_id = core 分配（= i+1）；*out_w/*out_h = atlas 像素尺寸。
+        ///
+        /// T5 string contract（坑16）：返串**无尾 NUL** + out_len = 字节长。C# 必走
+        /// `Encoding.UTF8.GetString(p, (int)srcLen)`（len-based 读），**禁止** PtrToStringAnsi
+        /// （NUL-scan 会越过 stage 缓存末尾读未映射内存）。
         /// </summary>
-        void LoadTextures()
+        void LoadAtlas()
         {
             _texMap.Clear();
             if (_stage == null) return;
 
             nuint count;
-            unsafe { count = Native.loomgui_stage_image_src_count(_stage); }
+            unsafe { count = Native.loomgui_stage_atlas_count(_stage); }
 
             for (nuint i = 0; i < count; i++)
             {
                 byte* p = null;
-                nuint len = 0;
-                unsafe { p = Native.loomgui_stage_image_src_at(_stage, i, &len); }
-                if (p == null || len == 0) continue;
+                nuint srcLen = 0;
+                uint tid = 0;
+                uint aw = 0;
+                uint ah = 0;
+                unsafe { p = Native.loomgui_stage_atlas_info(_stage, i, &tid, &aw, &ah, &srcLen); }
+                if (p == null || srcLen == 0) continue;
 
-                // len-based 读（T5 contract；禁止 NUL-scan）。
-                string src = Encoding.UTF8.GetString(p, (int)len);
+                // len-based 读（T5 contract；禁止 NUL-scan / PtrToStringAnsi）。
+                string src = Encoding.UTF8.GetString(p, (int)srcLen);
                 string path = System.IO.Path.Combine(Application.streamingAssetsPath, src);
 
                 byte[] bytes;
                 try { bytes = System.IO.File.ReadAllBytes(path); }
                 catch (System.Exception e)
                 {
-                    Debug.LogError($"[LoomStage] texture not found: {src} ({e.Message})");
+                    Debug.LogError($"[LoomStage] atlas not found: {src} ({e.Message})");
                     continue;
                 }
 
-                var tex = new Texture2D(2, 2);
+                // 初始尺寸传 atlas 元数据 w/h（LoadImage 会按 PNG IHDR 重设，但构造时给合理值）。
+                var tex = new Texture2D((int)aw, (int)ah);
                 if (!tex.LoadImage(bytes))
                 {
-                    Debug.LogError($"[LoomStage] bad png: {src}");
-                    // 全限定 UnityEngine.Object：using System 引入 System.Object，裸 Object 歧义（坑）。
+                    Debug.LogError($"[LoomStage] bad atlas png: {src}");
+                    // 全限定 UnityEngine.Object：using System 引入 System.Object，裸 Object 歧义（坑18）。
                     if (Application.isPlaying) UnityEngine.Object.Destroy(tex);
                     else UnityEngine.Object.DestroyImmediate(tex);
                     continue;
                 }
 
-                // register：复用 image_src_at 返回的同一 src 指针（stage 缓存有效期内幂等）。
-                // core 按 src 去重分 tex_id（>=1 成功；0 = 哨兵失败）。
-                uint tid;
-                unsafe { tid = Native.loomgui_stage_register_texture(_stage, p, len, (uint)tex.width, (uint)tex.height); }
-                if (tid != 0) _texMap[tid] = tex;
-                else
-                {
-                    Debug.LogError($"[LoomStage] register_texture 失败：{src}");
-                    if (Application.isPlaying) UnityEngine.Object.Destroy(tex);
-                    else UnityEngine.Object.DestroyImmediate(tex);
-                }
+                _texMap[tid] = tex;   // tid = i+1（core 分配）；同 atlas 所有 sprite 共享此 Texture2D
             }
         }
 
