@@ -6,7 +6,7 @@ pub mod blob;
 use std::ffi::CString;
 use loomgui_core::stage::Stage;
 
-/// 版本字符串（C null-terminated `b"v1a\0"`）。Task 1 工具链 round-trip 用。
+/// 版本字符串（C null-terminated `b"v1b\0"`）。Task 1 工具链 round-trip 用。
 ///
 /// 返回 `*const u8`（csbindgen 映射为 C# `byte*`）；CString::as_ptr 给的是
 /// `*const c_char`（i8），这里 cast 对齐签名。OnceLock 缓存，避免每次分配+泄漏。
@@ -14,7 +14,7 @@ use loomgui_core::stage::Stage;
 pub extern "C" fn loomgui_version() -> *const u8 {
     static VERSION: std::sync::OnceLock<CString> = std::sync::OnceLock::new();
     VERSION
-        .get_or_init(|| CString::new("v1a").unwrap())
+        .get_or_init(|| CString::new("v1b").unwrap())
         .as_ptr() as *const u8
 }
 
@@ -62,6 +62,10 @@ pub extern "C" fn loomgui_stage_free(h: *mut StageHandle) {
 }
 
 /// 装载 HTML+CSS 文本（指针+len）。0=ok，-1=err。null/非 UTF-8 返回 -1。
+///
+/// **parse-gated：**本函数走核心 HTML/CSS 解析路径，`--no-default-features` 关掉 parse 时不存在。
+/// 包加载路径走 `loomgui_stage_load_package`（常驻，不 gate）。
+#[cfg(feature = "parse")]
 #[no_mangle]
 pub extern "C" fn loomgui_stage_load_html(
     h: *mut StageHandle,
@@ -85,6 +89,28 @@ pub extern "C" fn loomgui_stage_load_html(
         Err(_) => return -1,
     };
     match sh.stage.load_inline(html, css) {
+        Ok(()) => 0,
+        Err(_) => -1,
+    }
+}
+
+/// 装载二进制包（spec §12/§13）。bytes = .pkg.bin（指针+len）。0=ok，-1=err。
+/// null 句柄/空指针返回 -1。包是 Rust-internal，C# 只透传 bytes（不解析）。
+///
+/// **常驻（不 gate）：**包格式是 runtime 的稳定入口，不依赖 parse feature——
+/// `--no-default-features` 构建的 .dll 仍有本函数（Unity 用 default 带 parse 的 dev .dll）。
+#[no_mangle]
+pub extern "C" fn loomgui_stage_load_package(
+    h: *mut StageHandle,
+    bytes: *const u8,
+    len: usize,
+) -> i32 {
+    if h.is_null() || bytes.is_null() {
+        return -1;
+    }
+    let sh = unsafe { &mut *h };
+    let bytes = unsafe { std::slice::from_raw_parts(bytes, len) };
+    match sh.stage.load_package(bytes) {
         Ok(()) => 0,
         Err(_) => -1,
     }
@@ -153,10 +179,10 @@ mod tests {
     use std::ffi::CStr;
 
     #[test]
-    fn version_returns_c_string_v1a() {
+    fn version_returns_c_string_v1b() {
         unsafe {
             let s = CStr::from_ptr(loomgui_version() as *const i8);
-            assert_eq!(s.to_str().unwrap(), "v1a");
+            assert_eq!(s.to_str().unwrap(), "v1b");
         }
     }
 }
@@ -178,6 +204,7 @@ mod abi_tests {
         (c, len)
     }
 
+    #[cfg(feature = "parse")]
     #[test]
     fn full_ffi_roundtrip_builds_blob() {
         let (fp, fplen) = font_path();
@@ -204,6 +231,32 @@ mod abi_tests {
         unsafe {
             assert_eq!(&*(ptr as *const u8), &0x4Cu8); // magic 第一字节 'L'
         }
+        loomgui_stage_free(h);
+    }
+
+    /// load_package FFI：手搓 scene（不走 parse）→ write_package → FFI 装载 → tick → blob。
+    /// 与 load_html 路径解耦（parse feature off 时仍可用）。
+    #[test]
+    fn load_package_builds_blob_from_package() {
+        use loomgui_core::asset::write_package;
+        use loomgui_core::scene::{NodeKind, Scene};
+        use loomgui_core::style::resolved::ResolvedStyle;
+        let (fp, fplen) = font_path();
+        // 手搓 scene（不走 parse），打成包
+        let entries = vec![
+            (None, NodeKind::Container, ResolvedStyle::default()),
+            (Some(0), NodeKind::Text { content: "hi".into() }, ResolvedStyle::default()),
+        ];
+        let pkg = write_package(&Scene::build(&entries), (100.0, 50.0));
+
+        let h = loomgui_stage_new(fp.as_ptr() as *const u8, fplen, 100.0, 50.0);
+        assert!(!h.is_null());
+        let r = loomgui_stage_load_package(h, pkg.as_ptr(), pkg.len());
+        assert_eq!(r, 0, "load_package ok");
+        loomgui_stage_tick(h, 0.0);
+        let mut len = 0usize;
+        let ptr = loomgui_stage_borrow_frame(h, &mut len);
+        assert!(!ptr.is_null() && len > 12, "tick 后应有 blob");
         loomgui_stage_free(h);
     }
 
