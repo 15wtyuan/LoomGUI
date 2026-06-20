@@ -225,8 +225,9 @@ namespace LoomGUI
                 if (!tex.LoadImage(bytes))
                 {
                     Debug.LogError($"[LoomStage] bad png: {src}");
-                    if (Application.isPlaying) Object.Destroy(tex);
-                    else Object.DestroyImmediate(tex);
+                    // 全限定 UnityEngine.Object：using System 引入 System.Object，裸 Object 歧义（坑）。
+                    if (Application.isPlaying) UnityEngine.Object.Destroy(tex);
+                    else UnityEngine.Object.DestroyImmediate(tex);
                     continue;
                 }
 
@@ -238,8 +239,8 @@ namespace LoomGUI
                 else
                 {
                     Debug.LogError($"[LoomStage] register_texture 失败：{src}");
-                    if (Application.isPlaying) Object.Destroy(tex);
-                    else Object.DestroyImmediate(tex);
+                    if (Application.isPlaying) UnityEngine.Object.Destroy(tex);
+                    else UnityEngine.Object.DestroyImmediate(tex);
                 }
             }
         }
@@ -389,8 +390,8 @@ namespace LoomGUI
             {
                 foreach (var t in _texMap.Values)
                 {
-                    if (Application.isPlaying) Object.Destroy(t);
-                    else Object.DestroyImmediate(t);
+                    if (Application.isPlaying) UnityEngine.Object.Destroy(t);
+                    else UnityEngine.Object.DestroyImmediate(t);
                 }
                 _texMap.Clear();
             }
