@@ -42,7 +42,7 @@ namespace LoomGUI.Tests
             for (int k = 0; k < 6; k++) arena.AddRange(System.BitConverter.GetBytes(ix[k]));
             int arenaLen = arena.Count - arenaStart;
 
-            // 13 列 offset + mesh/text/clip 三 arena off+len
+            // 14 列 offset + mesh/text/clip 三 arena off+len
             foreach (var o in offs) b.AddRange(System.BitConverter.GetBytes(o));
             int meshArenaOff = colOff;
             b.AddRange(System.BitConverter.GetBytes(meshArenaOff));
@@ -69,6 +69,7 @@ namespace LoomGUI.Tests
             b.AddRange(System.BitConverter.GetBytes((uint)arenaLen)); // mesh_len
             b.AddRange(System.BitConverter.GetBytes(0u));        // text_off
             b.AddRange(System.BitConverter.GetBytes(0u));        // text_len
+            b.AddRange(System.BitConverter.GetBytes(0u));        // tex_id（v1b.2，Mesh 占位 0）
 
             b.AddRange(arena);
             // text_arena T1 空，跳过。
