@@ -79,7 +79,7 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 
 ### 2.4 text（§9）
 - ttf-parser 度量 + 贪心断行（unicode-linebreak UAX#14 留 v1.x）→ `TextLayout` SOA 三表（lines/runs/glyphs）。
-- `Glyph { glyph_id, x, y, bearing_x, bearing_y }` 绝对坐标。
+- `Glyph { glyph_id, codepoint, x, y, bearing_x, bearing_y }` 绝对坐标。**codepoint**（v1a Phase 2 加）供引擎字体 API（Unity `GetCharacterInfo(char)` 按码点非 glyph_id）。
 - v0 砍 rustybuzz/BiDi/fallback，仅 ASCII+CJK（CJK 需 CJK 字体；v0 fixture 用 ASCII）。
 
 ### 2.5 layout（§7）
@@ -93,20 +93,31 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 - v0 保序（无 FairyBatching AABB 重排，v1.x 优化）。
 
 ### 2.7 stage
-- `Stage::new(font_path, root_size)` → `load_inline(html, css)` → `tick_and_render()` → `Vec<RenderNode>` → `render_json()`。
+- `Stage::new(font_path, root_size)` → `load_inline(html, css)` → `tick_and_render()` → `FrameData{nodes:Vec<RenderNode>, clips:Vec<ClipEntry>}`（v1a Phase 2：clips=嵌套交集后的 clip 表）→ `render_json()`。
 - 静态首帧：tick 接空输入、dt=0。
 
 ### 2.8 FFI（loomgui_ffi_c，主文档 §14，v1a Phase 1）
 - `extern "C"` 薄包装 + opaque `*mut StageHandle`；csbindgen 扫 `src/lib.rs` 生成 C# `Native` 类。
 - ABI：`stage_new/free/load_html/tick/borrow_frame/shutdown`。string 走 UTF-8 `*const u8`+len；`borrow_frame(h, *mut usize) -> *const u8` 返 Rust 拥有的帧 blob（下 tick 失效；未 tick 返 null+len=0）。
 - `StageHandle{ stage, frame_blob: Vec<u8> }`——tick 时 `build_blob` 覆写 frame_blob。
-- `build_blob(&[RenderNode]) -> Vec<u8>`：SOA 公共头 11 列（node_id/parent_id(i32,-1=none)/visible/alpha/sort_key/local_x/local_y/mask_context/payload_kind/mesh_off/mesh_len）+ mesh arena（vert_count/idx_count/verts/uvs/colors/indices）。**mesh 顶点 re-base 到节点本地**（减 transform.x/y——C# 巢状 GO 靠 localPosition 定位）。全 LE。
+- `build_blob(&FrameData) -> Vec<u8>`（**v2**, version=2）：SOA 公共头 **13 列**（v1 的 11 + `text_off`/`text_len`）+ mesh arena + **text_arena**（per text 节点 `font_size:u32|color:f32×4|glyph_count:u32|glyphs[{codepoint,pen_x,pen_y}]`）+ **clip 表**（`context_id→design rect`，嵌套交集）。magic+version 进 header，C# `FrameBlob.IsValid` 校验（防 stale v1 blob）。**mesh 顶点 re-base 到节点本地**（减 transform.x/y）。全 LE。改 blob 格式必重编+换 .dll（坑 10）。
 
 ### 2.9 Unity 后端（loomgui_unity，主文档 §14，v1a Phase 1）
-- `FrameBlob`（BitConverter 解析 blob）→ `MirrorPool.Sync`（`Dictionary<uint,RenderObj>` O(n) stale-flag diff：标 stale→遍历命中清 stale/更新→余销毁；按 `parent_id` 巢状 GO，`localPosition=(local_x,local_y)`，`sortingOrder=sort_key`，mesh 上传，payload_kind 2/0 跳过）。
-- `MaterialManager`：key=(program, texture, mask_context)，同 key 复用 Material。**tint×alpha 已 baked 进顶点色（Rust 侧）**，材质只带 texture+clip_box+blend（SrcAlpha/OneMinusSrcAlpha）。
-- `LoomStage`（`[ExecuteAlways]` MonoBehaviour）：LateUpdate `tick→borrow_frame→Marshal.Copy→FrameBlob→MirrorPool.Sync`。根 GO `localScale=(sf,-sf,sf)`（shrink-to-fit sf=min(sw/dw,sh/dh) + y-flip 合一）+ `localPosition=(-sw/2,sh/2,0)`；UI 相机正交 `orthoSize=sh/2` `cullingMask=1<<6`(LoomUI) **独立于根**（不 SetParent）。shader `Cull Off`（根翻转 winding）。
-- URP unlit shader：`col=tex2D×v.color`、`Cull Off`、`ZWrite Off`、`Blend[_Src][_Dst]` property、`CLIPPED` variant（rect mask `_ClipBox` discard，Phase 2 启用）。图片 v1a 占位 1×1 白贴图；Text Phase 2。
+- `FrameBlob`（BitConverter 解析 v2 blob，`IsValid` 校验 magic+version）→ `MirrorPool.Sync`（`Dictionary<uint,RenderObj>` O(n) stale-flag diff）。**flatten（Phase 2）**：所有 GO 挂**根**（非巢状——local_x/local_y 是绝对 design 坐标，巢状 SetParent 会双计父位置，坑见 §2.11/Phase 1 单节点未暴露），`localPosition=绝对`、`sortingOrder=sort_key`；kind=1 Mesh / kind=2 Text（→TextRasterizer）/ kind=0 跳过。**buffer 复用**：RenderObj 持可复用 List，`SetVertices(List)` 零 alloc（T7，500 节点压测）。
+- `MaterialManager`：key=(program, texture, mask_context)——mask_context 进 key → 每 ctx 独立 Material 持各自 `_ClipBox`；ctx>0 → `EnableKeyword("CLIPPED")`（`#pragma multi_compile`）+ `SetClipBox`。**tint×alpha baked 进顶点色（Rust 侧）**，材质只带 texture+clip_box+blend。
+- `LoomStage`（`[ExecuteAlways]` MonoBehaviour）：LateUpdate `tick→borrow_frame→Marshal.Copy→FrameBlob→MirrorPool.Sync`。根 GO `localScale=(sf,-sf,sf)`（shrink-to-fit sf=min(sw/dw,sh/dh) + y-flip 合一）+ `localPosition=(-sw/2,sh/2,0)`；UI 相机正交 `orthoSize=sh/2` `cullingMask=1<<6`(LoomUI) **独立于根**（不 SetParent）。shader `Cull Off`（根翻转 winding）。Phase 2：`[SerializeField] Font _font`（EnsureFont 兜底 AssetDatabase 加载 DejaVu）、`Font.textureRebuilt+=OnRebuilt`（OnDestroy 解绑）、`ResetStatics`（`SubsystemRegistration` 调 `loomgui_shutdown`+`TextRasterizer.ResetStatic`）、**Awake 清 root 下 loom_node 孤儿 GO**（ExecuteAlways 防累积，坑 11）。
+- URP unlit shader：`col=tex2D×v.color`、`Cull Off`、`ZWrite Off`、`Blend[_Src][_Dst]` property、`CLIPPED` variant（rect mask `_ClipBox` discard，Phase 2 启用）。图片 v1a 占位 1×1 白贴图；**Text Phase 2 ✅**（font atlas）。
+
+### 2.10 文字渲染链（v1a Phase 2，§9/§14）
+- **Rust 笔位权威 + Unity 纯光栅**（偏离 fgui 的 advance/行高，§9.1 跨平台根）。blob text_arena 每 text 节点 = `font_size:u32|color:f32×4|glyph_count:u32|glyphs[{codepoint:u32,pen_x:f32,pen_y:f32}]`；pen=GO-local（content 偏移 Rust 烤进），pen_y=`line.y+line.baseline`，**不 re-base**（pen 已节点局部，与 mesh re-base 不同）。
+- Unity `TextRasterizer.BuildMesh`：`RequestCharactersInTexture(串,font_size)` 填 atlas → 每 glyph `GetCharacterInfo((char)codepoint,font_size)` 取 UV 四角 + 像素 box(`minX/maxY/maxX/minY`)，quad 摆 `pen+box`（y-down：`top=pen_y−maxY,bottom=pen_y−minY`），顶点序 BL/TL/TR/BR 对齐 fgui `DrawGlyph`。**不用** `CharacterInfo.advance` / `fontSize×1.25` 行高。
+- **必修坑**：`Font.textureRebuilt` 静态事件 → `s_fontVersion++` → MirrorPool 下帧检测版本变 → 强制 text 节点重 BuildMesh（atlas rebuild 后 glyph UV 变，不监听画花字）。照搬 fgui `DynamicFont.cs:356-375`。
+- material key=(program=1, `font.material.mainTexture`, mask_context)；texture=动态字体 atlas。
+
+### 2.11 rect mask `_ClipBox`（v1a Phase 2，§8.6/§14）
+- Rust：batch DFS 算**嵌套 clip 交集**（祖先 clip 链累乘交，disjoint→零面积 Rect 非 None），emit clip 表 `context_id→绝对 design rect`；修 v0「只裁最内层」bug。mask_context 进 material key。
+- Unity：design rect→world（**根 transform** `TransformPoint` 两角，非逐 clipper 矩阵——clip 是绝对 design 非 clipper-local）→ `_ClipBox=(-cx/hw,-cy/hh,1/hw,1/hh)`（照搬 fgui `UpdateContext.cs:105-156`）；零 half→safe-blank `(-2,-2,0,0)` 防 div0。MirrorPool 每 ctx 每帧首次 SetClipBox（fgui `firstMaterialInFrame`）。shader CLIPPED：`clipPos=TransformObjectToWorld(pos).xy×zw+xy`，`col.a*=step(max(abs(clipPos)),1)`。
+- **坐标模型**：blob local_x/local_y + clip_rect 均**绝对 design**（layout 累加父 origin）；后端 flatten 挂根 GO，根 transform 一次性映射 design→world。nesting+父相对坐标留 v1c（transform 继承/事件）。
 
 ## 3. 依赖 API 适配踩坑（v0 最大教训）
 
@@ -152,7 +163,11 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 - **EditMode 禁 `Object.Destroy`**（报 "Destroy may not be called from edit mode"），须 `DestroyImmediate`。`[ExecuteAlways]` 组件生产代码 EditMode 也跑 → `Application.isPlaying ? Destroy : DestroyImmediate`（Mesh 是独立 UnityEngine.Object，GO 销毁不连带，须显式销毁防泄漏）。
 - `Camera.nearClipPlane` **须 >0**（负值抛异常）。
 - Unity 开着**锁 native `.dll`**——重建/拷 `.dll` 须先关 Unity（锁文件 `Temp/UnityLockfile` 可能残留非真锁，以能否 `rm` 为准）。
-- 生成物 gitignore：`.slnx`(6.5 解决方案)、csbindgen `.cs` 绑定及其 `.cs.meta`；`.dll`（`!**/Plugins/**/*.dll` 白名单）入库；`.meta` 是 Unity 资产元数据须入库。
+- 生成物 gitignore：`.slnx`(6.5 解决方案)、csbindgen `.cs` 绑定及其 `.cs.meta`；`.dll`（`!**/Plugins/**/*.dll` 白名单）入库；`.meta` 是 Unity 资产元数据须入库（**implementer 提 .cs 易漏 .meta**——Unity 关着时不生成，坑 13）。
+- **动态字体 API**（Text 光栅）：`Font.RequestCharactersInTexture(string, fontSize, FontStyle)` 填 atlas（必先调，否则 GetCharacterInfo 恒 false）→ `Font.GetCharacterInfo(char, out CharacterInfo, fontSize, FontStyle) -> bool` 取 `minX/maxY/maxX/minY`（像素 box）+ `uvBottomLeft/uvTopLeft/uvTopRight/uvBottomRight`。`CharacterInfo.advance` 存在但 LoomGUI **不用**（Rust 笔位）。`Font.textureRebuilt` 是**静态**事件（register/OnDestroy 解绑防泄漏）。
+- **`HideFlags.DontSaveInEditor`**：`[ExecuteAlways]` 程序生成 GO 标之防被存进场景（否则 EditMode dirty 场景 + Play/Stop 累积残留，坑 11）。
+- **`Mesh.SetVertices(List)`/`SetUVs`/`SetColors`/`SetTriangles(List)` overload**：零 per-frame 数组 alloc（vs `SetVertices(Vector3[])`）。`List.Clear()` 保 Capacity，warm-up 后复用零 alloc。
+- **shader keyword**：`#pragma multi_compile _ CLIPPED`（两 variant 都编，`EnableKeyword` 切换生效）**非** `shader_feature`（未启用的 variant 会被 strip → clip 静默失效）。
 
 ## 4. AI 可预测性核心约束（首要准则，勿违背）
 
@@ -223,6 +238,36 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 **解决**：build_blob **不乘 color_tint**——顶点色 = background_color，仅 `alpha×node opacity`。color_tint 是文本色（Phase 2 文本用）。
 **教训**：mesh colors 已是最终色（bg-color / 图片白），别再叠 color_tint；§4.2b「tint×alpha 烘焙」指**文本/图片** tint，非背景色块。
 
+### 坑 10：Rust 改 blob 格式后 .dll 没换 → C# 静默拒帧不渲染（v1a Phase 2）
+**症状**：PlayMode **啥都不渲**（红块文字全无）、Console **干净无错**。
+**根因**：Plugins 里 `.dll` 是旧的（Phase 1），产 **v1 blob（version=1）**；T1 起 C# `FrameBlob.IsValid` 只认 version==2 → `MirrorPool.Sync` 第 1 行 `if(!IsValid)return` **静默早退**。Unity 开着锁 .dll，编译后没换。
+**解决**：`cargo build --release` → **关 Unity**（锁 .dll）→ `cp target/release/loomgui_ffi_c.dll Plugins/LoomGUI/` → 重开。
+**教训**：**任何 Rust FFI 改动（尤其 blob/ABI 格式）后，PlayMode 验前必重编+换 .dll**。症状"全不渲+Console 干净"先怀疑 stale .dll（`md5sum` 对比 fresh build）。Unity 开着锁 .dll，换 .dll 必关 Unity。
+
+### 坑 11：ExecuteAlways 程序生成 GO 累积泄漏（v1a Phase 2）
+**症状**：Play/Stop 反复 + domain reload 后 `loom_node` GO 在 Hierarchy 累积、内存泄漏。
+**根因**：`[ExecuteAlways]` EditMode 也跑，MirrorPool 产的 `loom_node` GO 挂 root 下被**存进场景**；每次 Awake 新 `_pool` 丢旧引用 → 孤儿 GO 清不掉。
+**解决**：GO/Mesh 标 `HideFlags.DontSaveInEditor`（不入存盘）+ Awake 开头清 root 下 `loom_node` 孤儿 GO。
+**教训**：ExecuteAlways + 程序生成 GO 必加 DontSave + 开局清孤儿；OnDestroy 的 `pool.Clear` 只清当前 run 的，跨 run 孤儿要 Awake 清。
+
+### 坑 12：手搓 blob 测 fixture 写 AoS，多节点读串列（v1a Phase 2）
+**症状**：EditMode 跑 `MirrorPoolFlattenTests` 报 `SetTriangles: idx 非三的倍数`。
+**根因**：C# 手搓 2 节点 blob 写 **AoS**（node0 全字段、node1 全字段）但列 offset 按 1 节点 elemSize 递进、`FrameBlob` 读 **SOA**（列优先 `ColOff(idx)+i*elemSize`）→ node1 每字段读串一位，mesh_off 落到 node0 mesh_len → idx 读成垃圾。
+**解决**：fixture 列 offset 按 `NodeCount×elemSize` 递进、数据列优先写（镜像 `blob.rs`）。单节点 fixture AoS≡SOA 不受影响（故 Phase 1 没暴露）。
+**教训**：手搓 blob byte[] 测必 SOA 列优先，与 `blob.rs`/`FrameBlob` 一致；多节点才暴露（单节点掩盖）。
+
+### 坑 13：implementer 提 .cs 漏 .meta（v1a Phase 2）
+**症状**：合 main 后 4 个新 `.cs` 的 `.meta` 没入库（ClipMath/ClipBoxTests/FrameBlobV2Tests/MirrorPoolFlattenTests）。
+**根因**：Unity 关着时 import 不生成 `.meta`；subagent 提 .cs 时 Unity 未开 → .meta 后生成、未 add。TextRasterizer.cs.meta 这次提了（那次 Unity 开着），其余漏。
+**解决**：合 main 后补提交漏的 .meta；或 implementer 提前确保 Unity 开过一次生成 .meta。
+**教训**：Unity `.meta` 随 `.cs` 入库；subagent 流程里提 .cs 后 controller 验 `.meta` 是否齐（Unity 生成的资产元数据，缺则 GUID 不稳）。
+
+### 坑 14：Unity GetCharacterInfo 要 codepoint 非 glyph_id（v1a Phase 2）
+**症状**：text_arena 只有 ttf `glyph_id`，Unity 取不到字。
+**根因**：Unity `Font.GetCharacterInfo(char, ...)` 按 **Unicode 码点**，非 ttf glyph_id；ttf glyph_id 是字体内部字形索引。
+**解决**：Rust `Glyph` 加 `codepoint:u32`（`measure_text` 遍历 char 时填），text_arena 送 codepoint，Unity `(char)codepoint` 调 GetCharacterInfo。
+**教训**：引擎字体 API 多按码点；核心 Glyph 须同时持 glyph_id（ttf 直连后端）+ codepoint（引擎字体 API）。
+
 ## 6. 调试/验证技巧
 
 - **★ 实现 v1+ 后端/渲染/对象模型前，先参考 `temp/FairyGUI-unity/` 源码**（对照机制、避免走歪——本 session 因没先看 fgui 的 sortingOrder/rect-mask/MaterialManager，初版设计走了弯路：误用 z 排序、误以为 rect mask 要独立 GO、把绘制序想复杂）。
@@ -235,7 +280,10 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 - 查 crate 实际 API：`~/.cargo/registry/src/<crate>-<ver>/src/`。
 - Rust→Unity 闭环：改 Rust 后 `cargo build -p loomgui_ffi_c --release` → 关 Unity → `cp target/release/loomgui_ffi_c.dll loomgui_unity/Assets/Plugins/LoomGUI/`。
 - Unity 验证：Test Runner EditMode（`Window→General→Test Runner`）；PlayMode 看 Game 视图渲染；PlayMode 前确认 `.dll` 是最新版。
-- 跨语言 round-trip：Rust `build_blob` ↔ C# `FrameBlob` 靠手搓 blob byte[] 的 EditMode 测互验（blob 布局是 Rust↔C# 契约，两端须字节级一致；改列/偏移必同步）。
+- 跨语言 round-trip：Rust `build_blob` ↔ C# `FrameBlob` 靠手搓 blob byte[] 的 EditMode 测互验（blob 布局是 Rust↔C# 契约，两端须字节级一致；改列/偏移必同步）。**手搓多节点 fixture 必 SOA 列优先**（坑 12，单节点掩盖 AoS 错）。
+- **stale .dll 诊断**：PlayMode **全不渲 + Console 干净** → `md5sum target/release/loomgui_ffi_c.dll loomgui_unity/Assets/Plugins/LoomGUI/loomgui_ffi_c.dll`，不等 = stale（Rust 改 blob/ABI 格式没换 .dll，坑 10）。
+- **T7 perf 基线**：500 节点静态 ~5-8ms/帧（120-200fps，无卡顿过 §9.3）。成本 = 朴素每帧全量重传（Rust 没 dirty/Unchanged 跳过 + `ReadMesh` per-frame alloc 数组）；优化（dirty 跳静态≈0 + ArrayPool 冷帧≤2ms）归 v1e。
+- PlayMode 验前 checklist：① Rust 改过 → 重编+换 .dll（关 Unity）② LoomStage `_font` 赋值 ③ Console 看红字 ④ Hierarchy 看 GO 不累积。
 
 ## 7. 已知问题/未完成（v0 ledger）
 
@@ -253,16 +301,20 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 
 **v1a Phase 1 ✅ 完成（merged main @ 7920bbd）**：FFI crate（loomgui_ffi_c：csbindgen + SOA blob）+ Unity 6.5 URP 后端镜像（FrameBlob/MirrorPool/MaterialManager/LoomStage/shader）。静态色块在 Unity Game 视图真渲染——**v1 最大风险缝闭合**。spec `docs/superpowers/specs/2026-06-19-v1a-unity-render-design.md`、plan `docs/superpowers/plans/2026-06-19-v1a-unity-render-phase1.md`。
 
-**v1a Phase 1 defer → Phase 2**（v1a 只渲静态色块）：
-- rect mask：`_ClipBox` shader discard + mask_context 材质 + CLIPPED keyword（shader variant 已预留）。
-- 文本：`Font.RequestCharactersInTexture`+`GetCharacterInfo` 取 UV/bbox（**丢弃 Unity advance**，位置按 Rust TextLayout）+ `Font.textureRebuilt` 监听 atlas rebuild 重取 UV。
-- 500 节点静态压测。
-- Domain reload 完整保护：`[RuntimeInitializeOnLoadMethod(SubsystemRegistration)]` 调 `loomgui_shutdown` + 清 C# 缓存（v1a 仅占位）。
+**v1a Phase 2 ✅ 完成（merged main @ 9889afa）**：Text（Rust 笔位+Unity 光栅+textureRebuilt，§2.10）+ rect mask（嵌套交集+_ClipBox，§2.11）+ 500 节点压测（buffer 复用）+ Domain reload（ResetStatics 接 shutdown）。**v0 fixture（div+文本+img+rect mask）在 Unity 真渲，500 节点静态无卡顿，进出 Play 不 crash**。spec `docs/superpowers/specs/2026-06-19-v1a-unity-render-phase2-design.md`、plan `docs/superpowers/plans/2026-06-19-v1a-unity-render-phase2.md`。踩坑：.dll 重编换（坑 10）、ExecuteAlways GO 泄漏（坑 11）、SOA fixture（坑 12）、codepoint（坑 14）。
 
-**v1a Phase 1 perf defer → v1e**（spec §2 显式 defer）：
-- `MirrorPool.UploadMesh` 每帧分配 `Vector3[]/Color[]/int[]`（改 List 池化 + `SetVertices(List)`）。
-- shader 非 CLIPPED 路径无条件算 clipPos（fgui 用 `#ifdef` 守卫）。
-- ArrayPool 帧拷贝（v1a 先 `new byte[]`）、冷帧/换页帧 FFI ≤2ms。
+**v1a Phase 2 defer → v1e**（perf，spec §4.5 / §7）：
+- **静态帧朴素全量重传**：Rust 没做 dirty/`Unchanged` 跳过（每帧对所有节点 emit Mesh）→ MirrorPool 每帧重传全部。优化：Rust dirty 跟踪 emit Unchanged → 静态帧≈0。T7 基线 ~5-8ms/500 节点。
+- `FrameBlob.ReadMesh` 仍 per-frame alloc `MeshSegment` 数组（UploadMesh List 复用 T7 已做，ReadMesh 没做）→ ArrayPool 化。
+- `TextRasterizer.BuildMesh` per-rebuild alloc 4 List（text-heavy 场景才痛，T7 未触）。
+- shader 非 CLIPPED 路径无条件算 clipPos（fgui `#ifdef` 守卫）；ArrayPool 帧拷贝、冷帧/换页帧 FFI ≤2ms。
+- Font `Box::leak`（真进程级泄漏，~700KB/Stage）缓存化——×20 域重载测**未现显著增长**，按 <5MB 阈值**推 v1e**（非阻塞）。
+- 坐标 nesting+父相对（transform 继承/事件）→ v1c。
+
+**v1 其余 defer（v0 起，未动）**：
+- 打包器 loomgui_pkg + 真纹理加载（v1b，G1/G7）—— **下一个**。
+- event/命中/输入（v1c，G4）、anim GTween/ScrollPane（v1d，§11/§12.7）。
+- NativeHost/virtualization/shape mask：v1.x。
 
 **v1 其余 defer（v0 起，未动）**：
 - 打包器 loomgui_pkg + 真纹理加载（v1b，G1/G7）。
