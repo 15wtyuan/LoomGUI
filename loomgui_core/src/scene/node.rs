@@ -74,28 +74,63 @@ pub struct Scene {
     pub nodes: Vec<Node>,
 }
 
-/// 从 ElementTree + ResolvedStyle 构建 Node 树。
+impl Scene {
+    /// 从扁平 entries（DFS 先序）建 Node 树。`NodeId = entries 下标`；
+    /// `parent_idx` 指向 entries 下标，`None` = 根。
+    /// clip_rect slot / dirty 标志按 style.overflow_hidden / kind 派生。
+    /// parse 路径（build_scene）与包加载路径（read_package）共用——防建树逻辑分叉。
+    pub fn build(entries: &[(Option<usize>, NodeKind, ResolvedStyle)]) -> Scene {
+        let mut scene = Scene {
+            roots: Vec::new(),
+            nodes: Vec::new(),
+        };
+        for (i, (parent_idx, kind, style)) in entries.iter().enumerate() {
+            scene.nodes.push(Node {
+                id: NodeId(i),
+                parent: parent_idx.map(NodeId),
+                kind: kind.clone(),
+                style: style.clone(),
+                taffy_id: None,
+                layout_rect: Rect::default(),
+                clip_rect: if style.overflow_hidden {
+                    Some(Rect::default())
+                } else {
+                    None
+                },
+                children: Vec::new(),
+                dirty_mesh: true,
+                dirty_text: matches!(kind, NodeKind::Text { .. }),
+            });
+        }
+        // 接 children + roots（entries 先序 → 按 parent 出现序填，与旧 build_rec 一致）
+        for i in 0..entries.len() {
+            match entries[i].0 {
+                Some(p) => scene.nodes[p].children.push(NodeId(i)),
+                None => scene.roots.push(NodeId(i)),
+            }
+        }
+        scene
+    }
+}
+
+/// 从 ElementTree + ResolvedStyle 构建 Node 树（gather 后调 `Scene::build`）。
 ///
 /// `styles` 必须与 `tree.nodes` 同长且同序（由 `style::cascade::resolve_styles` 保证）。
 pub fn build_scene(tree: &ElementTree, styles: &[ResolvedStyle]) -> Scene {
-    let mut scene = Scene {
-        roots: Vec::new(),
-        nodes: Vec::new(),
-    };
+    let mut entries: Vec<(Option<usize>, NodeKind, ResolvedStyle)> = Vec::new();
     for root in &tree.roots {
-        let id = build_rec(tree, styles, *root, None, &mut scene);
-        scene.roots.push(id);
+        gather_rec(tree, styles, *root, None, &mut entries);
     }
-    scene
+    Scene::build(&entries)
 }
 
-fn build_rec(
+fn gather_rec(
     tree: &ElementTree,
     styles: &[ResolvedStyle],
     el_id: ElementId,
-    parent: Option<NodeId>,
-    scene: &mut Scene,
-) -> NodeId {
+    parent_idx: Option<usize>,
+    entries: &mut Vec<(Option<usize>, NodeKind, ResolvedStyle)>,
+) -> usize {
     let el = &tree.nodes[el_id.0];
     let style = &styles[el_id.0];
     // parse 层已保证 tag 在围栏白名单内（div/span/img/button/l-container），
@@ -112,88 +147,38 @@ fn build_rec(
             content: el.text.clone().unwrap_or_default(),
         },
         _ => unreachable!(
-            "parse 层白名单已挡围栏外 tag，scene 不应见到 <{}>；\
-             这是 parse/scene 契约破坏",
+            "parse 层白名单已挡围栏外 tag，scene 不应见到 <{}>；这是 parse/scene 契约破坏",
             el.tag
         ),
     };
-    let has_element_children = !el.children.is_empty();
-    let nid = NodeId(scene.nodes.len());
-    scene.nodes.push(Node {
-        id: nid,
-        parent,
-        kind: kind.clone(),
-        style: style.clone(),
-        taffy_id: None,
-        layout_rect: Rect::default(),
-        clip_rect: if style.overflow_hidden {
-            Some(Rect::default())
-        } else {
-            None
-        },
-        children: Vec::new(),
-        dirty_mesh: true,
-        dirty_text: matches!(kind, NodeKind::Text { .. }),
-    });
+    let my_idx = entries.len();
+    entries.push((parent_idx, kind.clone(), style.clone()));
 
-    // §4.2：Container/Button 的裸文本 → Text 子节点（文本是 flex item，参与布局）。
-    // parse 已保证 has_text 时无元素子（行内混排编译期报错），故此处只需判 el.text。
-    // 文本子放 children 头（混排已挡，只有纯文本无元素子场景，顺序无所谓）。
-    let mut kids: Vec<NodeId> = Vec::new();
-    if matches!(kind, NodeKind::Container | NodeKind::Button) {
-        if let Some(text) = &el.text {
-            let text_nid = build_text_child(scene, text, Some(nid));
-            kids.push(text_nid);
-        }
-    }
-
-    if has_element_children {
-        for c in &el.children {
-            let cid = build_rec(tree, styles, *c, Some(nid), scene);
-            kids.push(cid);
-        }
-    }
-    scene.nodes[nid.0].children = kids;
-    nid
-}
-
-/// 构造一个 Text 叶子 Node（Container/Button 的裸文本子节点）。
-/// 注意：span 的文本是其自身 content（在 build_rec 里直接进 NodeKind::Text），
-/// 不经此函数；本函数只服务 Container/Button 的裸文本→Text 子节点转换。
-fn build_text_child(scene: &mut Scene, text: &str, parent: Option<NodeId>) -> NodeId {
-    let nid = NodeId(scene.nodes.len());
-    // Text 子节点（对应 HTML 里无独立元素）应像无 class 的 <span> 一样：
-    // taffy_style 取 DEFAULT（无固定 size，由文本测量决定尺寸，正常参与 flex），
-    // 视觉/字体字段继承父值（cascade 里 <span> 也是这么拿 color/font-* 的）。
+    // §4.2：Container/Button 的裸文本 → Text 子节点。文本子像无 class 的 <span>：
+    // taffy_style 取 DEFAULT（由测量定尺寸），视觉/字体字段继承父值。
     // 不能直接克隆父 style——父若是 .h{height:30px} 会让文本子也高 30px，
     // 既不正确也压制了文本自然测量。
-    let mut style = ResolvedStyle::default();
-    if let Some(p) = parent {
-        let ps = &scene.nodes[p.0].style;
-        style.color = ps.color;
-        style.font_size = ps.font_size;
-        style.font_family = ps.font_family.clone();
-        style.font_weight = ps.font_weight;
-        style.line_height = ps.line_height;
-        style.letter_spacing = ps.letter_spacing;
-        style.text_align = ps.text_align;
-        style.white_space_nowrap = ps.white_space_nowrap;
+    if matches!(kind, NodeKind::Container | NodeKind::Button) {
+        if let Some(text) = &el.text {
+            let mut ts = ResolvedStyle::default();
+            ts.color = style.color;
+            ts.font_size = style.font_size;
+            ts.font_family = style.font_family.clone();
+            ts.font_weight = style.font_weight;
+            ts.line_height = style.line_height;
+            ts.letter_spacing = style.letter_spacing;
+            ts.text_align = style.text_align;
+            ts.white_space_nowrap = style.white_space_nowrap;
+            entries.push((Some(my_idx), NodeKind::Text { content: text.clone() }, ts));
+        }
     }
-    scene.nodes.push(Node {
-        id: nid,
-        parent,
-        kind: NodeKind::Text {
-            content: text.to_string(),
-        },
-        style,
-        taffy_id: None,
-        layout_rect: Rect::default(),
-        clip_rect: None,
-        children: Vec::new(),
-        dirty_mesh: true,
-        dirty_text: true,
-    });
-    nid
+
+    if !el.children.is_empty() {
+        for c in &el.children {
+            gather_rec(tree, styles, *c, Some(my_idx), entries);
+        }
+    }
+    my_idx
 }
 
 #[cfg(test)]
@@ -201,6 +186,37 @@ mod tests {
     use super::*;
     use crate::parse::{css::parse_css, dom::parse_html};
     use crate::style::cascade::resolve_styles;
+
+    #[test]
+    fn scene_build_constructs_tree_without_parse() {
+        // 手搓 entries：root Container + 一个 Text 子（parent=Some(0)）。
+        // 不走 parse_html/build_scene——证明 Scene::build 独立于 parse（read_package 依赖此）。
+        let root_style = ResolvedStyle::default();
+        let text_style = ResolvedStyle::default();
+        let entries: Vec<(Option<usize>, NodeKind, ResolvedStyle)> = vec![
+            (None, NodeKind::Container, root_style),
+            (Some(0), NodeKind::Text { content: "hi".into() }, text_style),
+        ];
+        let scene = Scene::build(&entries);
+
+        assert_eq!(scene.nodes.len(), 2);
+        assert_eq!(scene.roots, vec![NodeId(0)], "根 = parent=None 的节点");
+        let root = &scene.nodes[0];
+        assert!(matches!(root.kind, NodeKind::Container));
+        assert_eq!(root.children, vec![NodeId(1)], "Text 子挂 root");
+        assert!(root.clip_rect.is_none(), "overflow_hidden=false → 无 clip slot");
+        assert!(!root.dirty_text, "Container dirty_text=false");
+        let text = &scene.nodes[1];
+        assert!(matches!(&text.kind, NodeKind::Text { content } if content == "hi"));
+        assert_eq!(text.parent, Some(NodeId(0)));
+        assert!(text.dirty_text, "Text 节点 dirty_text=true");
+
+        // overflow_hidden → clip slot 派生
+        let mut of = ResolvedStyle::default();
+        of.overflow_hidden = true;
+        let scene2 = Scene::build(&[(None, NodeKind::Container, of)]);
+        assert!(scene2.nodes[0].clip_rect.is_some(), "overflow_hidden=true → clip slot");
+    }
 
     #[test]
     fn builds_div_button_text_image() {
