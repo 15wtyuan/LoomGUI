@@ -6,11 +6,12 @@ edition = "2021"
 [dependencies]
 scraper = "0.19"
 cssparser = "0.34"
-taffy = "0.5"
+taffy = { version = "0.5", features = ["serde"] }
 ttf-parser = "0.20"
 unicode-linebreak = "0.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+bincode = "1"
 
 [dev-dependencies]
 insta = "1"

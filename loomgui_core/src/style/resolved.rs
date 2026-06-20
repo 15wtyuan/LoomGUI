@@ -1,7 +1,8 @@
+use serde::{Deserialize, Serialize};
 use taffy::style::Style as TaffyStyle;
 use taffy::FlexDirection;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ResolvedStyle {
     /// taffy 布局字段（flex/padding/margin/size/min/max/gap/position 等）
     pub taffy_style: TaffyStyle,
@@ -24,7 +25,7 @@ pub struct ResolvedStyle {
     pub order: i32,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum TextAlign {
     Left,
     Center,
@@ -70,5 +71,32 @@ mod tests {
         assert!(!s.overflow_hidden);
         // §4.1：div 默认 flex-direction: column（taffy DEFAULT 是 row，必须显式覆盖）
         assert_eq!(s.taffy_style.flex_direction, taffy::FlexDirection::Column);
+    }
+
+    #[test]
+    fn resolved_style_bincode_roundtrip_preserves_all_fields() {
+        // 构造一个各字段都非默认的 ResolvedStyle（覆盖 taffy 字段 + 视觉字段）。
+        let mut s = ResolvedStyle::default();
+        s.taffy_style.flex_direction = taffy::FlexDirection::Row;
+        s.taffy_style.padding = taffy::geometry::Rect::length(7.0);
+        s.background_color = Some([0.1, 0.2, 0.3, 0.4]);
+        s.border_color = Some([0.5, 0.6, 0.7, 0.8]);
+        s.border_width = 3.0;
+        s.opacity = 0.5;
+        s.overflow_hidden = true;
+        s.color = [1.0, 0.0, 0.0, 1.0];
+        s.font_size = 48.0;
+        s.font_family = Some("DejaVuSans".to_string());
+        s.font_weight = 700;
+        s.text_align = TextAlign::Center;
+        s.line_height = 1.5;
+        s.letter_spacing = 2.0;
+        s.white_space_nowrap = true;
+        s.order = 5;
+
+        let bytes = bincode::serialize(&s).expect("serialize");
+        let back: ResolvedStyle = bincode::deserialize(&bytes).expect("deserialize");
+
+        assert_eq!(back, s, "全字段经 bincode round-trip 应相等");
     }
 }
