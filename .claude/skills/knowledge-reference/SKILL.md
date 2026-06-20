@@ -119,6 +119,16 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 - Unity：design rect→world（**根 transform** `TransformPoint` 两角，非逐 clipper 矩阵——clip 是绝对 design 非 clipper-local）→ `_ClipBox=(-cx/hw,-cy/hh,1/hw,1/hh)`（照搬 fgui `UpdateContext.cs:105-156`）；零 half→safe-blank `(-2,-2,0,0)` 防 div0。MirrorPool 每 ctx 每帧首次 SetClipBox（fgui `firstMaterialInFrame`）。shader CLIPPED：`clipPos=TransformObjectToWorld(pos).xy×zw+xy`，`col.a*=step(max(abs(clipPos)),1)`。
 - **坐标模型**：blob local_x/local_y + clip_rect 均**绝对 design**（layout 累加父 origin）；后端 flatten 挂根 GO，根 transform 一次性映射 design→world。nesting+父相对坐标留 v1c（transform 继承/事件）。
 
+### 2.12 打包器 + 包格式（v1b.1，§12/§5.5）
+- **`.pkg.bin` 是 Rust-internal**：`loomgui_pkg` 写、core runtime 读，**C# 永不解析**（Unity 只读文件→bytes→`load_package`）。与 frame blob（Rust↔C# 跨语言契约）本质不同——无需 C# reader/跨语言字节对齐，style 可直接 bincode 投影。
+- v1 格式（扁平 + stringTable，LE）：Header 28B（magic `LPKG`=0x474B504C + version=1 + flags + nodeCount + stringCount + rootSizeX/Y）+ StringTable（u16 len+UTF8，**只** text content + image src）+ NodeBlock（每节点 parentIndex i32 + kind u8 + styleLen u32 + `bincode(ResolvedStyle)` blob + textIdx/srcIdx u16；NULL_IDX=0xFFFF；kind 0=Container/1=Button/2=Image/3=Text）。indexTable/压缩/分支推 formatVersion=2（v1x-deferred §6）。
+- **StyleRecord = bincode(ResolvedStyle)**：taffy 开 `serde` feature（§3.7），ResolvedStyle/TextAlign 加 `Serialize/Deserialize/PartialEq` 派生——穷尽由派生保证（加字段编译期强制覆盖 encode/decode，R3≈0）。font_family 随 blob 走（不进 stringTable）。
+- `asset::write_package(&Scene,root_size)->Vec<u8>` / `read_package(&[u8])->Result<(Scene,root_size),PkgError>`（常驻，不依赖 parse）。read 全 `Result` 无 panic 跨 FFI（Reader 截断保护）。版本协商：magic + formatVersion∈[1,1]（fgui 缺，主设计 §12.2 要）。
+- **`Scene::build(&[(Option<usize>,NodeKind,ResolvedStyle)])`** 共享建树（常驻，不依赖 parse）——`build_scene`（parse 路径，gate）与 `read_package`（runtime 路径）共用，防建树逻辑分叉（R2）。NodeId=entries 下标；children 按 DFS 先序填。
+- **parse feature gate**：`scraper`/`cssparser` optional + `parse` feature（default on）。gate 在 parse 后：`parse/` 模块 + `style::cascade` + `build_scene`/`gather_rec` + `Stage::load_inline` + 用 parse 的测。常驻：`ResolvedStyle`/`TextAlign`/`Scene::build`/`mapping`/layout/render/text/scene/stage(除 load_inline)/asset。`loomgui_ffi_c`：`load_package` 常驻、`load_html` gate；**dev .dll 仍带 parse**（PlayMode inline 迭代要），gate 价值=架构正确 + 将来精简 build。构建矩阵门：`cargo build -p loomgui_{core,ffi_c} --no-default-features` 皆编。
+- **黄金等价测**（最强门）：`pkg→load_package→render_json` == `inline load_inline→render_json`（包路径与 inline 渲染逐节点等价，验收 #6）。fixture 覆盖 div/text/img/rect mask。
+- `loomgui_pkg` CLI（不引 clap，`std::env::args`）：`pack(html,css,root_size)` = `parse_html→parse_css→resolve_styles→build_scene→write_package`。packager **不**加载字体/不 solve/不 render。
+
 ## 3. 依赖 API 适配踩坑（v0 最大教训）
 
 > **plan/brief 写的 API 草稿常与实际 crate 版本不符**。遇编译错按本节对照，**勿硬改依赖版本**，按 crate 实际源码（`~/.cargo/registry/src/<crate>-<ver>/src/`）调。
@@ -168,6 +178,11 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 - **`HideFlags.DontSaveInEditor`**：`[ExecuteAlways]` 程序生成 GO 标之防被存进场景（否则 EditMode dirty 场景 + Play/Stop 累积残留，坑 11）。
 - **`Mesh.SetVertices(List)`/`SetUVs`/`SetColors`/`SetTriangles(List)` overload**：零 per-frame 数组 alloc（vs `SetVertices(Vector3[])`）。`List.Clear()` 保 Capacity，warm-up 后复用零 alloc。
 - **shader keyword**：`#pragma multi_compile _ CLIPPED`（两 variant 都编，`EnableKeyword` 切换生效）**非** `shader_feature`（未启用的 variant 会被 strip → clip 静默失效）。
+
+### 3.7 taffy 0.5.2 serde + bincode 1.x（style/resolved.rs + asset/mod.rs，v1b.1）
+- taffy 0.5.2 有 **`serde` feature**：`Style`（style/mod.rs:189）及全部字段类型（geometry/dimension/flex/grid/alignment）都 `#[cfg_attr(feature="serde", derive(Serialize,Deserialize))]` + `#[serde(default)]`；`Style` 还派生 `PartialEq`。开 `taffy = { version="0.5", features=["serde"] }` 后，含 `taffy_style: taffy::style::Style` 的 `ResolvedStyle` 能整体 `#[derive(Serialize,Deserialize,PartialEq)]`。
+- bincode 1.x：`bincode::serialize(&x)->Vec<u8>` / `bincode::deserialize::<T>(&bytes)`。`#[serde(default)]` 在 bincode（位置编码无缺字段概念）下透明。用于包格式的 StyleRecord——穷尽由 serde 派生保证，比手写枚举 taffy 30+ 字段稳健（R3≈0）。
+- bincode 格式随 taffy/bincode 版本——升级时 bump 包 `formatVersion`。
 
 ## 4. AI 可预测性核心约束（首要准则，勿违背）
 
@@ -268,10 +283,18 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 **解决**：Rust `Glyph` 加 `codepoint:u32`（`measure_text` 遍历 char 时填），text_arena 送 codepoint，Unity `(char)codepoint` 调 GetCharacterInfo。
 **教训**：引擎字体 API 多按码点；核心 Glyph 须同时持 glyph_id（ttf 直连后端）+ codepoint（引擎字体 API）。
 
+### 坑 15：新二进制格式 magic 撞既有格式（v1b.1）
+**症状**：v1b.1 包格式初拟 magic `"LOOM"`(0x4D4F4F4C)，与 frame blob 的 `MAGIC`（blob.rs）**完全相同**。
+**根因**：两种格式独立，但 magic 是唯一识别码；撞了 magic→校验形同虚设（误传 frame blob 给 `load_package` 会过 magic 检查再挂错）。
+**解决**：包改独立 magic `"LPKG"`(0x474B504C，磁盘字节 `4C 50 4B 47`)。planning 期 grep 现有 magic 才发现。
+**教训**：新增二进制格式先 `grep -r 'MAGIC\|0x4D4F4F4C' src/` 确认 magic 唯一；formatVersion 是「同格式的版本」，magic 是「这是哪种格式」，两者正交。
+
 ## 6. 调试/验证技巧
 
 - **★ 实现 v1+ 后端/渲染/对象模型前，先参考 `temp/FairyGUI-unity/` 源码**（对照机制、避免走歪——本 session 因没先看 fgui 的 sortingOrder/rect-mask/MaterialManager，初版设计走了弯路：误用 z 排序、误以为 rect mask 要独立 GO、把绘制序想复杂）。
 - `cargo test -p loomgui_core`：全量（v0 ~52 测试）。
+- **feature gate 构建矩阵**（v1b.1）：`cargo build -p loomgui_core --no-default-features` + `-p loomgui_ffi_c --no-default-features` 皆编（证 runtime 可无 parser）；`cargo build -p loomgui_pkg`（带 parse）。
+- **打包器冒烟**（v1b.1）：`cargo run -p loomgui_pkg -- in.html in.css -o out.pkg.bin -w 1080 -h 1920`；前 4 字节 `4c 50 4b 47`="LPKG"。
 - `cargo run --example v0_snapshot`：端到端产 `v0_snapshot.json`。
 - insta 快照：`INSTA_UPDATE=always cargo test --test snapshot` 首次接受，再裸跑锁定。
 - 字体路径：`format!("{}/tests/fixtures/DejaVuSans.ttf", env!("CARGO_MANIFEST_DIR"))`。
@@ -311,13 +334,12 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 - Font `Box::leak`（真进程级泄漏，~700KB/Stage）缓存化——×20 域重载测**未现显著增长**，按 <5MB 阈值**推 v1e**（非阻塞）。
 - 坐标 nesting+父相对（transform 继承/事件）→ v1c。
 
-**v1 其余 defer（v0 起，未动）**：
-- 打包器 loomgui_pkg + 真纹理加载（v1b，G1/G7）—— **下一个**。
-- event/命中/输入（v1c，G4）、anim GTween/ScrollPane（v1d，§11/§12.7）。
-- NativeHost/virtualization/shape mask：v1.x。
+**v1b.1 ✅ 完成（merged main @ 5706a7b）**：打包器 `loomgui_pkg` CLI + `.pkg.bin` v1 格式（Rust-internal，§2.12）+ `Stage::load_package` + `Scene::build` 共享建树 + parse feature gate（runtime 可无 parser）+ FFI `loomgui_stage_load_package` + Unity `_usePackage` 接线。**包路径渲染 == inline 渲染（黄金等价），PlayMode 验过**——验收 #6 达成。spec `docs/superpowers/specs/2026-06-20-v1b-packager-design.md`、plan `docs/superpowers/plans/2026-06-20-v1b-packager.md`。踩坑：magic 撞 frame blob（坑 15）。
+
+**v1b 拆分**：A 打包器/二进制包/加载器（v1b.1 ✅）、**B 真纹理加载（散图→Texture2D→TexId，v1b.2 = 下一个）**、C 图集打包、D 文本 CJK/多字体（text_arena 升三表）。各自后续 spec。
 
 **v1 其余 defer（v0 起，未动）**：
-- 打包器 loomgui_pkg + 真纹理加载（v1b，G1/G7）。
+- 真纹理加载（v1b.2/B，G7）—— **下一个**。
 - event/命中/输入（v1c，G4）、anim GTween/ScrollPane（v1d，§11/§12.7）。
 - NativeHost/virtualization/shape mask：v1.x。
 
