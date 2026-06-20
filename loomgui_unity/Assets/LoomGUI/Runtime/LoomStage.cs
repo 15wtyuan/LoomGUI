@@ -30,6 +30,11 @@ namespace LoomGUI
         // Inspector 指定为主路径；EditMode 测试 / 未配场景用 AssetDatabase 兜底（见 EnsureFont）。
         [SerializeField] Font _font;
 
+        // §13 v1b.1：从二进制包加载（true）vs inline _html/_css（false，默认保现有行为）。
+        // true 时从 StreamingAssets/_pkgFile 读 .pkg.bin → loomgui_stage_load_package。
+        [SerializeField] bool _usePackage;
+        [SerializeField] string _pkgFile = "loom_default.pkg.bin";
+
         // §4.5 500 节点静态压测 fixture：勾选 → Awake 覆盖 _html/_css 为程序生成的 ~500 节点
         // （嵌套 flex column + 每行 colored div + text label，覆盖 mesh + text 双路径）。
         // 默认 false（保持 v1a 单红块场景不变）。PlayMode 肉眼验无卡顿（v1a §9.3 便宜帧）。
@@ -79,9 +84,18 @@ namespace LoomGUI
             // §4.5 stress fixture：勾选 → 程序生成 ~500 节点 html/css（mesh + text 双路径）。
             if (_stress500) BuildStress500Fixture();
 
-            if (!LoadHtml())
+            bool loaded;
+            if (_usePackage)
             {
-                Debug.LogError("[LoomStage] load_html 失败");
+                loaded = LoadPackage();
+            }
+            else
+            {
+                loaded = LoadHtml();
+            }
+            if (!loaded)
+            {
+                Debug.LogError("[LoomStage] load 失败");
                 FreeStage();
                 return;
             }
@@ -137,6 +151,27 @@ namespace LoomGUI
             {
                 int r = Native.loomgui_stage_load_html(
                     _stage, hp, (nuint)hb.Length, cp, (nuint)cb.Length);
+                return r == 0;
+            }
+        }
+
+        /// <summary>
+        /// §13 v1b.1：从 StreamingAssets/_pkgFile 读 .pkg.bin → loomgui_stage_load_package。
+        /// 包是 Rust-internal，C# 只读文件透传 bytes（不解析）。editor/desktop 用 File.ReadAllBytes。
+        /// </summary>
+        bool LoadPackage()
+        {
+            if (_stage == null) return false;
+            string pkgPath = System.IO.Path.Combine(Application.streamingAssetsPath, _pkgFile);
+            if (!System.IO.File.Exists(pkgPath))
+            {
+                Debug.LogError($"[LoomStage] 包文件不存在：{pkgPath}");
+                return false;
+            }
+            byte[] pkg = System.IO.File.ReadAllBytes(pkgPath);
+            fixed (byte* pp = pkg)
+            {
+                int r = Native.loomgui_stage_load_package(_stage, pp, (nuint)pkg.Length);
                 return r == 0;
             }
         }
