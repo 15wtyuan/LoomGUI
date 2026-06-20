@@ -6,6 +6,8 @@
 use crate::scene::{NodeKind, NodeId, Scene};
 use crate::style::resolved::ResolvedStyle;
 
+pub mod texture; // v1b.2：纹理注册表（src→TexMeta）
+
 pub const PKG_MAGIC: u32 = 0x474B504C; // 磁盘字节(LE) "LPKG"（不与 frame blob "LOOM" 撞）
 pub const PKG_FORMAT_VERSION: u32 = 1;
 const MIN_VERSION: u32 = 1;
