@@ -3,31 +3,31 @@ using NUnit.Framework;
 
 namespace LoomGUI.Tests
 {
-    /// Blob v2 scaffold 校验（T1）。手搓最小 v2 header（镜像 loomgui_ffi_c/src/blob.rs v2 布局），
-    /// 验：magic+version 校验生效（IsValid）、Version==2、ClipCount==0（T1 占位）、单 Mesh 节点
+    /// Blob v3 scaffold 校验（T1）。手搓最小 v3 header（镜像 loomgui_ffi_c/src/blob.rs v3 布局），
+    /// 验：magic+version 校验生效（IsValid）、Version==3、ClipCount==0（T1 占位）、单 Mesh 节点
     /// 经 ReadMesh 仍正确解析（mesh_arena header 偏移重算正确）。
     ///
-    /// 注意：Unity EditMode 在本任务环境无法 headless 执行；Rust blob.rs::TestView 的 v2 测试
+    /// 注意：Unity EditMode 在本任务环境无法 headless 执行；Rust blob.rs::TestView 的 v3 测试
     /// 是布局契约的权威自动门，本 C# 测试仅保证编译正确 + 逻辑（offset 计算）正确。
     public class FrameBlobV2Tests
     {
-        /// 构造最小合法 v2 blob：1 节点 Mesh（4 verts/6 idx，顶点已 re-base 到本地）。
-        /// layout 严格镜像 blob.rs::build_blob v2。
+        /// 构造最小合法 v3 blob：1 节点 Mesh（4 verts/6 idx，顶点已 re-base 到本地）。
+        /// layout 严格镜像 blob.rs::build_blob v3。
         static byte[] BuildMinimalV2Blob()
         {
             var b = new List<byte>();
 
-            // header: magic, version=2, node_count=1
+            // header: magic, version=3, node_count=1
             b.AddRange(System.BitConverter.GetBytes(0x4D4F4F4Cu));
-            b.AddRange(System.BitConverter.GetBytes(2u));
+            b.AddRange(System.BitConverter.GetBytes(3u));
             b.AddRange(System.BitConverter.GetBytes(1u));
 
-            // header_len = 3*4 + 13*4 + 2*4 + 2*4 + 2*4 = 88
-            const int HeaderLen = 88;
+            // header_len = 3*4 + 14*4 + 2*4 + 2*4 + 2*4 = 92
+            const int HeaderLen = 92;
             int colOff = HeaderLen;
-            int[] offs = new int[13];
-            int[] elemSize = { 4, 4, 1, 4, 4, 4, 4, 4, 1, 4, 4, 4, 4 };
-            for (int i = 0; i < 13; i++) { offs[i] = colOff; colOff += elemSize[i]; }
+            int[] offs = new int[14];
+            int[] elemSize = { 4, 4, 1, 4, 4, 4, 4, 4, 1, 4, 4, 4, 4, 4 };
+            for (int i = 0; i < 14; i++) { offs[i] = colOff; colOff += elemSize[i]; }
 
             // mesh arena：4 verts / 6 idx。顶点 (0,0)(1,0)(1,1)(0,1)（已 re-base）。
             var arena = new List<byte>();
@@ -81,8 +81,8 @@ namespace LoomGUI.Tests
         public void V2BlobIsValidAndHasExpectedHeader()
         {
             var blob = new FrameBlob(BuildMinimalV2Blob());
-            Assert.IsTrue(blob.IsValid, "v2 magic+version 应通过 IsValid");
-            Assert.AreEqual(2u, blob.Version, "Version==2");
+            Assert.IsTrue(blob.IsValid, "v3 magic+version 应通过 IsValid");
+            Assert.AreEqual(3u, blob.Version, "Version==3");
             Assert.AreEqual(1, blob.NodeCount);
         }
 
@@ -122,14 +122,15 @@ namespace LoomGUI.Tests
         {
             var b = new List<byte>();
             b.AddRange(System.BitConverter.GetBytes(0x4D4F4F4Cu));  // magic
-            b.AddRange(System.BitConverter.GetBytes(2u));           // version
+            b.AddRange(System.BitConverter.GetBytes(3u));           // version=3（v1b.2）
             b.AddRange(System.BitConverter.GetBytes(1u));           // node_count
 
-            const int HeaderLen = 88;
+            // header_len = 3*4 + 14*4 + 2*4 + 2*4 + 2*4 = 92（v3：14 col + 三 arena 各 off+len）。
+            const int HeaderLen = 92;
             int colOff = HeaderLen;
-            int[] offs = new int[13];
-            int[] elemSize = { 4, 4, 1, 4, 4, 4, 4, 4, 1, 4, 4, 4, 4 };
-            for (int i = 0; i < 13; i++) { offs[i] = colOff; colOff += elemSize[i]; }
+            int[] offs = new int[14];
+            int[] elemSize = { 4, 4, 1, 4, 4, 4, 4, 4, 1, 4, 4, 4, 4, 4 };
+            for (int i = 0; i < 14; i++) { offs[i] = colOff; colOff += elemSize[i]; }
 
             // mesh arena：空（vc=0,ic=0），只为占位（本测不验 mesh）。
             var arena = new List<byte>();
@@ -163,6 +164,7 @@ namespace LoomGUI.Tests
             b.AddRange(System.BitConverter.GetBytes(0u));     // mesh_len
             b.AddRange(System.BitConverter.GetBytes(0u));     // text_off
             b.AddRange(System.BitConverter.GetBytes(0u));     // text_len
+            b.AddRange(System.BitConverter.GetBytes(0u));     // tex_id（v1b.2，Unchanged=0）
 
             b.AddRange(arena);
             // clip 表

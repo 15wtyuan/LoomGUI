@@ -17,7 +17,7 @@ namespace LoomGUI.Tests
     /// 故本测试的**断言数值必须手算可证**——见类内注释的 hand-computation。
     public class MirrorPoolFlattenTests
     {
-        /// 构造一个 2 节点 Mesh blob（v2）。
+        /// 构造一个 2 节点 Mesh blob（v3）。
         /// node[0]=parent：visible=1, payload_kind=1, parent_id=-1, design=(100,200), mesh quad (0,0)(w,0)(w,h)(0,h)。
         /// node[1]=child：visible=1, payload_kind=1, parent_id=parent.id, design=(50,50), mesh quad 同尺寸。
         /// 同一 mesh arena，两个 mesh entry 紧挨；node 0 mesh_off=0，node 1 mesh_off=meshLen。
@@ -28,19 +28,19 @@ namespace LoomGUI.Tests
         {
             var b = new List<byte>();
 
-            // header: magic, version=2, node_count=2
+            // header: magic, version=3, node_count=2
             b.AddRange(System.BitConverter.GetBytes(0x4D4F4F4Cu));
-            b.AddRange(System.BitConverter.GetBytes(2u));
+            b.AddRange(System.BitConverter.GetBytes(3u));
             b.AddRange(System.BitConverter.GetBytes(2u));
 
-            const int HeaderLen = 12 + 13 * 4 + 2 * 4 + 2 * 4 + 2 * 4; // = 88
+            const int HeaderLen = 12 + 14 * 4 + 2 * 4 + 2 * 4 + 2 * 4; // = 92
             const int NodeCount = 2;
             int colOff = HeaderLen;
-            int[] offs = new int[13];
-            int[] elemSize = { 4, 4, 1, 4, 4, 4, 4, 4, 1, 4, 4, 4, 4 };
+            int[] offs = new int[14];
+            int[] elemSize = { 4, 4, 1, 4, 4, 4, 4, 4, 1, 4, 4, 4, 4, 4 };
             // SOA（列优先，镜像 blob.rs/FrameBlob）：每列跨 NodeCount×elemSize 字节，列内 node0/node1 紧挨。
             // 旧版按 1 节点 elemSize 递进 + AoS 写数据 → 多节点读串列（SetTriangles idx 错），已修。
-            for (int i = 0; i < 13; i++) { offs[i] = colOff; colOff += NodeCount * elemSize[i]; }
+            for (int i = 0; i < 14; i++) { offs[i] = colOff; colOff += NodeCount * elemSize[i]; }
             int arenaOff = colOff;
 
             // mesh arena：2 个 mesh，每个 4 verts / 6 idx（顶点 re-base 到本地：(0,0)(w,0)(w,h)(0,h)）。
@@ -81,7 +81,7 @@ namespace LoomGUI.Tests
             int childMeshLen = (arena.Count - arenaStart) - childMeshOff;
             int arenaLen = arena.Count - arenaStart;
 
-            // 13 列 offset + mesh/text/clip 三 arena off+len
+            // 14 列 offset + mesh/text/clip 三 arena off+len
             foreach (var o in offs) b.AddRange(System.BitConverter.GetBytes(o));
             b.AddRange(System.BitConverter.GetBytes(arenaOff));              // mesh_arena_off
             b.AddRange(System.BitConverter.GetBytes(arenaLen));              // mesh_arena_len
@@ -129,6 +129,9 @@ namespace LoomGUI.Tests
             // col 12 text_len
             b.AddRange(System.BitConverter.GetBytes(0u));
             b.AddRange(System.BitConverter.GetBytes(0u));
+            // col 13 tex_id（v3 新增，列优先：node0 再 node1；本测 0 占位）
+            b.AddRange(System.BitConverter.GetBytes(0u));                    // node0
+            b.AddRange(System.BitConverter.GetBytes(0u));                    // node1
 
             b.AddRange(arena);
             b.AddRange(System.BitConverter.GetBytes(0u));                    // clip_count = 0

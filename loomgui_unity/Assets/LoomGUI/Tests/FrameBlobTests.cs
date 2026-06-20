@@ -12,18 +12,18 @@ namespace LoomGUI.Tests
         {
             var b = new List<byte>();
 
-            // header: magic, version=2, node_count=1
+            // header: magic, version=3, node_count=1
             b.AddRange(System.BitConverter.GetBytes(0x4D4F4F4Cu));
-            b.AddRange(System.BitConverter.GetBytes(2u));
+            b.AddRange(System.BitConverter.GetBytes(3u));
             b.AddRange(System.BitConverter.GetBytes(1u));
 
-            // header 总长 = 3*4 + 13*4 + 6*4 = 88（v2：13 col + mesh/text/clip 三 arena 各 off+len）。
-            int headerLen = 12 + 13 * 4 + 2 * 4 + 2 * 4 + 2 * 4; // = 88
+            // header 总长 = 3*4 + 14*4 + 6*4 = 92（v3：14 col + mesh/text/clip 三 arena 各 off+len）。
+            int headerLen = 12 + 14 * 4 + 2 * 4 + 2 * 4 + 2 * 4; // = 92
             int colOff = headerLen;
-            int[] offs = new int[13];
-            // 元素字节数顺序同 blob.rs columns（v2 +text_off/text_len）。
-            int[] elemSize = { 4, 4, 1, 4, 4, 4, 4, 4, 1, 4, 4, 4, 4 };
-            for (int i = 0; i < 13; i++) { offs[i] = colOff; colOff += elemSize[i]; }
+            int[] offs = new int[14];
+            // 元素字节数顺序同 blob.rs columns（v3，末尾 tex_id u32）。
+            int[] elemSize = { 4, 4, 1, 4, 4, 4, 4, 4, 1, 4, 4, 4, 4, 4 };
+            for (int i = 0; i < 14; i++) { offs[i] = colOff; colOff += elemSize[i]; }
             int arenaOff = colOff;
 
             // mesh arena：1 mesh，4 verts / 6 idx。
@@ -38,7 +38,7 @@ namespace LoomGUI.Tests
             for (int k = 0; k < 6; k++) arena.AddRange(System.BitConverter.GetBytes(0u));
             int arenaLen = arena.Count - arenaStart;
 
-            // 13 列 offset + mesh/text/clip 三 arena off+len（text_arena 空、clip 表仅 clip_count=0）
+            // 14 列 offset + mesh/text/clip 三 arena off+len（text_arena 空、clip 表仅 clip_count=0）
             foreach (var o in offs) b.AddRange(System.BitConverter.GetBytes(o));
             b.AddRange(System.BitConverter.GetBytes(arenaOff));   // mesh_arena_off
             b.AddRange(System.BitConverter.GetBytes(arenaLen));   // mesh_arena_len
@@ -50,7 +50,7 @@ namespace LoomGUI.Tests
 
             // 列数据（node 0）：node_id=7, parent=-1, visible=1, alpha=1, sort_key=3,
             // local_x=10, local_y=20, mask_context=0, payload_kind=1(Mesh),
-            // mesh_off=0 (相对 arena 起始), mesh_len=arenaLen, text_off=0, text_len=0
+            // mesh_off=0 (相对 arena 起始), mesh_len=arenaLen, text_off=0, text_len=0, tex_id=0
             b.AddRange(System.BitConverter.GetBytes(7u));
             b.AddRange(System.BitConverter.GetBytes(-1));
             b.Add(1);
@@ -64,13 +64,14 @@ namespace LoomGUI.Tests
             b.AddRange(System.BitConverter.GetBytes((uint)arenaLen));
             b.AddRange(System.BitConverter.GetBytes(0u));   // text_off（T1 占位）
             b.AddRange(System.BitConverter.GetBytes(0u));   // text_len（T1 占位）
+            b.AddRange(System.BitConverter.GetBytes(0u));   // tex_id（v1b.2，Mesh 占位 0）
             b.AddRange(arena);
             // clip 表：仅 clip_count=0
             b.AddRange(System.BitConverter.GetBytes(0u));
 
             var view = new FrameBlob(b.ToArray());
-            Assert.IsTrue(view.IsValid, "v2 blob 应通过 magic+version 校验");
-            Assert.AreEqual(2u, view.Version);
+            Assert.IsTrue(view.IsValid, "v3 blob 应通过 magic+version 校验");
+            Assert.AreEqual(3u, view.Version);
             Assert.AreEqual(1, view.NodeCount);
             Assert.AreEqual(0, view.ClipCount, "T1: clip_count=0");
             Assert.AreEqual(7u, view.NodeId(0));
