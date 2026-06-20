@@ -62,7 +62,7 @@ impl Stage {
     /// 静态首帧：solve + render。v0 无输入/动画。返回 nodes + clip 表（§4.4）。
     pub fn tick_and_render(&mut self) -> FrameData {
         let scene = self.scene.as_mut().expect("load first");
-        solve(scene, &self.font, self.root_size);
+        solve(scene, &self.font, self.root_size, &self.textures);
         build_render_nodes(scene, &self.font, &self.textures)
     }
 
@@ -91,17 +91,19 @@ mod tests {
         // inline 路径
         let mut s_inline = Stage::new(font_path, (200.0, 100.0)).unwrap();
         s_inline.load_inline(html, css).unwrap();
+        s_inline.textures.register("logo.png", 64, 32); // v1b.2：强化真实 tex_id + 真实尺寸路径
         let inline_json = s_inline.render_json();
 
         // 序列化 inline 的 scene → 包
         let scene = s_inline.scene.as_ref().unwrap();
         let pkg = crate::asset::write_package(scene, (200.0, 100.0));
 
-        // 包路径（新 Stage，同字体）
+        // 包路径（新 Stage，同字体，同纹理注册）
         let mut s_pkg = Stage::new(font_path, (200.0, 100.0)).unwrap();
         s_pkg.load_package(&pkg).unwrap();
+        s_pkg.textures.register("logo.png", 64, 32);
         let pkg_json = s_pkg.render_json();
 
-        assert_eq!(inline_json, pkg_json, "包路径渲染输出必须 == inline");
+        assert_eq!(inline_json, pkg_json, "包路径渲染输出必须 == inline（含真实 tex_id + 尺寸）");
     }
 }

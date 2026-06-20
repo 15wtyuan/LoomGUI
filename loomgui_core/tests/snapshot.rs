@@ -60,3 +60,21 @@ fn snapshot_cascade_inheritance() {
     let json = stage.render_json();
     insta::assert_snapshot!("cascade_inheritance", json);
 }
+
+/// v1b.2：`<img>` 渲染路径 snapshot（锁纹理路径输出）。
+/// img 有显式 CSS 尺寸 → measure 用声明值；纹理路径由 render 层 tex_id 体现
+/// （未注册 src 兜底 tex_id=0，注册后走真实 tex_id——此测只锁几何 + payload 形状）。
+#[cfg(feature = "parse")]
+#[test]
+fn snapshot_image_with_texture() {
+    let font = test_font_path();
+    if skip_if_no_font(&font) {
+        return;
+    }
+    let html = r#"<div class="root"><img class="i" src="logo.png"></div>"#;
+    let css = r#".root { width: 300px; height: 200px; } .i { width: 100px; height: 80px; }"#;
+    let mut stage = Stage::new(&font, (300.0, 200.0)).unwrap();
+    stage.load_inline(html, css).unwrap();
+    let json = stage.render_json();
+    insta::assert_snapshot!("image_with_texture", json);
+}
