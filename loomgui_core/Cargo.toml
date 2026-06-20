@@ -19,3 +19,13 @@ insta = "1"
 [features]
 default = ["parse"]
 parse = ["dep:scraper", "dep:cssparser"]
+
+# parse-feature-gated targets —— `cargo build/test --no-default-features --all-targets`
+# 不会尝试编译这些（地道 Cargo 方式，比 `#![cfg]` 包文件体干净）。
+[[test]]
+name = "snapshot"
+required-features = ["parse"]
+
+[[example]]
+name = "v0_snapshot"
+required-features = ["parse"]
