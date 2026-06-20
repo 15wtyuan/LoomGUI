@@ -46,6 +46,15 @@ impl Stage {
         Ok(())
     }
 
+    /// 从二进制包加载（spec §8）：read_package → self.scene + root_size（用包 header 的）。
+    /// 与 `load_inline` 二选一设 scene；后续 tick_and_render 不变。不需 parse feature。
+    pub fn load_package(&mut self, bytes: &[u8]) -> Result<(), String> {
+        let (scene, root_size) = crate::asset::read_package(bytes).map_err(|e| e.to_string())?;
+        self.scene = Some(scene);
+        self.root_size = root_size;
+        Ok(())
+    }
+
     /// 静态首帧：solve + render。v0 无输入/动画。返回 nodes + clip 表（§4.4）。
     pub fn tick_and_render(&mut self) -> FrameData {
         let scene = self.scene.as_mut().expect("load first");
@@ -56,5 +65,39 @@ impl Stage {
     pub fn render_json(&mut self) -> String {
         let frame = self.tick_and_render();
         serde_json::to_string_pretty(&frame.nodes).unwrap()
+    }
+}
+
+#[cfg(all(test, feature = "parse"))]
+mod tests {
+    use super::*;
+
+    /// 黄金等价（最强门）：inline 渲染 == 包渲染。
+    /// v0 fixture（div + 文本 + img + rect mask）经 pkg→load_package→render_json
+    /// 必须 == inline load_inline→render_json。
+    #[test]
+    fn package_load_renders_identical_to_inline() {
+        let font_path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/DejaVuSans.ttf"
+        );
+        let html = r#"<div class="c"><span>hi</span><img src="logo.png"></div>"#;
+        let css = ".c{width:200px;height:100px;overflow:hidden;background-color:#ff0000;}";
+
+        // inline 路径
+        let mut s_inline = Stage::new(font_path, (200.0, 100.0)).unwrap();
+        s_inline.load_inline(html, css).unwrap();
+        let inline_json = s_inline.render_json();
+
+        // 序列化 inline 的 scene → 包
+        let scene = s_inline.scene.as_ref().unwrap();
+        let pkg = crate::asset::write_package(scene, (200.0, 100.0));
+
+        // 包路径（新 Stage，同字体）
+        let mut s_pkg = Stage::new(font_path, (200.0, 100.0)).unwrap();
+        s_pkg.load_package(&pkg).unwrap();
+        let pkg_json = s_pkg.render_json();
+
+        assert_eq!(inline_json, pkg_json, "包路径渲染输出必须 == inline");
     }
 }
