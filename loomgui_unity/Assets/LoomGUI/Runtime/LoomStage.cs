@@ -34,7 +34,7 @@ namespace LoomGUI
         // §13 v1b.1：从二进制包加载（true）vs inline _html/_css（false，默认保现有行为）。
         // true 时从 StreamingAssets/_pkgFile 读 .pkg.bin → loomgui_stage_load_package。
         [SerializeField] bool _usePackage;
-        [SerializeField] string _pkgFile = "loom_default.pkg.bin";
+        [SerializeField] string _pkgFile = "loom_atlas.pkg.bin";
 
         // §4.5 500 节点静态压测 fixture：勾选 → Awake 覆盖 _html/_css 为程序生成的 ~500 节点
         // （嵌套 flex column + 每行 colored div + text label，覆盖 mesh + text 双路径）。
