@@ -142,11 +142,15 @@ namespace LoomGUI
         static RenderObj NewRenderObj(Transform root)
         {
             var go = new GameObject("loom_node");
+            // ExecuteAlways 下镜像 GO 是运行时派生产物，标 DontSaveInEditor 防被存进场景
+            // （否则 EditMode Sync 产出的 GO 会 dirty 场景、Play/Stop 与 domain reload 累积残留）。
+            go.hideFlags = HideFlags.DontSaveInEditor;
             go.transform.SetParent(root, false);
             go.layer = root.gameObject.layer;  // LoomUI
             var mf = go.AddComponent<MeshFilter>();
             var mr = go.AddComponent<MeshRenderer>();
             var mesh = new Mesh { indexFormat = UnityEngine.Rendering.IndexFormat.UInt32 };
+            mesh.hideFlags = HideFlags.DontSaveInEditor;  // Mesh 是独立 Object，也别存盘
             mesh.MarkDynamic();
             mf.sharedMesh = mesh;
             return new RenderObj { Go = go, Mf = mf, Mr = mr, Mesh = mesh };

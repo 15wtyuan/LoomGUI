@@ -51,6 +51,16 @@ namespace LoomGUI
 
         void Awake()
         {
+            // ExecuteAlways：EditMode/Play 反复 Awake + domain reload 会让上一轮的 loom_node 镜像 GO
+            // （root 的子）成孤儿残留——旧 _pool 引用已丢、Clear 不到。开局先清 root 下所有 loom_node
+            // 子 GO，防累积泄漏。UI 相机是独立 GO（SetParent(null)），非 root 子，不受影响。
+            for (int c = transform.childCount - 1; c >= 0; c--)
+            {
+                var child = transform.GetChild(c);
+                if (child.name == "loom_node")
+                    DestroyImmediate(child.gameObject);
+            }
+
             // Stage::new 需字体路径（即使纯色块场景也要加载用于 measure）。
             // Application.streamingAssetsPath：editor 与 player 都可用（editor 返回 Assets/StreamingAssets）。
             string fontPath = System.IO.Path.Combine(Application.streamingAssetsPath, "DejaVuSans.ttf");
@@ -140,26 +150,26 @@ namespace LoomGUI
         /// </summary>
         void BuildStress500Fixture()
         {
-            const int Rows = 250;   // 每行 1 div + 1 text → ~500 渲染节点。
+            const int Rows = 250;   // 每行 1 div + 1 text 子 → ~500 渲染节点。
             var html = new StringBuilder(1 << 14);
             html.Append("<div class=\"c\">");
             for (int i = 0; i < Rows; i++)
             {
-                // 每行一个带 class 的 div + 一个 <p> 文本节点。
-                html.Append("<div class=\"r").Append(i % 4).Append("\"><p>row ").Append(i).Append("</p></div>");
+                // 裸文本（非 <p>——p 不在 v1 围栏元素 div/span/img/button 内，parse 白名单拒
+                // → load 失败 0 节点）。div 裸文本 → Text 子节点（scene/node.rs::build_text_child）。
+                html.Append("<div class=\"r").Append(i % 4).Append("\">row ").Append(i).Append("</div>");
             }
             html.Append("</div>");
 
-            // CSS：容器 flex column 定宽；4 种行 class 循环配色 + p 文本样式。
-            // 用 px 绝对值（v0 layout 支持）；行高 ~30px 容纳 250 行（超出 design 高度会溢出，
+            // color/font-size 放 .c（继承到所有 text 子）；.rX 只管配色/尺寸/margin。
+            // 用 px 绝对值（v0 layout 支持）；行高 ~32px 容纳 250 行（超出 design 高度会溢出，
             // 但本测关心的是渲染节点数与帧时间，不关心可视区域；Rust 仍 layout 全部节点）。
             var css = new StringBuilder(1 << 12);
-            css.Append(".c{display:flex;flex-direction:column;width:1000px;}");
+            css.Append(".c{display:flex;flex-direction:column;width:1000px;color:#ffffff;font-size:20px;}");
             css.Append(".r0{width:960px;height:28px;background-color:#c62828;margin:2px;}");
             css.Append(".r1{width:960px;height:28px;background-color:#1565c0;margin:2px;}");
             css.Append(".r2{width:960px;height:28px;background-color:#2e7d32;margin:2px;}");
             css.Append(".r3{width:960px;height:28px;background-color:#6a1b9a;margin:2px;}");
-            css.Append("p{font-size:20px;color:#ffffff;}");
 
             _html = html.ToString();
             _css = css.ToString();
