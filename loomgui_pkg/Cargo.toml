@@ -5,3 +5,4 @@ edition = "2021"
 
 [dependencies]
 loomgui_core = { path = "../loomgui_core", features = ["parse"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
