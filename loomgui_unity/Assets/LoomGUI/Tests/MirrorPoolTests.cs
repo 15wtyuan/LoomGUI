@@ -11,25 +11,25 @@ namespace LoomGUI.Tests
     {
         /// 构造一个 1 节点 Mesh blob：visible=1, payload_kind=1, parent=-1,
         /// 4 顶点 quad mesh（顶点=(0,0)(w,0)(w,h)(0,h)，已 re-base 到本地）。
-        /// v2 布局（13 列 + mesh/text/clip 三 arena header；text 空、clip 仅 count=0）。
+        /// v3 布局（14 列含 tex_id + mesh/text/clip 三 arena header；text 空、clip 仅 count=0）。
         /// 用于驱动 MirrorPool.Sync 的 diff 逻辑。
         static byte[] OneMeshNodeBlob(
             uint id, float x, float y, float w, float h, uint sortKey)
         {
             var b = new List<byte>();
 
-            // header: magic, version=2, node_count=1
+            // header: magic, version=3, node_count=1
             b.AddRange(System.BitConverter.GetBytes(0x4D4F4F4Cu));
-            b.AddRange(System.BitConverter.GetBytes(2u));
+            b.AddRange(System.BitConverter.GetBytes(3u));
             b.AddRange(System.BitConverter.GetBytes(1u));
 
-            // header 总长 = 3*4 + 13*4 + 6*4 = 88。列 offset 从此起按 elemSize 递进。
-            const int HeaderLen = 12 + 13 * 4 + 2 * 4 + 2 * 4 + 2 * 4; // = 88
+            // header 总长 = 3*4 + 14*4 + 6*4 = 92。列 offset 从此起按 elemSize 递进。
+            const int HeaderLen = 12 + 14 * 4 + 2 * 4 + 2 * 4 + 2 * 4; // = 92
             int colOff = HeaderLen;
-            int[] offs = new int[13];
-            // 元素字节数顺序同 blob.rs columns（v2 +text_off/text_len）。
-            int[] elemSize = { 4, 4, 1, 4, 4, 4, 4, 4, 1, 4, 4, 4, 4 };
-            for (int i = 0; i < 13; i++) { offs[i] = colOff; colOff += elemSize[i]; }
+            int[] offs = new int[14];
+            // 元素字节数顺序同 blob.rs columns（v3 +tex_id 列 13）。
+            int[] elemSize = { 4, 4, 1, 4, 4, 4, 4, 4, 1, 4, 4, 4, 4, 4 };
+            for (int i = 0; i < 14; i++) { offs[i] = colOff; colOff += elemSize[i]; }
             int arenaOff = colOff;
 
             // mesh arena：1 mesh，4 verts / 6 idx。顶点已 re-base 到本地：(0,0)(w,0)(w,h)(0,h)。
@@ -64,7 +64,7 @@ namespace LoomGUI.Tests
             arena.AddRange(System.BitConverter.GetBytes(3u));
             int arenaLen = arena.Count - arenaStart;
 
-            // 13 列 offset + mesh/text/clip 三 arena off+len
+            // 14 列 offset + mesh/text/clip 三 arena off+len
             foreach (var o in offs) b.AddRange(System.BitConverter.GetBytes(o));
             b.AddRange(System.BitConverter.GetBytes(arenaOff));              // mesh_arena_off
             b.AddRange(System.BitConverter.GetBytes(arenaLen));              // mesh_arena_len
@@ -88,6 +88,7 @@ namespace LoomGUI.Tests
             b.AddRange(System.BitConverter.GetBytes((uint)arenaLen)); // mesh_len
             b.AddRange(System.BitConverter.GetBytes(0u));        // text_off（T1 占位）
             b.AddRange(System.BitConverter.GetBytes(0u));        // text_len（T1 占位）
+            b.AddRange(System.BitConverter.GetBytes(0u));        // tex_id（v3 新增；本测 Mesh 占位 0）
 
             b.AddRange(arena);
             // text_arena T1 空，跳过。
@@ -106,13 +107,13 @@ namespace LoomGUI.Tests
         {
             var b = new List<byte>();
             b.AddRange(System.BitConverter.GetBytes(0x4D4F4F4Cu)); // magic
-            b.AddRange(System.BitConverter.GetBytes(2u));          // version=2
+            b.AddRange(System.BitConverter.GetBytes(3u));          // version=3
             b.AddRange(System.BitConverter.GetBytes(0u));          // node_count = 0
-            // 即便 0 节点也写全 header（13 col offset + mesh/text/clip 三 arena off+len），避免越界读。
-            const int HeaderLen = 12 + 13 * 4 + 2 * 4 + 2 * 4 + 2 * 4; // = 88
+            // 即便 0 节点也写全 header（14 col offset + mesh/text/clip 三 arena off+len），避免越界读。
+            const int HeaderLen = 12 + 14 * 4 + 2 * 4 + 2 * 4 + 2 * 4; // = 92
             int colOff = HeaderLen;
-            int[] elemSize = { 4, 4, 1, 4, 4, 4, 4, 4, 1, 4, 4, 4, 4 };
-            for (int i = 0; i < 13; i++)
+            int[] elemSize = { 4, 4, 1, 4, 4, 4, 4, 4, 1, 4, 4, 4, 4, 4 };
+            for (int i = 0; i < 14; i++)
             {
                 b.AddRange(System.BitConverter.GetBytes(colOff));
                 colOff += elemSize[i];
@@ -140,14 +141,16 @@ namespace LoomGUI.Tests
             var shader = Shader.Find("LoomGUI/Unlit");
             var mm = new MaterialManager(shader);
             var pool = new MirrorPool();
-            var tex = Texture2D.whiteTexture;
+            // v1b.2：Sync 新签名（texMap + fallback + font）。本测 Mesh blob tex_id=0 → fallback 路径。
+            var texMap = new Dictionary<uint, Texture2D>();
+            var fallback = Texture2D.whiteTexture;
 
             try
             {
                 // 1) Create：Sync 1 节点 → 恰好创建 1 GO（root 的直接子节点）。
                 var blob1 = new FrameBlob(OneMeshNodeBlob(id: 7, x: 10f, y: 20f, w: 5f, h: 5f, sortKey: 3));
                 Assert.AreEqual(1, blob1.NodeCount, "blob 应解析出 1 节点");
-                pool.Sync(blob1, root.transform, mm, tex, null);  // T4：Sync 加 Font 参数（Mesh 测传 null）
+                pool.Sync(blob1, root.transform, mm, texMap, fallback, null);
 
                 Assert.AreEqual(1, pool.Count, "Create: pool.Count 应为 1");
                 Assert.AreEqual(1, root.transform.childCount, "Create: root 应有 1 个直接子 GO");
@@ -167,7 +170,7 @@ namespace LoomGUI.Tests
                 var createdGo = node.gameObject;  // 记下，验证 Reuse 是同一个 GO
 
                 // 2) Reuse：再 Sync 同一 blob → 仍 1 GO（复用，非新增）。
-                pool.Sync(blob1, root.transform, mm, tex, null);
+                pool.Sync(blob1, root.transform, mm, texMap, fallback, null);
                 Assert.AreEqual(1, pool.Count, "Reuse: pool.Count 仍应为 1");
                 Assert.AreEqual(1, root.transform.childCount, "Reuse: root 仍只 1 子 GO");
                 Assert.AreSame(createdGo, root.transform.GetChild(0).gameObject,
@@ -178,7 +181,7 @@ namespace LoomGUI.Tests
                 //  但 pool 的 dict 是同步清空的——这是 stale-flag diff 的真实语义。
                 var empty = new FrameBlob(EmptyBlob());
                 Assert.AreEqual(0, empty.NodeCount, "空 blob NodeCount=0");
-                pool.Sync(empty, root.transform, mm, tex, null);
+                pool.Sync(empty, root.transform, mm, texMap, fallback, null);
                 Assert.AreEqual(0, pool.Count, "Destroy: 全 stale 后 pool.Count 应为 0");
                 // createdGo 已被 Object.Destroy 标记销毁；deferred 后引用 == null（Unity 重载）。
                 // EditMode 下一帧才真销毁，故仅断 pool.Count，不强断 childCount。
@@ -205,13 +208,15 @@ namespace LoomGUI.Tests
             var shader = Shader.Find("LoomGUI/Unlit");
             var mm = new MaterialManager(shader);
             var pool = new MirrorPool();
-            var tex = Texture2D.whiteTexture;
+            // v1b.2：Sync 新签名（texMap + fallback + font）。本测 Mesh blob tex_id=0 → fallback 路径。
+            var texMap = new Dictionary<uint, Texture2D>();
+            var fallback = Texture2D.whiteTexture;
 
             try
             {
                 // blob A：4 顶点 quad（5×5），位置 (10,20)。
                 var blobA = new FrameBlob(OneMeshNodeBlob(id: 1, x: 10f, y: 20f, w: 5f, h: 5f, sortKey: 0));
-                pool.Sync(blobA, root.transform, mm, tex, null);
+                pool.Sync(blobA, root.transform, mm, texMap, fallback, null);
                 var meshA = root.transform.GetChild(0).GetComponent<MeshFilter>().sharedMesh;
 
                 // 读回几何，断 UploadMesh 路径产出正确（4 顶点、(0,0)(5,0)(5,5)(0,5) re-based 本地）。
@@ -232,7 +237,7 @@ namespace LoomGUI.Tests
                 // blob B：更大 quad（20×30），同 id 复用同一 RenderObj（List 被 Clear+refill 到更大尺寸）。
                 // 验 List 扩容后几何仍正确（无残留 A 的旧顶点 / 旧索引）。
                 var blobB = new FrameBlob(OneMeshNodeBlob(id: 1, x: 10f, y: 20f, w: 20f, h: 30f, sortKey: 0));
-                pool.Sync(blobB, root.transform, mm, tex, null);
+                pool.Sync(blobB, root.transform, mm, texMap, fallback, null);
                 var meshB = root.transform.GetChild(0).GetComponent<MeshFilter>().sharedMesh;
                 var vertsB = meshB.vertices;
                 Assert.AreEqual(4, vertsB.Length, "B: 仍 4 顶点（List refill 不残留）");
@@ -241,7 +246,7 @@ namespace LoomGUI.Tests
                 Assert.AreEqual(new[] { 0, 1, 2, 0, 2, 3 }, meshB.triangles, "B: 索引不变");
 
                 // 再回 blob A（List 收缩回 4 顶点小 quad）——验 Clear 后无残留 B 的大尺寸顶点。
-                pool.Sync(blobA, root.transform, mm, tex, null);
+                pool.Sync(blobA, root.transform, mm, texMap, fallback, null);
                 var meshA2 = root.transform.GetChild(0).GetComponent<MeshFilter>().sharedMesh;
                 var vertsA2 = meshA2.vertices;
                 Assert.AreEqual(4, vertsA2.Length, "A2: 收缩后仍 4 顶点");

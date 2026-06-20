@@ -44,9 +44,10 @@ namespace LoomGUI
         /// 当前镜像中的 GO 数量（=pool 中 node_id 数）。测试/调试用。
         public int Count => _pool.Count;
 
-        public void Sync(FrameBlob blob, Transform root, MaterialManager mm, Texture placeholder, Font font)
+        public void Sync(FrameBlob blob, Transform root, MaterialManager mm,
+                         Dictionary<uint, Texture2D> texMap, Texture fallback, Font font)
         {
-            // 防御：陈旧/非 v2 blob 直接早退（§4.1 magic+version 校验）。不做清理——上一帧的 GO
+            // 防御：陈旧/非 v3 blob 直接早退（§4.1 magic+version 校验）。不做清理——上一帧的 GO
             // 维持不动比误销毁更安全；调用方应自检 IsValid 再 Sync。
             if (!blob.IsValid) return;
 
@@ -109,8 +110,10 @@ namespace LoomGUI
                     UploadMesh(ro, seg);
                     ro.Mesh.RecalculateBounds();
                     ro.LastFontVersion = TextRasterizer.FontVersion;
-                    // Image program=0，texture=占位白（v1b 真纹理）。
-                    ro.Mr.sharedMaterial = mm.Get(program: 0, placeholder, maskCtx);
+                    // v1b.2：按 tex_id 从 texMap 绑真纹理；0/缺失 → fallback（白占位）。
+                    uint tid = blob.TexId(i);
+                    Texture tex = (tid != 0 && texMap.TryGetValue(tid, out var t)) ? (Texture)t : fallback;
+                    ro.Mr.sharedMaterial = mm.Get(program: 0, tex, maskCtx);
                 }
                 else  // kind == 2 (Text)
                 {

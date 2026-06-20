@@ -160,7 +160,9 @@ namespace LoomGUI.Tests
             var shader = Shader.Find("LoomGUI/Unlit");
             var mm = new MaterialManager(shader);
             var pool = new MirrorPool();
-            var tex = Texture2D.whiteTexture;
+            // v1b.2：Sync 新签名（texMap + fallback + font）。本测 Mesh blob tex_id=0 → fallback 路径。
+            var texMap = new Dictionary<uint, Texture2D>();
+            var fallback = Texture2D.whiteTexture;
 
             try
             {
@@ -169,8 +171,8 @@ namespace LoomGUI.Tests
                     childId: 8, cx: 50f, cy: 50f,
                     w: 5f, h: 5f, sortKey: 1));
                 Assert.AreEqual(2, blob.NodeCount, "blob 应解析出 2 节点");
-                // T4：Sync 加 Font 参数（kind=2 用）；本测纯 Mesh，传 null。
-                pool.Sync(blob, root.transform, mm, tex, null);
+                // v1b.2：Sync 签名加 texMap+fallback（kind=2 用 font；本测纯 Mesh 传 null）。
+                pool.Sync(blob, root.transform, mm, texMap, fallback, null);
 
                 // 找到 child GO（按 node_id 8 不能直接查 pool 内部 dict；遍历 root 直接子节点）。
                 Assert.AreEqual(2, pool.Count, "flatten: 2 节点都应在 pool");

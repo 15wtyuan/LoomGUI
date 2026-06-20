@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Text;
 using LoomGUI.Bindings;
@@ -48,6 +49,8 @@ namespace LoomGUI
         MaterialManager _mm;
         MirrorPool _pool;
         byte[] _frameBuf;
+        // v1b.2：tex_id → Texture2D（LoadTextures 填；Sync 按 blob.TexId 查此绑真纹理）。
+        readonly Dictionary<uint, Texture2D> _texMap = new();
 
         // 上一帧 Screen 尺寸，检测 resize 重配根/相机。
         int _lastScreenW = -1, _lastScreenH = -1;
@@ -109,6 +112,10 @@ namespace LoomGUI
             }
             _mm = new MaterialManager(shader);
             _pool = new MirrorPool();
+
+            // v1b.2：包加载分支才 collect/load/register 真纹理（inline 分支仍白占位——
+            // inline 无 Image src 可 collect，且保 v1a 单红块场景行为不变）。
+            if (_usePackage) LoadTextures();
 
             EnsureFont();
             // Font.textureRebuilt 是静态事件（§4.3 必修坑）：atlas 异步 rebuild 时 glyph UV 变。
@@ -173,6 +180,67 @@ namespace LoomGUI
             {
                 int r = Native.loomgui_stage_load_package(_stage, pp, (nuint)pkg.Length);
                 return r == 0;
+            }
+        }
+
+        /// <summary>
+        /// v1b.2：collect scene 的 Image src（T5 FFI）→ 读 StreamingAssets 下 PNG → register → 建 _texMap。
+        /// 缺图/坏图 → LogError 跳过（下游 fallback 白占位，不阻塞渲染）。FFI 指针操作在 unsafe 块内
+        /// （镜像 LateUpdate 的 borrow_frame 模式）。
+        ///
+        /// T5 string contract：image_src_at 返回 `*const u8`（**无尾 NUL**）+ 写 *out_len = 字节长。
+        /// 故 C# 侧必须 `Encoding.UTF8.GetString(ptr, (int)len)`（len-based 读），**不能**
+        /// `PtrToStringAnsi(ptr)`（NUL-scan 会越过 stage 缓存末尾读未映射内存）。
+        /// csbindgen 生成签名：`byte* loomgui_stage_image_src_at(StageHandle*, nuint index, nuint* out_len)`。
+        /// register_texture 同一 src 指针可复用（stage 缓存有效期内幂等；core 按 src 串去重分 tex_id）。
+        /// </summary>
+        void LoadTextures()
+        {
+            _texMap.Clear();
+            if (_stage == null) return;
+
+            nuint count;
+            unsafe { count = Native.loomgui_stage_image_src_count(_stage); }
+
+            for (nuint i = 0; i < count; i++)
+            {
+                byte* p = null;
+                nuint len = 0;
+                unsafe { p = Native.loomgui_stage_image_src_at(_stage, i, &len); }
+                if (p == null || len == 0) continue;
+
+                // len-based 读（T5 contract；禁止 NUL-scan）。
+                string src = Encoding.UTF8.GetString(p, (int)len);
+                string path = System.IO.Path.Combine(Application.streamingAssetsPath, src);
+
+                byte[] bytes;
+                try { bytes = System.IO.File.ReadAllBytes(path); }
+                catch (System.Exception e)
+                {
+                    Debug.LogError($"[LoomStage] texture not found: {src} ({e.Message})");
+                    continue;
+                }
+
+                var tex = new Texture2D(2, 2);
+                if (!tex.LoadImage(bytes))
+                {
+                    Debug.LogError($"[LoomStage] bad png: {src}");
+                    if (Application.isPlaying) Object.Destroy(tex);
+                    else Object.DestroyImmediate(tex);
+                    continue;
+                }
+
+                // register：复用 image_src_at 返回的同一 src 指针（stage 缓存有效期内幂等）。
+                // core 按 src 去重分 tex_id（>=1 成功；0 = 哨兵失败）。
+                uint tid;
+                unsafe { tid = Native.loomgui_stage_register_texture(_stage, p, len, (uint)tex.width, (uint)tex.height); }
+                if (tid != 0) _texMap[tid] = tex;
+                else
+                {
+                    Debug.LogError($"[LoomStage] register_texture 失败：{src}");
+                    if (Application.isPlaying) Object.Destroy(tex);
+                    else Object.DestroyImmediate(tex);
+                }
             }
         }
 
@@ -306,7 +374,7 @@ namespace LoomGUI
             Marshal.Copy((IntPtr)ptr, _frameBuf, 0, len);
 
             var blob = new FrameBlob(_frameBuf);
-            _pool.Sync(blob, transform, _mm, Texture2D.whiteTexture, _font);
+            _pool.Sync(blob, transform, _mm, _texMap, Texture2D.whiteTexture, _font);
         }
 
         void OnDestroy()
@@ -315,6 +383,17 @@ namespace LoomGUI
             Font.textureRebuilt -= TextRasterizer.OnRebuilt;
             _pool?.Clear();
             _mm?.Clear();
+            // v1b.2：Dispose 真纹理。ExecuteAlways 下 OnDestroy 在 Edit/Play 都会跑——
+            // 必须按 Application.isPlaying 选 Destroy / DestroyImmediate（同 MirrorPool.TearDown 模式）。
+            if (_texMap != null)
+            {
+                foreach (var t in _texMap.Values)
+                {
+                    if (Application.isPlaying) Object.Destroy(t);
+                    else Object.DestroyImmediate(t);
+                }
+                _texMap.Clear();
+            }
             FreeStage();
         }
 
