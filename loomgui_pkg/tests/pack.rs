@@ -12,7 +12,7 @@ fn pack_produces_valid_package_roundtrips() {
     assert_eq!(m, PKG_MAGIC);
 
     // round-trip：read_package 能读回，且结构对
-    let (scene, rs) = read_package(&bytes).expect("read ok");
+    let (scene, rs, _atlas) = read_package(&bytes).expect("read ok");
     assert_eq!(rs, (200.0, 100.0));
     assert!(scene.roots.len() >= 1);
     // 至少有一个 Text(content="hi") 和一个 Image(src="logo.png")

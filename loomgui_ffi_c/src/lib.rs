@@ -291,7 +291,7 @@ mod abi_tests {
             (None, NodeKind::Container, ResolvedStyle::default()),
             (Some(0), NodeKind::Text { content: "hi".into() }, ResolvedStyle::default()),
         ];
-        let pkg = write_package(&Scene::build(&entries), (100.0, 50.0));
+        let pkg = write_package(&Scene::build(&entries), (100.0, 50.0), &loomgui_core::asset::AtlasSection::default());
 
         let h = loomgui_stage_new(fp.as_ptr() as *const u8, fplen, 100.0, 50.0);
         assert!(!h.is_null());
@@ -333,7 +333,7 @@ mod abi_tests {
             (Some(0), NodeKind::Image { src: "b.png".into() }, ResolvedStyle::default()),
             (Some(0), NodeKind::Image { src: "a.png".into() }, ResolvedStyle::default()), // 重复 src
         ];
-        let pkg = write_package(&Scene::build(&entries), (100.0, 50.0));
+        let pkg = write_package(&Scene::build(&entries), (100.0, 50.0), &loomgui_core::asset::AtlasSection::default());
 
         let h = loomgui_stage_new(fp.as_ptr() as *const u8, fplen, 100.0, 50.0);
         assert!(!h.is_null());

@@ -24,6 +24,9 @@ pub struct Stage {
     pub font: Arc<Font>,
     pub root_size: (f32, f32),
     pub textures: crate::asset::texture::TextureRegistry, // v1b.2：src→tex_id+维度
+    /// v1b.3：图集元数据（.pkg.bin v2 AtlasSection.atlases）。FFI T5 读（atlas_count/info）。
+    /// inline 路径恒空（inline 不走打包器，无图集）。
+    pub atlases: Vec<crate::asset::AtlasInfo>,
     src_cache: Vec<String>, // v1b.2：collect 缓存（Image src 去重，DFS 先序），load 时重建
 }
 
@@ -36,6 +39,7 @@ impl Stage {
             font: Arc::new(font),
             root_size,
             textures: crate::asset::texture::TextureRegistry::default(),
+            atlases: Vec::new(),
             src_cache: Vec::new(),
         })
     }
@@ -44,6 +48,7 @@ impl Stage {
     #[cfg(feature = "parse")]
     pub fn load_inline(&mut self, html: &str, css: &str) -> Result<(), String> {
         self.textures.clear();
+        self.atlases.clear();
         let tree = parse_html(html)?;
         let sheet = parse_css(css)?;
         let styles = resolve_styles(&tree, &sheet);
@@ -54,9 +59,14 @@ impl Stage {
 
     /// 从二进制包加载（spec §8）：read_package → self.scene + root_size（用包 header 的）。
     /// 与 `load_inline` 二选一设 scene；后续 tick_and_render 不变。不需 parse feature。
+    ///
+    /// v1b.3：read_package 解出 AtlasSection → build_registry 建 TextureRegistry
+    /// （atlas[0]→tex_id 1，sprite UV 来自 AtlasSprite），atlas 表存 self.atlases。
     pub fn load_package(&mut self, bytes: &[u8]) -> Result<(), String> {
-        self.textures.clear();
-        let (scene, root_size) = crate::asset::read_package(bytes).map_err(|e| e.to_string())?;
+        let (scene, root_size, atlas_section) =
+            crate::asset::read_package(bytes).map_err(|e| e.to_string())?;
+        self.textures = crate::asset::build_registry(&atlas_section);
+        self.atlases = atlas_section.atlases;
         self.scene = Some(scene);
         self.root_size = root_size;
         self.rebuild_src_cache();
@@ -120,9 +130,11 @@ mod tests {
         s_inline.textures.insert("logo.png", crate::asset::texture::TexMeta { tex_id: 1, uv_min: [0.0, 0.0], uv_max: [1.0, 1.0], width: 64, height: 32 }); // v1b.2：强化真实 tex_id + 真实尺寸路径
         let inline_json = s_inline.render_json();
 
-        // 序列化 inline 的 scene → 包
+        // 序列化 inline 的 scene → 包（v2：空 AtlasSection——此测手工 insert 真 TexMeta，
+        // 不走 build_registry 路径，故传空 atlas section；包路径 load_package 时 build_registry
+        // 建空 registry，再手工 insert 覆盖为真实 tex_id，与 inline 路径对齐）
         let scene = s_inline.scene.as_ref().unwrap();
-        let pkg = crate::asset::write_package(scene, (200.0, 100.0));
+        let pkg = crate::asset::write_package(scene, (200.0, 100.0), &crate::asset::AtlasSection::default());
 
         // 包路径（新 Stage，同字体，同纹理注册）
         let mut s_pkg = Stage::new(font_path, (200.0, 100.0)).unwrap();
