@@ -4,8 +4,8 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-scraper = "0.19"
-cssparser = "0.34"
+scraper = { version = "0.19", optional = true }
+cssparser = { version = "0.34", optional = true }
 taffy = { version = "0.5", features = ["serde"] }
 ttf-parser = "0.20"
 unicode-linebreak = "0.1"
@@ -15,3 +15,7 @@ bincode = "1"
 
 [dev-dependencies]
 insta = "1"
+
+[features]
+default = ["parse"]
+parse = ["dep:scraper", "dep:cssparser"]

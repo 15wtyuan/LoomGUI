@@ -1,4 +1,5 @@
 pub mod layout;
+#[cfg(feature = "parse")]
 pub mod parse;
 pub mod render;
 pub mod scene;

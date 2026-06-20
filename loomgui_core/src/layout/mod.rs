@@ -184,7 +184,7 @@ pub fn solve(scene: &mut Scene, font: &Font, root_size: (f32, f32)) {
     write_back(scene, &taffy_tree, &taffy_ids, scene.roots[0], (0.0, 0.0));
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "parse"))]
 mod tests {
     use super::*;
     use crate::parse::{css::parse_css, dom::parse_html};

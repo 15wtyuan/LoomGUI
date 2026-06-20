@@ -4,4 +4,6 @@
 
 pub mod node;
 
-pub use node::{build_scene, Node, NodeId, NodeKind, Rect, Scene};
+pub use node::{Node, NodeId, NodeKind, Rect, Scene};
+#[cfg(feature = "parse")]
+pub use node::build_scene;

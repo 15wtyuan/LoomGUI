@@ -5,11 +5,16 @@
 //! v0 无输入/动画/打包器，Stage 只是「装配 + 单帧」的薄壳。
 
 use crate::layout::solve;
+#[cfg(feature = "parse")]
 use crate::parse::css::parse_css;
+#[cfg(feature = "parse")]
 use crate::parse::dom::parse_html;
 use crate::render::build_render_nodes;
 use crate::render::FrameData;
-use crate::scene::node::{build_scene, Scene};
+#[cfg(feature = "parse")]
+use crate::scene::node::build_scene;
+use crate::scene::node::Scene;
+#[cfg(feature = "parse")]
 use crate::style::cascade::resolve_styles;
 use crate::text::layout::Font;
 use std::sync::Arc;
@@ -32,6 +37,7 @@ impl Stage {
     }
 
     /// v0 内存直通：HTML+CSS 文本直接构 scene（不走打包器）。
+    #[cfg(feature = "parse")]
     pub fn load_inline(&mut self, html: &str, css: &str) -> Result<(), String> {
         let tree = parse_html(html)?;
         let sheet = parse_css(css)?;

@@ -4,6 +4,7 @@
 //! layout 层后续往 `taffy_id`/`layout_rect` 写几何；render 层消费
 //! `clip_rect`/`dirty_*`。本模块只管建树 + 初始脏标志。
 
+#[cfg(feature = "parse")]
 use crate::parse::dom::{ElementId, ElementTree};
 use crate::style::resolved::ResolvedStyle;
 
@@ -116,6 +117,7 @@ impl Scene {
 /// 从 ElementTree + ResolvedStyle 构建 Node 树（gather 后调 `Scene::build`）。
 ///
 /// `styles` 必须与 `tree.nodes` 同长且同序（由 `style::cascade::resolve_styles` 保证）。
+#[cfg(feature = "parse")]
 pub fn build_scene(tree: &ElementTree, styles: &[ResolvedStyle]) -> Scene {
     let mut entries: Vec<(Option<usize>, NodeKind, ResolvedStyle)> = Vec::new();
     for root in &tree.roots {
@@ -124,6 +126,7 @@ pub fn build_scene(tree: &ElementTree, styles: &[ResolvedStyle]) -> Scene {
     Scene::build(&entries)
 }
 
+#[cfg(feature = "parse")]
 fn gather_rec(
     tree: &ElementTree,
     styles: &[ResolvedStyle],
@@ -184,8 +187,6 @@ fn gather_rec(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parse::{css::parse_css, dom::parse_html};
-    use crate::style::cascade::resolve_styles;
 
     #[test]
     fn scene_build_constructs_tree_without_parse() {
@@ -217,6 +218,14 @@ mod tests {
         let scene2 = Scene::build(&[(None, NodeKind::Container, of)]);
         assert!(scene2.nodes[0].clip_rect.is_some(), "overflow_hidden=true → clip slot");
     }
+}
+
+// 依赖 parse 的测（build_scene via parse）——gate
+#[cfg(all(test, feature = "parse"))]
+mod parse_tests {
+    use super::*;
+    use crate::parse::{css::parse_css, dom::parse_html};
+    use crate::style::cascade::resolve_styles;
 
     #[test]
     fn builds_div_button_text_image() {
