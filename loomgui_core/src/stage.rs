@@ -117,7 +117,7 @@ mod tests {
         // inline 路径
         let mut s_inline = Stage::new(font_path, (200.0, 100.0)).unwrap();
         s_inline.load_inline(html, css).unwrap();
-        s_inline.textures.register("logo.png", 64, 32); // v1b.2：强化真实 tex_id + 真实尺寸路径
+        s_inline.textures.insert("logo.png", crate::asset::texture::TexMeta { tex_id: 1, uv_min: [0.0, 0.0], uv_max: [1.0, 1.0], width: 64, height: 32 }); // v1b.2：强化真实 tex_id + 真实尺寸路径
         let inline_json = s_inline.render_json();
 
         // 序列化 inline 的 scene → 包
@@ -127,7 +127,7 @@ mod tests {
         // 包路径（新 Stage，同字体，同纹理注册）
         let mut s_pkg = Stage::new(font_path, (200.0, 100.0)).unwrap();
         s_pkg.load_package(&pkg).unwrap();
-        s_pkg.textures.register("logo.png", 64, 32);
+        s_pkg.textures.insert("logo.png", crate::asset::texture::TexMeta { tex_id: 1, uv_min: [0.0, 0.0], uv_max: [1.0, 1.0], width: 64, height: 32 });
         let pkg_json = s_pkg.render_json();
 
         assert_eq!(inline_json, pkg_json, "包路径渲染输出必须 == inline（含真实 tex_id + 尺寸）");

@@ -164,7 +164,7 @@ fn bake_content_offset(layout: &mut crate::text::layout::TextLayout, off_x: f32,
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::asset::texture::TextureRegistry;
+    use crate::asset::texture::{TexMeta, TextureRegistry};
     use crate::scene::node::*;
     use crate::style::resolved::TextAlign;
 
@@ -242,7 +242,7 @@ mod tests {
 
         let font = test_font().expect("need test font");
         let mut tex = TextureRegistry::default();
-        let tid = tex.register("logo.png", 200, 100);
+        let tid = { tex.insert("logo.png", TexMeta { tex_id: 1, uv_min: [0.0, 0.0], uv_max: [1.0, 1.0], width: 200, height: 100 }); 1 };
         let frame = build_render_nodes(&scene, &font, &tex);
         let got = match &frame.nodes[0].payload {
             NodePayload::Mesh { texture, .. } => *texture,

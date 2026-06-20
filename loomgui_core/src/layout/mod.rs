@@ -201,7 +201,7 @@ pub fn solve(scene: &mut Scene, font: &Font, root_size: (f32, f32), textures: &T
 #[cfg(all(test, feature = "parse"))]
 mod tests {
     use super::*;
-    use crate::asset::texture::TextureRegistry;
+    use crate::asset::texture::{TexMeta, TextureRegistry};
     use crate::parse::{css::parse_css, dom::parse_html};
     use crate::scene::{build_scene, NodeKind, Scene};
     use crate::style::cascade::resolve_styles;
@@ -281,7 +281,7 @@ mod tests {
         ];
         let mut scene = Scene::build(&entries);
         let mut tex = TextureRegistry::default();
-        tex.register("x.png", 200, 200); // 真实大于声明
+        tex.insert("x.png", TexMeta { tex_id: 1, uv_min: [0.0, 0.0], uv_max: [1.0, 1.0], width: 200, height: 200 }); // 真实大于声明
         solve(&mut scene, &font().expect("need font"), (300.0, 300.0), &tex);
         let r = &scene.nodes[1].layout_rect; // Image 在 idx 1
         assert!((r.w - 100.0).abs() < 0.1, "CSS length 赢：w=100，got {}", r.w);
@@ -301,7 +301,7 @@ mod tests {
         ];
         let mut scene = Scene::build(&entries);
         let mut tex = TextureRegistry::default();
-        tex.register("x.png", 200, 100);
+        tex.insert("x.png", TexMeta { tex_id: 1, uv_min: [0.0, 0.0], uv_max: [1.0, 1.0], width: 200, height: 100 });
         solve(&mut scene, &font().expect("need font"), (300.0, 300.0), &tex);
         let r = &scene.nodes[1].layout_rect; // Image 在 idx 1
         assert!((r.w - 200.0).abs() < 0.1, "真实像素：w=200，got {}", r.w);
