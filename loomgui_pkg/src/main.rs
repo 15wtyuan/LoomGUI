@@ -71,7 +71,10 @@ fn main() -> ExitCode {
                 eprintln!("write {out_path}: {e}");
                 return ExitCode::FAILURE;
             }
-            let atlas_path = PathBuf::from(&out_path).with_extension("atlas.png");
+            let out_parent = Path::new(&out_path)
+                .parent()
+                .unwrap_or_else(|| Path::new("."));
+            let atlas_path = out_parent.join(&p.atlas_filename);
             if !p.atlas_png.is_empty() {
                 if let Err(e) = fs::write(&atlas_path, &p.atlas_png) {
                     eprintln!("write {}: {e}", atlas_path.display());

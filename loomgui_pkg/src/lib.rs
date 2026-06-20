@@ -80,7 +80,10 @@ pub fn pack(
     // 5. blit 进 atlas buffer（RGBA8）。
     let mut buf = vec![0u8; (atlas_w * atlas_h * 4) as usize];
     for (src, _w, _h, rgba) in &decoded {
-        let p = placed.iter().find(|p| &p.src == src).unwrap();
+        let p = placed
+            .iter()
+            .find(|p| &p.src == src)
+            .ok_or_else(|| format!("internal: placement missing for {src}"))?;
         for row in 0..p.h {
             for col in 0..p.w {
                 let px = rgba.get_pixel(col, row).0;
