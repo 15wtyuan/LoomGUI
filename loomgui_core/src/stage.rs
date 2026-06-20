@@ -23,6 +23,7 @@ pub struct Stage {
     pub scene: Option<Scene>,
     pub font: Arc<Font>,
     pub root_size: (f32, f32),
+    pub textures: crate::asset::texture::TextureRegistry, // v1b.2：src→tex_id+维度
 }
 
 impl Stage {
@@ -33,12 +34,14 @@ impl Stage {
             scene: None,
             font: Arc::new(font),
             root_size,
+            textures: crate::asset::texture::TextureRegistry::default(),
         })
     }
 
     /// v0 内存直通：HTML+CSS 文本直接构 scene（不走打包器）。
     #[cfg(feature = "parse")]
     pub fn load_inline(&mut self, html: &str, css: &str) -> Result<(), String> {
+        self.textures.clear();
         let tree = parse_html(html)?;
         let sheet = parse_css(css)?;
         let styles = resolve_styles(&tree, &sheet);
@@ -49,6 +52,7 @@ impl Stage {
     /// 从二进制包加载（spec §8）：read_package → self.scene + root_size（用包 header 的）。
     /// 与 `load_inline` 二选一设 scene；后续 tick_and_render 不变。不需 parse feature。
     pub fn load_package(&mut self, bytes: &[u8]) -> Result<(), String> {
+        self.textures.clear();
         let (scene, root_size) = crate::asset::read_package(bytes).map_err(|e| e.to_string())?;
         self.scene = Some(scene);
         self.root_size = root_size;
@@ -59,7 +63,7 @@ impl Stage {
     pub fn tick_and_render(&mut self) -> FrameData {
         let scene = self.scene.as_mut().expect("load first");
         solve(scene, &self.font, self.root_size);
-        build_render_nodes(scene, &self.font)
+        build_render_nodes(scene, &self.font, &self.textures)
     }
 
     pub fn render_json(&mut self) -> String {

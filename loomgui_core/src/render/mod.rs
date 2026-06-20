@@ -11,12 +11,11 @@ pub mod batch;
 pub mod mesh;
 pub mod node;
 
+use crate::asset::texture::TextureRegistry;
 use crate::scene::node::{NodeKind, Rect, Scene};
 use crate::text::layout::{measure_text, Font};
 use node::*;
 
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
 use taffy::style::LengthPercentage;
 
 /// clip 表条目：context_id（mask_context>0 的层级）→ 该层级的交集绝对 design rect。
@@ -45,7 +44,7 @@ pub struct FrameData {
 /// Text 节点调 `measure_text` 产 TextLayout；Container/Image 产 Mesh quad。
 /// `font` 仅 Text 节点用（v0 单字体）。clip 表由 `batch::assign_sort_keys` 算
 /// 祖先 clip 链交集后产出（§4.4）。
-pub fn build_render_nodes(scene: &Scene, font: &Font) -> FrameData {
+pub fn build_render_nodes(scene: &Scene, font: &Font, textures: &TextureRegistry) -> FrameData {
     // 预分配 Unchanged 占位，逐个按 scene 节点覆写。
     let mut nodes: Vec<RenderNode> = (0..scene.nodes.len())
         .map(|_| RenderNode {
@@ -87,15 +86,15 @@ pub fn build_render_nodes(scene: &Scene, font: &Font) -> FrameData {
                 };
             }
             NodeKind::Image { src } => {
-                // 图片 quad：白色 tint（贴图本色），占位 tex_id = hash(src)。
+                // tex_id：注册表查（未注册=0 哨兵→后端白占位）。UV 全图，白 tint。
+                let tex_id = textures.get(src).map(|m| m.tex_id).unwrap_or(0);
                 let (v, uvc, col, idx) = crate::render::mesh::quad(rect, [1.0, 1.0, 1.0, 1.0]);
-                let tex = hash_str(src);
                 rn.payload = NodePayload::Mesh {
                     verts: v,
                     uvs: uvc,
                     colors: col,
                     indices: idx,
-                    texture: tex,
+                    texture: tex_id,
                     program: 0,
                 };
             }
@@ -135,16 +134,6 @@ pub fn build_render_nodes(scene: &Scene, font: &Font) -> FrameData {
     FrameData { nodes, clips }
 }
 
-/// src → 占位 tex_id：DefaultHasher 低 16 位。
-///
-/// v0 无贴图集；tex_id 仅用于区分不同 src（Task 8 stage 层 / 后端按 tex_id 断批合占位）。
-/// 16 位碰撞概率对 v0 单页面图片数足够。
-fn hash_str(s: &str) -> u32 {
-    let mut h = DefaultHasher::new();
-    s.hash(&mut h);
-    (h.finish() & 0xFFFF) as u32
-}
-
 /// 把 taffy `LengthPercentage` 解析为 px。
 ///
 /// - `Length(v)` → v。
@@ -175,6 +164,7 @@ fn bake_content_offset(layout: &mut crate::text::layout::TextLayout, off_x: f32,
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::asset::texture::TextureRegistry;
     use crate::scene::node::*;
     use crate::style::resolved::TextAlign;
 
@@ -214,7 +204,7 @@ mod tests {
             Some([1.0, 0.0, 0.0, 1.0]),
         ));
         let font = test_font().expect("need test font for build_render_nodes");
-        let frame = build_render_nodes(&scene, &font);
+        let frame = build_render_nodes(&scene, &font, &TextureRegistry::default());
         let rns = &frame.nodes;
         assert_eq!(rns.len(), 1);
         match &rns[0].payload {
@@ -242,53 +232,43 @@ mod tests {
     }
 
     #[test]
-    fn build_image_hashes_tex_id() {
-        // 同 src → 同 tex_id；不同 src → 不同 tex_id。
-        let mut scene = Scene {
-            roots: vec![NodeId(0)],
-            nodes: vec![],
-        };
+    fn build_image_uses_registered_tex_id() {
+        let mut scene = Scene { roots: vec![NodeId(0)], nodes: vec![] };
         let mut a = Node::default();
         a.id = NodeId(0);
-        a.kind = NodeKind::Image {
-            src: "logo.png".into(),
-        };
-        a.layout_rect = Rect {
-            x: 0.0,
-            y: 0.0,
-            w: 5.0,
-            h: 5.0,
-        };
+        a.kind = NodeKind::Image { src: "logo.png".into() };
+        a.layout_rect = Rect { x: 0.0, y: 0.0, w: 5.0, h: 5.0 };
         scene.nodes.push(a);
 
-        let mut b = Node::default();
-        b.id = NodeId(1);
-        b.kind = NodeKind::Image {
-            src: "other.png".into(),
+        let font = test_font().expect("need test font");
+        let mut tex = TextureRegistry::default();
+        let tid = tex.register("logo.png", 200, 100);
+        let frame = build_render_nodes(&scene, &font, &tex);
+        let got = match &frame.nodes[0].payload {
+            NodePayload::Mesh { texture, .. } => *texture,
+            _ => panic!("expected Mesh"),
         };
-        b.layout_rect = Rect {
-            x: 0.0,
-            y: 0.0,
-            w: 5.0,
-            h: 5.0,
-        };
-        scene.nodes.push(b);
-        // 让 roots 指两个独立根（避免 batch DFS 跨连）。
-        scene.roots = vec![NodeId(0), NodeId(1)];
+        assert_eq!(got, tid, "注册后 Image.texture == 注册分配的 tex_id");
+        assert_ne!(got, 0, "已注册 tex_id 不应为 0");
+    }
+
+    #[test]
+    fn build_image_unregistered_is_zero() {
+        let mut scene = Scene { roots: vec![NodeId(0)], nodes: vec![] };
+        let mut a = Node::default();
+        a.id = NodeId(0);
+        a.kind = NodeKind::Image { src: "logo.png".into() };
+        a.layout_rect = Rect { x: 0.0, y: 0.0, w: 5.0, h: 5.0 };
+        scene.nodes.push(a);
 
         let font = test_font().expect("need test font");
-        let frame = build_render_nodes(&scene, &font);
-        let rns = &frame.nodes;
-        let tex_a = match &rns[0].payload {
+        let tex = TextureRegistry::default(); // 未注册
+        let frame = build_render_nodes(&scene, &font, &tex);
+        let got = match &frame.nodes[0].payload {
             NodePayload::Mesh { texture, .. } => *texture,
             _ => panic!("expected Mesh"),
         };
-        let tex_b = match &rns[1].payload {
-            NodePayload::Mesh { texture, .. } => *texture,
-            _ => panic!("expected Mesh"),
-        };
-        assert_ne!(tex_a, tex_b, "不同 src 应得不同 tex_id");
-        assert_eq!(tex_a, hash_str("logo.png"));
+        assert_eq!(got, 0, "未注册 src → tex_id=0 哨兵");
     }
 
     #[test]
@@ -319,7 +299,7 @@ mod tests {
         };
         scene.nodes.push(n);
 
-        let frame = build_render_nodes(&scene, &font);
+        let frame = build_render_nodes(&scene, &font, &TextureRegistry::default());
         let rns = &frame.nodes;
         match &rns[0].payload {
             NodePayload::Text {
@@ -379,7 +359,7 @@ mod tests {
         };
         scene.nodes.push(n);
 
-        let frame = build_render_nodes(&scene, &font);
+        let frame = build_render_nodes(&scene, &font, &TextureRegistry::default());
         let rns = &frame.nodes;
         match &rns[0].payload {
             NodePayload::Text { layout, .. } => {
@@ -413,19 +393,9 @@ mod tests {
         scene.nodes.push(container_node(2, Some(0), Rect::default(), None));
 
         let font = test_font().expect("need test font");
-        let frame = build_render_nodes(&scene, &font);
+        let frame = build_render_nodes(&scene, &font, &TextureRegistry::default());
         let rns = &frame.nodes;
         assert!(rns[0].sort_key < rns[1].sort_key);
         assert!(rns[1].sort_key < rns[2].sort_key);
-    }
-
-    #[test]
-    fn hash_str_is_deterministic_and_low16() {
-        // 同输入同输出；输出在 16 位范围。
-        let a = hash_str("foo.png");
-        let b = hash_str("foo.png");
-        assert_eq!(a, b);
-        assert!(a < (1u32 << 16));
-        assert_ne!(a, hash_str("bar.png"));
     }
 }
