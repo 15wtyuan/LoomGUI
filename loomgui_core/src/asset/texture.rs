@@ -26,29 +26,6 @@ impl TextureRegistry {
     pub fn clear(&mut self) { self.map.clear(); }
     pub fn len(&self) -> usize { self.map.len() }
     pub fn is_empty(&self) -> bool { self.map.is_empty() }
-
-    /// v1b.2 loose-collect FFI 注册（`loomgui_stage_register_texture`）：分配单调
-    /// tex_id（从 1 起；0=未注册哨兵），src 幂等返回同 id。
-    ///
-    /// v1b.3 atlas 模型下，包路径已由 `build_registry` 一次性建表（uv_min/uv_max
-    /// 来自 AtlasSprite）；此 `register` 仅供仍存在的 loose-collect FFI（Unity 旧
-    /// collect→register 握手）使用，T5 删该 FFI 时一并删本方法。维度首写入胜，
-    /// UV 默认整图 [0,0]-[1,1]（loose 图非 atlas 子区）。
-    pub fn register(&mut self, src: &str, width: u32, height: u32) -> u32 {
-        if let Some(m) = self.map.get(src) {
-            return m.tex_id;
-        }
-        // tex_id = 当前最大 + 1（map 空时 1）；与 v1b.2 next_id 语义等价。
-        let id = self.map.values().map(|m| m.tex_id).max().unwrap_or(0) + 1;
-        self.map.insert(src.into(), TexMeta {
-            tex_id: id,
-            uv_min: [0.0, 0.0],
-            uv_max: [1.0, 1.0],
-            width,
-            height,
-        });
-        id
-    }
 }
 
 #[cfg(test)]

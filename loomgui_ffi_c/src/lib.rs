@@ -6,7 +6,7 @@ pub mod blob;
 use std::ffi::CString;
 use loomgui_core::stage::Stage;
 
-/// 版本字符串（C null-terminated `b"v1b.2\0"`）。Task 1 工具链 round-trip 用。
+/// 版本字符串（C null-terminated `b"v1b.3\0"`）。Task 1 工具链 round-trip 用。
 ///
 /// 返回 `*const u8`（csbindgen 映射为 C# `byte*`）；CString::as_ptr 给的是
 /// `*const c_char`（i8），这里 cast 对齐签名。OnceLock 缓存，避免每次分配+泄漏。
@@ -14,7 +14,7 @@ use loomgui_core::stage::Stage;
 pub extern "C" fn loomgui_version() -> *const u8 {
     static VERSION: std::sync::OnceLock<CString> = std::sync::OnceLock::new();
     VERSION
-        .get_or_init(|| CString::new("v1b.2").unwrap())
+        .get_or_init(|| CString::new("v1b.3").unwrap())
         .as_ptr() as *const u8
 }
 
@@ -116,48 +116,37 @@ pub extern "C" fn loomgui_stage_load_package(
     }
 }
 
-/// 注册纹理：core 分配 tex_id（src 幂等），存 w/h 供 measure。返回 tex_id(>=1)；
-/// 非 UTF-8 src / null → 返回 0（哨兵，不 panic）。
+/// atlas 数量（甲-B 恒 1，无图 scene = 0）。
 #[no_mangle]
-pub extern "C" fn loomgui_stage_register_texture(
-    h: *mut StageHandle,
-    src: *const u8,
-    src_len: usize,
-    width: u32,
-    height: u32,
-) -> u32 {
-    if h.is_null() || src.is_null() { return 0; }
-    let sh = unsafe { &mut *h };
-    let bytes = unsafe { std::slice::from_raw_parts(src, src_len) };
-    match std::str::from_utf8(bytes) {
-        Ok(s) => sh.stage.textures.register(s, width, height),
-        Err(_) => 0,
-    }
-}
-
-/// collect：scene 中 Image src 去重后的数量（DFS 先序）。
-#[no_mangle]
-pub extern "C" fn loomgui_stage_image_src_count(h: *const StageHandle) -> usize {
+pub extern "C" fn loomgui_stage_atlas_count(h: *const StageHandle) -> usize {
     if h.is_null() { return 0; }
     let sh = unsafe { &*h };
-    sh.stage.image_srcs().len()
+    sh.stage.atlases.len()
 }
 
-/// collect：第 index 个 Image src 的 UTF-8 串指针；*out_len = 字节长。
-/// OOB / null → null。串归 Stage 拥有，下次 load 前有效。
+/// 第 i 个 atlas 信息。返 atlas filename UTF-8 串指针（**无尾 NUL** + *out_src_len=字节长）；
+/// *out_tex_id = core 分配的 atlas tex_id（= i+1）；*out_w/*out_h = atlas 像素尺寸。
+/// OOB / null → null。串归 Stage 拥有，下次 load 前有效（坑16 len-based 读契约）。
 #[no_mangle]
-pub extern "C" fn loomgui_stage_image_src_at(
+pub extern "C" fn loomgui_stage_atlas_info(
     h: *const StageHandle,
     index: usize,
-    out_len: *mut usize,
+    out_tex_id: *mut u32,
+    out_w: *mut u32,
+    out_h: *mut u32,
+    out_src_len: *mut usize,
 ) -> *const u8 {
     if h.is_null() { return std::ptr::null(); }
     let sh = unsafe { &*h };
-    let srcs = sh.stage.image_srcs();
-    if index >= srcs.len() { return std::ptr::null(); }
-    let s = &srcs[index];
-    if !out_len.is_null() { unsafe { *out_len = s.len(); } }
-    s.as_ptr()
+    if index >= sh.stage.atlases.len() { return std::ptr::null(); }
+    let a = &sh.stage.atlases[index];
+    unsafe {
+        if !out_tex_id.is_null() { *out_tex_id = (index as u32) + 1; }   // atlas[0]→tex_id 1
+        if !out_w.is_null() { *out_w = a.width; }
+        if !out_h.is_null() { *out_h = a.height; }
+        if !out_src_len.is_null() { *out_src_len = a.filename.len(); }
+    }
+    a.filename.as_ptr()
 }
 
 /// 跑一帧 tick_and_render → build_blob 写入缓存。v0 无 dt 语义（忽略）。
@@ -223,10 +212,10 @@ mod tests {
     use std::ffi::CStr;
 
     #[test]
-    fn version_returns_c_string_v1b() {
+    fn version_returns_c_string_v1b3() {
         unsafe {
             let s = CStr::from_ptr(loomgui_version() as *const i8);
-            assert_eq!(s.to_str().unwrap(), "v1b.2");
+            assert_eq!(s.to_str().unwrap(), "v1b.3");
         }
     }
 }
@@ -318,53 +307,44 @@ mod abi_tests {
         loomgui_stage_free(h);
     }
 
-    /// register_texture：core 分配单调 tex_id（src 幂等）；collect 返 scene 的 Image src。
+    /// atlas_count/atlas_info：手搓含 atlas 的包 → load_package → 读 atlas 元数据。
+    /// 契约（坑16）：atlas_info 返 String::as_ptr（无尾 NUL）+ *out_src_len=字节长，
+    /// 故用 slice::from_raw_parts + from_utf8 读，不能用 CStr（String 无 trailing \0）。
+    /// *out_tex_id = atlas index + 1（atlas[0]→tex_id 1，build_registry 同约定）。
     #[test]
-    fn register_texture_and_collect_image_srcs() {
-        use loomgui_core::asset::write_package;
+    fn atlas_count_and_info_round_trip() {
+        use loomgui_core::asset::{write_package, AtlasInfo, AtlasSection, AtlasSprite};
         use loomgui_core::scene::{NodeKind, Scene};
         use loomgui_core::style::resolved::ResolvedStyle;
-
         let (fp, fplen) = font_path();
-        // 手搓含两个 Image（src 不同）+ 一个 Container 的 scene。
         let entries = vec![
             (None, NodeKind::Container, ResolvedStyle::default()),
             (Some(0), NodeKind::Image { src: "a.png".into() }, ResolvedStyle::default()),
             (Some(0), NodeKind::Image { src: "b.png".into() }, ResolvedStyle::default()),
-            (Some(0), NodeKind::Image { src: "a.png".into() }, ResolvedStyle::default()), // 重复 src
         ];
-        let pkg = write_package(&Scene::build(&entries), (100.0, 50.0), &loomgui_core::asset::AtlasSection::default());
+        let atlas = AtlasSection {
+            atlases: vec![AtlasInfo { filename: "loom.atlas.png".into(), width: 512, height: 256 }],
+            sprites: vec![
+                AtlasSprite { src: "a.png".into(), x: 0, y: 0, w: 64, h: 32 },
+                AtlasSprite { src: "b.png".into(), x: 64, y: 0, w: 100, h: 200 },
+            ],
+        };
+        let pkg = write_package(&Scene::build(&entries), (100.0, 50.0), &atlas);
 
         let h = loomgui_stage_new(fp.as_ptr() as *const u8, fplen, 100.0, 50.0);
         assert!(!h.is_null());
         assert_eq!(loomgui_stage_load_package(h, pkg.as_ptr(), pkg.len()), 0);
 
-        // collect：去重后 2 个 src（a.png, b.png），DFS 先序。
-        // 注意 image_src_at 返 String::as_ptr（非 null-terminated）+ *out_len，
-        // 故用 slice::from_raw_parts + from_utf8 读，不能用 CStr（String 无 trailing \0）。
-        let count = loomgui_stage_image_src_count(h);
-        assert_eq!(count, 2, "去重后 2 个 Image src");
-        let mut len0 = 0usize;
-        let p0 = loomgui_stage_image_src_at(h, 0, &mut len0);
-        let s0 = unsafe { std::str::from_utf8(std::slice::from_raw_parts(p0, len0)).unwrap() };
-        assert_eq!(s0, "a.png");
-        let mut len1 = 0usize;
-        let p1 = loomgui_stage_image_src_at(h, 1, &mut len1);
-        let s1 = unsafe { std::str::from_utf8(std::slice::from_raw_parts(p1, len1)).unwrap() };
-        assert_eq!(s1, "b.png");
+        assert_eq!(loomgui_stage_atlas_count(h), 1);
+        let mut tid = 0u32; let mut w = 0u32; let mut hh = 0u32; let mut slen = 0usize;
+        let p = loomgui_stage_atlas_info(h, 0, &mut tid, &mut w, &mut hh, &mut slen);
+        assert!(!p.is_null());
+        assert_eq!(tid, 1, "atlas[0] → tex_id 1");
+        assert_eq!((w, hh), (512, 256));
+        let fname = unsafe { std::str::from_utf8(std::slice::from_raw_parts(p, slen)).unwrap() };
+        assert_eq!(fname, "loom.atlas.png");
         // OOB → null
-        assert!(loomgui_stage_image_src_at(h, 99, &mut len0).is_null());
-
-        // register：单调 tex_id，src 幂等。
-        let a = "a.png";
-        let b = "b.png";
-        let id1 = loomgui_stage_register_texture(h, a.as_ptr() as *const u8, a.len(), 10, 20);
-        let id2 = loomgui_stage_register_texture(h, b.as_ptr() as *const u8, b.len(), 30, 40);
-        let id3 = loomgui_stage_register_texture(h, a.as_ptr() as *const u8, a.len(), 999, 999); // 幂等
-        assert_eq!(id1, 1);
-        assert_eq!(id2, 2);
-        assert_eq!(id3, 1, "同 src 幂等返回同 id");
-        assert_ne!(id1, 0);
+        assert!(loomgui_stage_atlas_info(h, 99, &mut tid, &mut w, &mut hh, &mut slen).is_null());
 
         loomgui_stage_free(h);
     }

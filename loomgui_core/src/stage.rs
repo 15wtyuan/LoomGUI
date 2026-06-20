@@ -27,7 +27,6 @@ pub struct Stage {
     /// v1b.3：图集元数据（.pkg.bin v2 AtlasSection.atlases）。FFI T5 读（atlas_count/info）。
     /// inline 路径恒空（inline 不走打包器，无图集）。
     pub atlases: Vec<crate::asset::AtlasInfo>,
-    src_cache: Vec<String>, // v1b.2：collect 缓存（Image src 去重，DFS 先序），load 时重建
 }
 
 impl Stage {
@@ -40,7 +39,6 @@ impl Stage {
             root_size,
             textures: crate::asset::texture::TextureRegistry::default(),
             atlases: Vec::new(),
-            src_cache: Vec::new(),
         })
     }
 
@@ -53,7 +51,6 @@ impl Stage {
         let sheet = parse_css(css)?;
         let styles = resolve_styles(&tree, &sheet);
         self.scene = Some(build_scene(&tree, &styles));
-        self.rebuild_src_cache();
         Ok(())
     }
 
@@ -69,30 +66,7 @@ impl Stage {
         self.atlases = atlas_section.atlases;
         self.scene = Some(scene);
         self.root_size = root_size;
-        self.rebuild_src_cache();
         Ok(())
-    }
-
-    /// 重建 src_cache：scene 中所有 Image 节点的 src（DFS 先序去重，保首次出现序）。
-    /// scene.nodes 已是 DFS 先序，故顺序遍历即可。
-    fn rebuild_src_cache(&mut self) {
-        self.src_cache = self.scene.as_ref().map(|scene| {
-            let mut seen = std::collections::HashSet::new();
-            let mut out: Vec<String> = Vec::new();
-            for n in &scene.nodes {
-                if let crate::scene::NodeKind::Image { src } = &n.kind {
-                    if seen.insert(src.as_str()) {
-                        out.push(src.clone());
-                    }
-                }
-            }
-            out
-        }).unwrap_or_default();
-    }
-
-    /// collect：返回当前 scene 的 Image src 列表（缓存，load 后固定）。
-    pub fn image_srcs(&self) -> &[String] {
-        &self.src_cache
     }
 
     /// 静态首帧：solve + render。v0 无输入/动画。返回 nodes + clip 表（§4.4）。
