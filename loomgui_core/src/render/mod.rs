@@ -75,7 +75,8 @@ pub fn build_render_nodes(scene: &Scene, font: &Font, textures: &TextureRegistry
         match &n.kind {
             NodeKind::Container | NodeKind::Button => {
                 let color = n.style.background_color.unwrap_or([0.0, 0.0, 0.0, 0.0]);
-                let (v, uvc, col, idx) = crate::render::mesh::quad(rect, color);
+                let (v, uvc, col, idx) =
+                    crate::render::mesh::quad(rect, color, [0.0, 0.0], [1.0, 1.0]);
                 rn.payload = NodePayload::Mesh {
                     verts: v,
                     uvs: uvc,
@@ -86,9 +87,14 @@ pub fn build_render_nodes(scene: &Scene, font: &Font, textures: &TextureRegistry
                 };
             }
             NodeKind::Image { src } => {
-                // tex_id：注册表查（未注册=0 哨兵→后端白占位）。UV 全图，白 tint。
-                let tex_id = textures.get(src).map(|m| m.tex_id).unwrap_or(0);
-                let (v, uvc, col, idx) = crate::render::mesh::quad(rect, [1.0, 1.0, 1.0, 1.0]);
+                // tex_id + uv_region：注册表查（未注册=0 哨兵+全图 UV→后端白占位）。
+                // 注册时按 atlas 子区烤 4 角 UV（TL/TR/BR/BL），让同一 atlas tex 切多 sprite。
+                let (tex_id, uv_min, uv_max) = match textures.get(src) {
+                    Some(m) => (m.tex_id, m.uv_min, m.uv_max),
+                    None => (0u32, [0.0, 0.0], [1.0, 1.0]),
+                };
+                let (v, uvc, col, idx) =
+                    crate::render::mesh::quad(rect, [1.0, 1.0, 1.0, 1.0], uv_min, uv_max);
                 rn.payload = NodePayload::Mesh {
                     verts: v,
                     uvs: uvc,
@@ -242,14 +248,21 @@ mod tests {
 
         let font = test_font().expect("need test font");
         let mut tex = TextureRegistry::default();
-        let tid = { tex.insert("logo.png", TexMeta { tex_id: 1, uv_min: [0.0, 0.0], uv_max: [1.0, 1.0], width: 200, height: 100 }); 1 };
+        // 非平凡 uv（atlas 子区）：TL=(0.25,0) BR=(0.5,1)。
+        let tid = { tex.insert("logo.png", TexMeta {
+            tex_id: 1, uv_min: [0.25, 0.0], uv_max: [0.5, 1.0], width: 200, height: 100,
+        }); 1 };
         let frame = build_render_nodes(&scene, &font, &tex);
-        let got = match &frame.nodes[0].payload {
-            NodePayload::Mesh { texture, .. } => *texture,
+        match &frame.nodes[0].payload {
+            NodePayload::Mesh { texture, uvs, .. } => {
+                assert_eq!(*texture, tid, "注册后 Image.texture == 注册分配的 tex_id");
+                assert_ne!(*texture, 0, "已注册 tex_id 不应为 0");
+                // UV 按 region 烤：TL/BR 命中 uv_min/uv_max。
+                assert_eq!(uvs[0], [0.25, 0.0], "TL == uv_min");
+                assert_eq!(uvs[2], [0.5, 1.0], "BR == uv_max");
+            }
             _ => panic!("expected Mesh"),
-        };
-        assert_eq!(got, tid, "注册后 Image.texture == 注册分配的 tex_id");
-        assert_ne!(got, 0, "已注册 tex_id 不应为 0");
+        }
     }
 
     #[test]
@@ -269,6 +282,28 @@ mod tests {
             _ => panic!("expected Mesh"),
         };
         assert_eq!(got, 0, "未注册 src → tex_id=0 哨兵");
+    }
+
+    #[test]
+    fn build_image_unregistered_uv_is_full() {
+        // 未注册 src → 哨兵 uv (0,0)-(1,1)（与 tex_id=0 白占位配合，UV 无关）。
+        let mut scene = Scene { roots: vec![NodeId(0)], nodes: vec![] };
+        let mut a = Node::default();
+        a.id = NodeId(0);
+        a.kind = NodeKind::Image { src: "logo.png".into() };
+        a.layout_rect = Rect { x: 0.0, y: 0.0, w: 5.0, h: 5.0 };
+        scene.nodes.push(a);
+
+        let font = test_font().expect("need test font");
+        let tex = TextureRegistry::default(); // 未注册
+        let frame = build_render_nodes(&scene, &font, &tex);
+        match &frame.nodes[0].payload {
+            NodePayload::Mesh { uvs, .. } => {
+                assert_eq!(uvs[0], [0.0, 0.0], "未注册 TL == (0,0)");
+                assert_eq!(uvs[2], [1.0, 1.0], "未注册 BR == (1,1)");
+            }
+            _ => panic!("expected Mesh"),
+        }
     }
 
     #[test]
