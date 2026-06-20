@@ -2,7 +2,7 @@
 //!
 //! 顺序与 `scene.nodes` 索引一致（便于 node_id 对齐），payload 按 kind 决定：
 //! - Container/Button → Mesh quad（背景色；无背景色时透明）
-//! - Image → Mesh quad + 占位 tex_id = hash(src)
+//! - Image → Mesh quad + tex_id（注册表查，未注册=0 哨兵→后端白占位）
 //! - Text → measure_text 产 TextLayout，装 Text payload
 //!
 //! 最后调 `batch::assign_sort_keys` 填 sort_key + mask_context。

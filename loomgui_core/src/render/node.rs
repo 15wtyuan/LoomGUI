@@ -48,8 +48,8 @@ impl Default for NodeTransform {
 /// 节点渲染载荷。
 ///
 /// - `Unchanged`：脏标志未置（v0 build_render_nodes 不产出，留作 stage 层 diff 结果）。
-/// - `Mesh`：quad 几何（背景色块 / 图片占位）。`texture`=0 表示纯色（无贴图），
-///   非 0 为占位 tex_id（Image 节点 hash(src)）。`program`=0 = Image shader（v0 统一）。
+/// - `Mesh`：quad 几何（背景色块 / 图片）。`texture`=0 表示纯色（无贴图），
+///   非 0 为已注册 tex_id（Image 节点，注册表查得；未注册=0 哨兵→白占位）。`program`=0 = Image shader（v0 统一）。
 /// - `Text`：measure_text 产 TextLayout + 颜色。`program`=1 = Text shader。
 #[derive(Debug, Clone, Serialize)]
 pub enum NodePayload {
