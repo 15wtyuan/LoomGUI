@@ -8,6 +8,7 @@
 //! 最后调 `batch::assign_sort_keys` 填 sort_key + mask_context。
 
 pub mod batch;
+pub mod merge;
 pub mod mesh;
 pub mod node;
 
