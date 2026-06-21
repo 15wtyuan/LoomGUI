@@ -294,6 +294,31 @@ mod tests {
         Font::from_path(&p).ok()
     }
 
+    /// CJK 测试字体：仓库内 wqy-microhei.ttc（文泉驿微米黑），缺则跳过。
+    /// .ttc 用 Face::parse(bytes, 0) 取 index 0 face。
+    fn test_font_cjk() -> Option<Font> {
+        let p = format!("{}/tests/fixtures/wqy-microhei.ttc", env!("CARGO_MANIFEST_DIR"));
+        Font::from_path(&p).ok()
+    }
+
+    #[test]
+    fn cjk_font_loads_and_has_cjk_glyph_advance() {
+        let font = match test_font_cjk() {
+            Some(f) => f,
+            None => {
+                eprintln!("skip: no CJK test font (wqy-microhei.ttc)");
+                return;
+            }
+        };
+        // CJK 字符「中」应有 glyph（非 .notdef=0）且 advance > 0。
+        let gid = font.face.glyph_index('中');
+        assert!(gid.is_some(), "CJK 字体应含「中」glyph");
+        let adv = font.face.glyph_hor_advance(gid.unwrap());
+        assert!(adv.is_some() && adv.unwrap() > 0, "「中」advance 应 > 0");
+        // 度量方法可用。
+        assert!(font.ascent(16.0) > 0.0);
+    }
+
     #[test]
     fn single_line_ascii_has_glyphs() {
         let font = match test_font() {

@@ -1,0 +1,45 @@
+wqy-microhei.ttc — 文泉驿微米黑 (WenQuanYi Micro Hei)
+================================================================
+
+Source:  https://github.com/chai2010/wqy-microhei-go
+           (path: data/wqy-microhei-0.2.0-beta/wqy-microhei.ttc)
+         Upstream project: http://wenq.org/  (WenQuanYi)
+File:    wqy-microhei.ttc (TrueType Collection, ~5.0 MiB)
+SHA-256: see git history.
+Format:  .ttc — Face::parse(bytes, 0) selects index 0 = Micro Hei Regular
+         (collection contains 2 faces; index 0 verified to carry the CJK
+          ideograph 「中」 with non-zero advance — see
+          text::layout::tests::cjk_font_loads_and_has_cjk_glyph_advance).
+
+License
+-------
+文泉驿微米黑 is free software, released under the GNU GPL (version 3 or,
+at your option, any later version), WITH a font-embedding exception that
+permits the font to be embedded in and distributed alongside a larger
+work (such as a game binary) without the combined work being covered by
+the GPL.  The full text of the GPL and the embedding-exception clause
+ship with the upstream project; see:
+
+  http://wenq.org/
+  https://www.gnu.org/licenses/gpl-3.0.html
+
+In summary:
+  - You may use, redistribute, and embed this font (including inside a
+    closed-source game build) under the embedding exception.
+  - If you redistribute the font as a standalone file, the GPL terms
+    apply and the license + copyright must be preserved.
+
+Copyright (c) the WenQuanYi project contributors.
+
+Why it is here
+--------------
+This file is checked into the repo so that CJK text layout tests
+(line breaking, per-char advance, glyph coverage for Chinese) run with a
+fixed font across all platforms (Windows/Linux/macOS CI) instead of
+depending on a system-installed CJK font (absent on most CI runners).
+DejaVu Sans — the existing test font in FONT_LICENSE.txt — does NOT
+cover CJK ideographs; this file fills that gap for the v1b.5 CJK text
+work.  The helper test_font_cjk() in src/text/layout.rs loads it with a
+skip-if-missing guard, so CI environments without the font skip rather
+than fail (but a real CJK font is required for meaningful CJK
+line-break validation).
