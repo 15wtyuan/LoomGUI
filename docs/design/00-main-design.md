@@ -605,7 +605,7 @@ csbindgen 是为 Unity/IL2CPP 设计的主流绑定生成器（Cysharp MagicPhys
    Unchanged 节点 payload_kinds=Unchanged，三元组为空。
 2. 多个按类型分区的 per-frame arena（变长 payload，每种一个 arena）：
    mesh_arena   : 扁平 verts[f32]/uvs[f32]/colors[u32]/indices[u16] + count
-   text_arena   : v1a 扁平 glyphs[{codepoint,pen_x,pen_y}] + 节点级 font_size/color（单字体简化；runs/lines 三表随多字体/CJK 于 v1b 落地，§9.2）
+   text_arena   : v1a 扁平 glyphs[{codepoint,pen_x,pen_y}] + 节点级 font_size/color（单字体简化；CJK 逐字断行 v1b.5 已落地 via unicode-linebreak，但 runs/lines 三表随多字体 fallback 仍 v1.x defer，§9.2）
    —— 每种 arena 一种结构，C# 按 payload_kind 选解析器。
 ```
 

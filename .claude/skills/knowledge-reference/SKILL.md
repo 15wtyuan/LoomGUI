@@ -78,9 +78,9 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 - `overflow:hidden` → `clip_rect = Some`（layout solve 后填实际框）。
 
 ### 2.4 text（§9）
-- ttf-parser 度量 + 贪心断行（unicode-linebreak UAX#14 留 v1.x）→ `TextLayout` SOA 三表（lines/runs/glyphs）。
-- `Glyph { glyph_id, codepoint, x, y, bearing_x, bearing_y }` 绝对坐标。**codepoint**（v1a Phase 2 加）供引擎字体 API（Unity `GetCharacterInfo(char)` 按码点非 glyph_id）。
-- v0 砍 rustybuzz/BiDi/fallback，仅 ASCII+CJK（CJK 需 CJK 字体；v0 fixture 用 ASCII）。
+- ttf-parser 度量 + **unicode-linebreak UAX#14 断行（v1b.5 落地，替换 v0 `split(' ')` 贪心——后者对 CJK 完全失效：中文无空格→整段一 word 无法换行）** → `TextLayout` SOA 三表（lines/runs/glyphs）。greedy fill on break opportunities：CJK 逐字可断、ASCII 按词、`\n` mandatory、nowrap 单行、超长词（segment 宽>max_w 且多字）逐字断（参考 fgui `toMoveChars=1`）。
+- `Glyph { glyph_id, codepoint, x, y, bearing_x, bearing_y }` 绝对坐标。**codepoint**（v1a Phase 2 加）供引擎字体 API（Unity `GetCharacterInfo(char)` 按码点非 glyph_id）。CJK codepoint ≤U+FFFF BMP，现有 u32 装得下，`GetCharacterInfo((char)cp)` 正常。
+- v0 砍 rustybuzz/BiDi/fallback，仅 ASCII+CJK。**v1b.5 加 CJK 字体 fixture**（`tests/fixtures/wqy-microhei.ttc` 文泉驿微米黑 ~5MB，`Face::parse(bytes,0)` 取 .ttc index 0=Regular）+ `test_font_cjk()` skip-if-missing helper。defer：emoji/组合符号 shaping/RTL/kinsoku 标点禁则/font fallback 链/多 font-family/per-glyph font_id。
 
 ### 2.5 layout（§7）
 - taffy 0.5 集成（**API 见 §3.1，与草稿差异大**）。
@@ -165,7 +165,7 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 - `glyph_index(ch) -> Option<GlyphId>`（`GlyphId(pub u16)`）。
 - `glyph_bounding_box(GlyphId) -> Option<Rect{i16}>`。bearing 用 `x_min`/`y_max`。
 - `ascender()/descender()/line_gap()/units_per_em()` 在 `Face` 上。
-- `Face::parse(&'static [u8], 0)`——v0 用 `Box::leak` 拿 `'static`（单字体 OK，多字体 v1 换 owned wrapper）。
+- `Face::parse(&'static [u8], 0)`——v0 用 `Box::leak` 拿 `'static`（单字体 OK，多字体 v1 换 owned wrapper）。**`.ttc`（TrueType Collection）第二参=collection index**：文泉驿微米黑 .ttc index 0 = Micro Hei Regular（collection 含 2 face）。`.ttf` 单文件 index 0。
 
 ### 3.3 cssparser 0.34（parse/css.rs）
 - **不能用 NestingParser + parse_one_rule 草稿**。
@@ -207,6 +207,13 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 - 解码：`image::open(path)?.to_rgba8() -> RgbaImage`（像素+w/h）；合成 atlas：`RgbaImage::from_raw(w, h, buf)` 建图；回查测：`image::load_from_memory(&bytes).to_rgba8()`。
 - Cargo：`image = { version = "0.25", default-features = false, features = ["png"] }`（仅 png 最小依赖；**只在 packer，core 不碰像素**）。
 - 教训：plan 草稿的 crate API 名常错（本例 `save_buffer_to_memory`）→ 实现 RED 阶段验实际 API（`~/.cargo/registry/src/<image>-<ver>/src/`）。
+
+### 3.9 unicode-linebreak 0.1（text/layout.rs，v1b.5）
+- **`linebreaks(s: &str) -> impl Iterator<Item=(usize, BreakOpportunity)>`**（非草稿 `Vec<(usize, BreakType)>`——返**迭代器**非 Vec，需 `.collect::<Vec<_>>()`）。
+- **`enum BreakOpportunity { Mandatory, Allowed }`**（非草稿 `BreakType`——变体名同但**枚举名不同**）。
+- 返回 `usize` = **byte offset**（非 char index），升序；offset 语义 = 可在该 byte offset 处断（前段 `content[..offset]`，后段 `content[offset..]`）。unicode-linebreak 在空白**后**断 → segment 自含尾空白 → 行首无多余空格。
+- 用法（layout.rs:194+）：`linebreaks(content).collect()` → 按 offset 切 segments `Vec<(&str, BreakOpportunity)>` → greedy fill（累加 seg 宽超 max_w 换行，Mandatory 强制结束行）。
+- 教训：brief/草稿写 `Vec<(usize, BreakType)>` 实际是 `impl Iterator`+`BreakOpportunity`（坑 1/2/8 同源）→ 实现 RED 阶段验 `~/.cargo/registry/src/<unicode-linebreak>-<ver>/src/`。
 
 ## 4. AI 可预测性核心约束（首要准则，勿违背）
 
@@ -373,6 +380,18 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 **解决**：改嵌套 clip 链（root clip→mid clip→leaf，3 不同 mask_context）→ 不同 DrawState → 不 merge → 保 3 节点，原 intent 保留。
 **教训**：merge 上线后，既有「多同级同 DrawState 节点」测会 OOB——改成不同 DrawState（嵌套 clip/不同 tex_id）保留多节点。
 
+### 坑 26：CJK sample width 放根节点 → root_size 覆盖致不换行（v1b.5）
+**症状**：PlayMode CJK 段落整段挤一行不换行（~948px，远超 240px 约束）。
+**根因**：sample 把 `width:240px` 放**根节点** div → `solve`（mod.rs:125 `set_style size=Length(root_size)`）强制覆盖根节点 size 为 root_size(1080) → Text 子 measure `known.width` 收 1080（非 240）→ 整段<1080 不换。§2.5 根节点 measure 陷阱的 sample 实例。
+**解决**：sample 包一层 `.root` Container（吃 root_size）+ `align-items:flex-start`（防子项 cross 轴拉伸），`.c` 文本 div 作子节点（width:240 不被覆盖）。独立 layout 验 Text rect=240x113（逐字断行）。
+**教训**：sample/测的**受约束文本/图必须在根节点之下**，根节点 size 必被 root_size 覆盖——根节点只作 viewport 容器，不设显式 CSS size。
+
+### 坑 27：mandatory break 留 `\n` 字面量 → 下游幽灵 `.notdef` 字形（v1b.5）
+**症状**：含 `\n` 文本换行时，行 text 含字面 `\n` → glyph gen 给 `\n` 产 `.notdef`（GlyphId 0）幽灵字形进 blob text_arena。
+**根因**：unicode-linebreak 的 mandatory break 在 `\n` 字节 offset 断，segment `content[..offset]` 含 `\n`；flush 行时未 strip。
+**解决**（defer post-merge，M3）：mandatory flush 前 `cur.trim_end_matches(|c| c=='\n'||c=='\r')` + 回归测断行 glyph 数。**当前不阻塞**：v1b.5 sample 无 `\n`；Unity `TextRasterizer.cs:67` `GetCharacterInfo('\n')`=false→continue 静默跳过幽灵字形，**无视觉伪影**（Rust 侧冗余，渲染干净）。
+**教训**：断行产出喂 glyph gen 前须净化控制符；但后端 `GetCharacterInfo` false→continue 是天然兜底（坑 14 codepoint 路径副产物）。
+
 ## 6. 调试/验证技巧
 
 - **★ 实现 v1+ 后端/渲染/对象模型前，先参考 `temp/FairyGUI-unity/` 源码**（对照机制、避免走歪——本 session 因没先看 fgui 的 sortingOrder/rect-mask/MaterialManager，初版设计走了弯路：误用 z 排序、误以为 rect mask 要独立 GO、把绘制序想复杂）。
@@ -400,13 +419,17 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 - **blob 零改验证**（v1b.4，spec §9）：merge 改 build_render_nodes 输出但 blob/MirrorPool 必零改。验证：① `git diff --stat` 确认 blob.rs 改动全在 `mod tests`（生产 build_blob body 零行 diff）；② blob round-trip 测（TestView 逐顶点读 `mesh_vert`/`mesh_color_alpha`）验 merged transform=0→re-base 减 0=绝对 verts + alpha=1→×1=不二次烤。
 - **merge 两路径一致**（v1b.4）：黄金等价测（inline==pkg）验 merge 对两路径同构——FAIL=inline/pkg scene 不一致（真实 bug 非测问题）。
 - **merge PlayMode 验收**（v1b.4）：FrameDebugger draw call 数（连续同 atlas 段理想 1）+ Hierarchy loom_node GO 数（=batch 数<<节点数）+ 无花屏（证 merge 正确性，index buffer 保相对序）。
+- **CJK PlayMode 验收**（v1b.5）：窄宽（240px）中文段落应**逐字换行多行**（每行~10 CJK 字宽），English 按词不拆，CJK 标点正常，**无 tofu 方块**（tofu=字体未载/`_font` 未配）。判对错看 3 点（字对/换行了/布局正常）非精确断行位置（baseline 现状占位，design §9.1 实现期对照 Chrome 调，defer）。配置：LoomStage `_usePackage=true`+`_pkgFile=loom_cjk.pkg.bin`+`_fontFile=wqy-microhei.ttc`+Inspector `_font`=CJK Font。
+- **CJK 字体获取 fallback**（v1b.5）：brief 列的字体下载源常全 404 → 用 **GitHub tree API** 找 repo 内实际 .ttc 路径（`https://api.github.com/repos/<owner>/<repo>/git/trees/<branch>?recursive=1` grep `.ttc`）。文泉驿微米黑 live 源：`chai2010/wqy-microhei-go/data/wqy-microhei-0.2.0-beta/wqy-microhei.ttc`。
+- **断行 layout 独立验证**（v1b.5）：sample 不换行时写临时 `examples/` 验 `solve` 后 Text 节点 `layout_rect.w`——应=约束宽（240）非 root_size。区分「断行逻辑坏」vs「max_width 喂错」（sample 根节点 measure 覆盖，坑 26）。
+- **.dll 被 Unity 锁挡 merge**（v1b.5）：ff-merge 报 `unable to unlink .dll: Invalid argument` + working tree dirty .dll → Unity 开着锁 native .dll（坑 10 同源）。解：关 Unity，或 `git checkout HEAD -- <dll>` 还原 working tree 到 main 版本再 merge（merge 带 v1b.5 新 .dll 过来）。pre-existing 脏 .asset（DefaultVolumeProfile/ProjectSettings）`git stash push --` 单独隔离。
 
 ## 7. 已知问题/未完成（v0 ledger）
 
 **v0 占位 → v1.x 优化**：
 - mask_context id = counter+1 不稳定（节点增删抖动）。
 - sort_key 无 FairyBatching AABB 重排（v0 保序）。
-- 断行贪心非 UAX#14（CJK kinsoku 留 v1.x）。
+- ~~断行贪心非 UAX#14（CJK kinsoku 留 v1.x）~~（v1b.5 已落地：unicode-linebreak UAX#14，CJK 逐字断；kinsoku 标点禁则仍 defer）。
 - baseline 未对 Chrome 校准（§9.1 实现期调）。
 - Font 用 `Box::leak` 不释放（多字体 v1 换 owned）。
 - ~~tex_id 16 位 hash 碰撞~~（v1b.2 已消除：registry 分配单调 tex_id，无 hash）。
@@ -429,7 +452,7 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 
 **v1b.1 ✅ 完成（merged main @ 5706a7b）**：打包器 `loomgui_pkg` CLI + `.pkg.bin` v1 格式（Rust-internal，§2.12）+ `Stage::load_package` + `Scene::build` 共享建树 + parse feature gate（runtime 可无 parser）+ FFI `loomgui_stage_load_package` + Unity `_usePackage` 接线。**包路径渲染 == inline 渲染（黄金等价），PlayMode 验过**——验收 #6 达成。spec `docs/superpowers/specs/2026-06-20-v1b-packager-design.md`、plan `docs/superpowers/plans/2026-06-20-v1b-packager.md`。踩坑：magic 撞 frame blob（坑 15）。
 
-**v1b 拆分**：A 打包器/二进制包/加载器（v1b.1 ✅）、B 真纹理加载（v1b.2 ✅）、**C 图集打包（v1b.3 ✅）**、D 文本 CJK/多字体（text_arena 升三表）。各自后续 spec。
+**v1b 拆分**：A 打包器/二进制包/加载器（v1b.1 ✅）、B 真纹理加载（v1b.2 ✅）、C 图集打包（v1b.3 ✅）、mesh 合并（v1b.4 ✅）、**D 文本 CJK（v1b.5 ✅，最小 CJK A 档）**。v1b 全收尾。各自 spec。
 
 **v1b.2 ✅ 完成（merged main @ 691835a）**：真纹理加载——core `TextureRegistry`（src→TexMeta{tex_id,w,h}，§2.13）+ render/measure 三档（CSS>真实>64）+ blob v3（14 列加 tex_id）+ FFI `register_texture`/`image_src_count`/`image_src_at`（collect）+ C# FrameBlob v3 + MirrorPool 按 tex_id 绑材质 + LoomStage collect→load PNG→register→`_texMap`。**`<img src>` 渲真像素（PlayMode 验），命中 G7**。spec `docs/superpowers/specs/2026-06-20-v1b-texture-design.md`、plan `docs/superpowers/plans/2026-06-20-v1b-texture.md`、progress `.superpowers/sdd/progress.md`。踩坑：FFI 无尾 NUL 串契约（坑 16）、blob version bump 级联 C# fixture（坑 17）、`using System;` Object 歧义（坑 18）、BitConverter 无数组 overload（坑 19）。
 
@@ -443,8 +466,12 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 
 **v1b.4 defer**：动画 opt-out merge、增量 dirty merge/diff（同 v1e perf）、同字体 Text 合并（后端改）、blend 进 DrawState key、AABB 高级优化（sweep-and-prune）、GPU instancing（v2 自建 renderer）。
 
+**v1b.5 ✅ 完成（merged main @ 7b24516）**：CJK 文本最小可行（A 档）——启用 Cargo.toml:11 已有 dead dep `unicode-linebreak` 重写 `measure_text` 断行（`split(' ')`→UAX#14 greedy fill，CJK 逐字断修核心 bug）+ CJK 字体 fixture（文泉驿微米黑 .ttc index 0）+ Unity `_fontFile` 字段（默认 DejaVu 不破坏现有）+ CJK sample + TextRasterizer CJK EditMode 测。**blob/MirrorPool/TextRasterizer/shader 零改**（CJK codepoint ≤BMP 走同一光栅路径）。**PlayMode 验**：240px 窄宽中文段落逐字换行 8 行 + English 按词 + CJK 标点 + 无 tofu。兑 design §9.1「CJK+ASCII+CJK 标点」v1 承诺。对照 fgui BuildLines 后维持 unicode-linebreak（对齐 Chrome/AI 可预测性/design 契约），fgui `wordLen<20`+`toMoveChars=1` 作超长词边界参考。spec `docs/superpowers/specs/2026-06-21-v1b-cjk-text-design.md`、plan `docs/superpowers/plans/2026-06-21-v1b-cjk-text.md`。踩坑：unicode-linebreak API 不符草稿（§3.9）、CJK sample 根节点 measure 覆盖（坑 26）、mandatory `\n` 幽灵字形（坑 27）。
+
+**v1b.5 defer**：font fallback 链、多 font-family、per-glyph font_id、TextLayout runs 三表投 blob、emoji/组合符号 shaping/RTL、kinsoku 标点禁则、measure 缓存、line-height/baseline 校准、Font `Box::leak` 缓存化（v1e）、M3 mandatory `\n` 净化（post-merge follow-up，Unity GetCharacterInfo 静默跳过故无视觉伪影）。
+
 **v1 其余 defer（v0 起，未动）**：
-- ~~图集打包~~（v1b.3 ✅）、~~mesh 合并~~（v1b.4 ✅）。**下一个（二选一）**：D 文本 CJK+多字体（text_arena 升三表、font fallback）/ v1c event/命中/输入（G4）。
+- v1b 全收尾（A/B/C/mesh/CJK ✅）。**下一个（二选一）**：v1c event/命中/输入（G4，交互闭环）/ 文本 follow-up（M3 `\n` 净化 + emoji fallback 链）。
 - event/命中/输入（v1c，G4）、anim GTween/ScrollPane（v1d，§11/§12.7）。
 - NativeHost/virtualization/shape mask：v1.x。
 
