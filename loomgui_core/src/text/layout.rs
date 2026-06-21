@@ -191,28 +191,72 @@ pub fn measure_text(
         pen
     };
 
-    // 断行：v0 简化——按空白 + 宽度约束贪心切（unicode-linebreak 留作 v1.x 严格换行）。
+    // 断行：unicode-linebreak UAX#14 换行机会 + 贪心填行（§9.1 CJK 逐字）。
+    // 替换 v0 的 split(' ') 贪心（对 CJK 完全失效——中文无空格 → 整段一 word 无法换行）。
     // white-space:nowrap 强制单行。
-    let words: Vec<&str> = content.split(' ').collect();
-    let mut lines: Vec<(String, f32)> = Vec::new(); // (text, width)
+    //
+    // unicode-linebreak 0.1.5 实测 API（已核对 crates 源码，与 brief 草稿有出入）：
+    // - `linebreaks(s)` 返回 `impl Iterator<Item=(usize, BreakOpportunity)>`（非 Vec）；
+    // - 枚举名是 `BreakOpportunity`（非 brief 的 BreakType），变体 `Mandatory`/`Allowed`；
+    // - offset 语义 = "断点之后字符的字节序号"，即前段 = content[..offset]，后段 = content[offset..]。
+    use unicode_linebreak::{linebreaks, BreakOpportunity};
     let max_w = max_width.unwrap_or(f32::MAX);
+
+    // 1. 取所有 break opportunities（byte offset + 类型），收成 Vec 便于多轮迭代。
+    let opportunities: Vec<(usize, BreakOpportunity)> = linebreaks(content).collect();
+
+    // 2. 切 segments：相邻 break 之间的文本片段。unicode-linebreak 在空白后断，
+    //    segment 自含尾空白 → 行首无多余空格（删 v0 的 space_w 重加逻辑）。
+    let mut segments: Vec<(&str, BreakOpportunity)> = Vec::new();
+    let mut prev = 0usize;
+    for &(offset, btype) in &opportunities {
+        if offset > prev {
+            segments.push((&content[prev..offset], btype));
+        }
+        prev = offset;
+    }
+    if prev < content.len() {
+        segments.push((&content[prev..], BreakOpportunity::Allowed));
+    }
+
+    // 3. 贪心填行。
+    let mut lines: Vec<(String, f32)> = Vec::new(); // (text, width)
     let mut cur = String::new();
     let mut cur_w = 0.0f32;
-    let space_w = measure_width(" ");
-    for word in &words {
-        let ww = measure_width(word);
-        let sep = if cur.is_empty() { 0.0 } else { space_w };
-        if nowrap || cur.is_empty() || cur_w + sep + ww <= max_w {
+    let mut buf = [0u8; 4];
+    for (seg, btype) in &segments {
+        let seg_w = measure_width(seg);
+        let seg_chars = seg.chars().count();
+
+        // 超长词边界（§5）：segment 本身超 max_w 且多字符 → 逐字填
+        // （参考 fgui BuildLines toMoveChars=1；防无 break point 的长串如 URL 溢出）。
+        if !nowrap && seg_w > max_w && seg_chars > 1 {
             if !cur.is_empty() {
-                cur.push(' ');
-                cur_w += sep;
+                lines.push((std::mem::take(&mut cur), cur_w));
+                cur_w = 0.0;
             }
-            cur.push_str(word);
-            cur_w += ww;
+            for ch in seg.chars() {
+                let cw = measure_width(ch.encode_utf8(&mut buf));
+                if !cur.is_empty() && cur_w + cw > max_w {
+                    lines.push((std::mem::take(&mut cur), cur_w));
+                    cur_w = 0.0;
+                }
+                cur.push(ch);
+                cur_w += cw;
+            }
+        } else if nowrap || cur.is_empty() || cur_w + seg_w <= max_w {
+            cur.push_str(seg);
+            cur_w += seg_w;
         } else {
             lines.push((std::mem::take(&mut cur), cur_w));
-            cur.push_str(word);
-            cur_w = ww;
+            cur.push_str(seg);
+            cur_w = seg_w;
+        }
+
+        // Mandatory break（\n）强制结束当前行（nowrap 下忽略）。
+        if !nowrap && *btype == BreakOpportunity::Mandatory && !cur.is_empty() {
+            lines.push((std::mem::take(&mut cur), cur_w));
+            cur_w = 0.0;
         }
     }
     if !cur.is_empty() {
@@ -382,6 +426,73 @@ mod tests {
             &font,
         );
         assert_eq!(layout.lines.len(), 1);
+    }
+
+    #[test]
+    fn cjk_breaks_per_char_under_narrow_width() {
+        let font = match test_font_cjk() {
+            Some(f) => f,
+            None => { eprintln!("skip: no CJK test font"); return; }
+        };
+        // 8 个 CJK 字符，窄约束（每字 ~font_size 宽）→ 应逐字断 ≥2 行。
+        let layout = measure_text(
+            "你好世界字体测试", 16.0, 0.0, 0.0, TextAlign::Left, false, Some(40.0), &font,
+        );
+        assert!(
+            layout.lines.len() >= 2,
+            "CJK 窄约束应逐字换行，得 {} 行",
+            layout.lines.len()
+        );
+    }
+
+    #[test]
+    fn cjk_ascii_mix_breaks_correctly() {
+        let font = match test_font_cjk() {
+            Some(f) => f,
+            None => { eprintln!("skip: no CJK test font"); return; }
+        };
+        // CJK + ASCII 混排，窄约束 → 多行；不 panic、不出空行。
+        let layout = measure_text(
+            "Hello 世界 ABC 测试", 16.0, 0.0, 0.0, TextAlign::Left, false, Some(60.0), &font,
+        );
+        assert!(layout.lines.len() >= 2, "混排窄约束应换行");
+        // 每行至少有 glyph（无空行）。
+        for line in &layout.lines {
+            let glyph_count: usize = line.runs.iter().map(|r| r.glyphs.len()).sum();
+            assert!(glyph_count > 0, "不应有空行");
+        }
+    }
+
+    #[test]
+    fn newline_is_mandatory_break() {
+        let font = match test_font() { Some(f) => f, None => { eprintln!("skip"); return; } };
+        // \n 应强制换行（v0 split(' ') 不处理 \n，本 task 改进）。
+        let layout = measure_text(
+            "aaaa\nbbbb", 16.0, 0.0, 0.0, TextAlign::Left, false, None, &font,
+        );
+        assert_eq!(layout.lines.len(), 2, "\\n 应强制换行成 2 行");
+    }
+
+    #[test]
+    fn nowrap_keeps_cjk_single_line() {
+        let font = match test_font_cjk() {
+            Some(f) => f,
+            None => { eprintln!("skip: no CJK test font"); return; }
+        };
+        let layout = measure_text(
+            "你好世界字体测试", 16.0, 0.0, 0.0, TextAlign::Left, true, Some(10.0), &font,
+        );
+        assert_eq!(layout.lines.len(), 1, "nowrap 强制单行（含 CJK）");
+    }
+
+    #[test]
+    fn super_long_word_breaks_per_char() {
+        let font = match test_font() { Some(f) => f, None => { eprintln!("skip"); return; } };
+        // 无空格长 ASCII 串（超 max_w）→ 超长词边界：逐字断（§5，参考 fgui toMoveChars=1）。
+        let layout = measure_text(
+            "aaaaaaaaaaaaaaaaaaaa", 16.0, 0.0, 0.0, TextAlign::Left, false, Some(50.0), &font,
+        );
+        assert!(layout.lines.len() >= 2, "超长无空格串应逐字断 ≥2 行");
     }
 
     #[test]
