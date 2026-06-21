@@ -8,7 +8,7 @@
 //! - **BatchingRoot 边界**：v0 不在 Root 处断批合（FairyGUI 真实策略按贴图/program 断，
 //!   v0 没有贴图集 / 多 program，断无可断；留待 v1.x）。
 
-use crate::render::node::{MaskContext, RenderNode};
+use crate::render::node::{MaskContext, NodePayload, RenderNode};
 use crate::scene::node::{NodeId, Rect, Scene};
 use crate::render::ClipEntry;
 
@@ -28,6 +28,72 @@ pub fn rect_intersect(a: Rect, b: Rect) -> Rect {
     let w = (right - x).max(0.0);
     let h = (bottom - y).max(0.0);
     Rect { x, y, w, h }
+}
+
+/// 是否可合并 Mesh（program=0）。Text（program=1）/ Unchanged 不参与重排与合并。
+fn is_mergeable_mesh(rn: &RenderNode) -> bool {
+    matches!(&rn.payload, NodePayload::Mesh { program, .. } if *program == 0)
+}
+
+/// 可合并 Mesh 的 DrawState = (texture, mask_context)。
+/// （program 已由 is_mergeable_mesh 保证 0；blend 仅 Normal 不入 key。）
+/// 非 mergeable Mesh / Text / Unchanged → None。
+fn draw_state(rn: &RenderNode) -> Option<(u32, u32)> {
+    match &rn.payload {
+        NodePayload::Mesh { texture, program, .. } if *program == 0 => {
+            Some((*texture, rn.mask_context.0))
+        }
+        _ => None,
+    }
+}
+
+/// AABB 是否重叠（交集非零面积）。复用 rect_intersect（batch.rs:23）。
+fn aabb_overlap(a: Rect, b: Rect) -> bool {
+    let r = rect_intersect(a, b);
+    r.w > 0.0 && r.h > 0.0
+}
+
+/// 一个重排单元内做 fgui 式稳定插入排序（Container.cs:877-941）。
+/// `unit` = 该单元内节点的 scene 索引（进入时为 DFS 序）；原地重排为 batch 聚拢后顺序。
+fn reorder_unit(scene: &Scene, nodes: &[RenderNode], unit: &mut Vec<usize>) {
+    let n = unit.len();
+    if n < 2 {
+        return;
+    }
+    for i in 1..n {
+        let cur = unit[i];
+        let cur_ds = match draw_state(&nodes[cur]) {
+            Some(d) => d,
+            None => continue, // 单元内应全是 mergeable；防御
+        };
+        let cur_aabb = scene.nodes[cur].layout_rect;
+        let mut k: Option<usize> = None; // 插入点（unit 内下标）
+        let mut last_ds: Option<(u32, u32)> = None;
+        let mut m = i;
+        for j in (0..i).rev() {
+            let test = unit[j];
+            let test_ds = draw_state(&nodes[test]).unwrap(); // 单元内必 mergeable
+            if last_ds != Some(test_ds) {
+                last_ds = Some(test_ds);
+                m = j + 1;
+            }
+            if cur_ds == test_ds {
+                k = Some(m);
+            }
+            if aabb_overlap(cur_aabb, scene.nodes[test].layout_rect) {
+                if k.is_none() {
+                    k = Some(m);
+                }
+                break; // 相交保序，停止前扫
+            }
+        }
+        if let Some(ki) = k {
+            if ki != i {
+                let item = unit.remove(i);
+                unit.insert(ki, item);
+            }
+        }
+    }
 }
 
 /// 给所有 RenderNode 填 sort_key + mask_context，并产 clip 表（context_id → 祖先
@@ -83,6 +149,48 @@ pub fn assign_sort_keys(scene: &Scene, nodes: &mut [RenderNode]) -> Vec<ClipEntr
         dfs(scene, nodes, *root, &mut counter, &mut clips, MaskContext(0), None);
     }
     clips
+}
+
+/// AABB 保序重排（spec §6）：按 BatchingRoot（mask_context）分段，段内对 program=0
+/// Mesh 节点做 fgui 式稳定插入排序（同 DrawState + AABB 不相交才前移），重排后重赋
+/// sort_key。Text（program=1）/ Unchanged 作为 batch break，不重排。
+///
+/// 前置：`assign_sort_keys` 已赋 mask_context + DFS 序 sort_key + clip 表。
+/// 原地改写 `nodes[*].sort_key` 为重排后序。clips 表由 assign_sort_keys 产，不受影响。
+pub fn reorder_for_batching(scene: &Scene, nodes: &mut [RenderNode]) {
+    // 1. 按 sort_key（DFS 序）排索引。
+    let mut order: Vec<usize> = (0..nodes.len()).collect();
+    order.sort_by_key(|&i| nodes[i].sort_key);
+
+    // 2. 一遍扫描：识别重排单元（连续 mergeable + 同 mask_context）→ 重排 → 重赋 sort_key。
+    let mut next_key: u32 = 0;
+    let mut i = 0;
+    while i < order.len() {
+        let idx = order[i];
+        if is_mergeable_mesh(&nodes[idx]) {
+            let ctx = nodes[idx].mask_context;
+            let mut unit: Vec<usize> = vec![idx];
+            let mut j = i + 1;
+            while j < order.len()
+                && is_mergeable_mesh(&nodes[order[j]])
+                && nodes[order[j]].mask_context == ctx
+            {
+                unit.push(order[j]);
+                j += 1;
+            }
+            reorder_unit(scene, nodes, &mut unit);
+            for &uidx in &unit {
+                nodes[uidx].sort_key = next_key;
+                next_key += 1;
+            }
+            i = j;
+        } else {
+            // Text / Unchanged：break，不重排，顺序赋 sort_key。
+            nodes[idx].sort_key = next_key;
+            next_key += 1;
+            i += 1;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -301,5 +409,153 @@ mod tests {
         assert_eq!((ctx2.rect.x, ctx2.rect.y, ctx2.rect.w, ctx2.rect.h),
                    (50.0, 50.0, 50.0, 50.0),
                    "overlapping 交集 = [50,50,50,50]");
+    }
+
+    // —— v1b.4 T1：AABB 保序重排（reorder_unit / reorder_for_batching）——
+    // NodePayload / NodeTransform / MaskContext / BlendMode / Node / NodeKind / Rect / Scene
+    // 已由上方 use 语句导入；以下测直接使用。
+
+    /// 构造 program=0 Mesh RenderNode（给 reorder_unit 直接喂 unit 索引对应的 nodes）。
+    fn mesh_rn(tex: u32, rect: Rect, mask: u32) -> RenderNode {
+        RenderNode {
+            node_id: 0,
+            parent_id: None,
+            visible: true,
+            alpha: 1.0,
+            grayed: false,
+            color_tint: [1.0; 4],
+            transform: NodeTransform::default(),
+            blend: BlendMode::Normal,
+            mask_context: MaskContext(mask),
+            sort_key: 0,
+            payload: NodePayload::Mesh {
+                verts: vec![[rect.x, rect.y], [rect.x + rect.w, rect.y],
+                            [rect.x + rect.w, rect.y + rect.h], [rect.x, rect.y + rect.h]],
+                uvs: vec![[0.0, 0.0]; 4],
+                colors: vec![[1.0; 4]; 4],
+                indices: vec![0, 1, 2, 0, 2, 3],
+                texture: tex,
+                program: 0,
+            },
+        }
+    }
+
+    #[test]
+    fn reorder_unit_same_drawstate_disjoint_gathers() {
+        // [A(tex1, x=0), B(tex2, x=100), C(tex1, x=200)] 全不相交 → C 前移到 A 旁。
+        // scene.nodes 与 nodes vec 同序同长（reorder_unit 用 scene.nodes[idx].layout_rect 查 AABB）。
+        let mut scene = Scene { roots: vec![], nodes: vec![] };
+        scene.nodes.push({ let mut n = Node::default(); n.layout_rect = Rect{x:0.0,y:0.0,w:10.0,h:10.0}; n });
+        scene.nodes.push({ let mut n = Node::default(); n.layout_rect = Rect{x:100.0,y:0.0,w:10.0,h:10.0}; n });
+        scene.nodes.push({ let mut n = Node::default(); n.layout_rect = Rect{x:200.0,y:0.0,w:10.0,h:10.0}; n });
+        let nodes = vec![
+            mesh_rn(1, Rect { x: 0.0, y: 0.0, w: 10.0, h: 10.0 }, 0),
+            mesh_rn(2, Rect { x: 100.0, y: 0.0, w: 10.0, h: 10.0 }, 0),
+            mesh_rn(1, Rect { x: 200.0, y: 0.0, w: 10.0, h: 10.0 }, 0),
+        ];
+        let mut unit = vec![0usize, 1, 2];
+        reorder_unit(&scene, &nodes, &mut unit);
+        // A,C 同 tex1 聚拢：[A(0), C(2), B(1)]
+        assert_eq!(unit, vec![0, 2, 1], "同 DrawState 不相交 → C 前移到 A 旁");
+    }
+
+    #[test]
+    fn reorder_unit_overlapping_keeps_order() {
+        // A(tex1) B(tex2) C(tex1)，A 与 C AABB 相交 → C 仍前移到 A 旁（k=A 之后），
+        // 但不越过 A（保 A→C 绘制序，防遮挡）。B(tex2) 被推后。
+        // 注：fgui DoFairyBatching 语义非「相交=不动」，而是「向后扫到首个相交即停，
+        // 但 k 已在相交前按同 material 聚拢点算出」——同 material 相交仍聚拢到紧邻。
+        let mut scene = Scene { roots: vec![], nodes: vec![] };
+        scene.nodes.push({ let mut n = Node::default(); n.layout_rect = Rect{x:0.0,y:0.0,w:50.0,h:50.0}; n });
+        scene.nodes.push({ let mut n = Node::default(); n.layout_rect = Rect{x:100.0,y:0.0,w:10.0,h:10.0}; n });
+        scene.nodes.push({ let mut n = Node::default(); n.layout_rect = Rect{x:10.0,y:10.0,w:50.0,h:50.0}; n });
+        let nodes = vec![
+            mesh_rn(1, Rect { x: 0.0, y: 0.0, w: 50.0, h: 50.0 }, 0),
+            mesh_rn(2, Rect { x: 100.0, y: 0.0, w: 10.0, h: 10.0 }, 0),
+            mesh_rn(1, Rect { x: 10.0, y: 10.0, w: 50.0, h: 50.0 }, 0), // 与 A 相交
+        ];
+        let mut unit = vec![0usize, 1, 2];
+        reorder_unit(&scene, &nodes, &mut unit);
+        // C 同 tex1 聚拢到 A 旁（k=A 之后=1），不越 A（保 A→C 序）；B 被推后。
+        assert_eq!(unit, vec![0, 2, 1], "同 DrawState 相交 → 聚拢到紧邻，不越目标");
+    }
+
+    /// helper：把 mesh_rn 包成 RenderNode 并设 node_id。
+    fn mesh_rn_into_rn(id: usize, tex: u32, _scene: &Scene) -> RenderNode {
+        let mut r = mesh_rn(tex, Rect { x: 0.0, y: 0.0, w: 10.0, h: 10.0 }, 0);
+        r.node_id = id as u32;
+        r
+    }
+    fn text_rn(id: usize) -> RenderNode {
+        let mut r = placeholder_rn(id);
+        r.node_id = id as u32;
+        r.payload = NodePayload::Text {
+            layout: crate::text::layout::TextLayout { text_width: 0.0, text_height: 0.0, lines: vec![] },
+            font_size: 16.0, color: [1.0; 4], program: 1,
+        };
+        r
+    }
+
+    #[test]
+    fn reorder_splits_at_text_break() {
+        // root > [A(tex1), Text, B(tex1)]：AABB 全不相交。Text 断单元 →
+        // A、B 分属两个单元，B 不能跨 Text 前移到 A 旁（保 Text 绘制序）。
+        let mut scene = Scene { roots: vec![NodeId(0)], nodes: vec![] };
+        let mut root = Node::default(); root.id = NodeId(0);
+        root.children = vec![NodeId(1), NodeId(2), NodeId(3)];
+        root.layout_rect = Rect { x: 0.0, y: 0.0, w: 300.0, h: 50.0 };
+        scene.nodes.push(root);
+        let mut a = Node::default(); a.id = NodeId(1);
+        a.layout_rect = Rect { x: 0.0, y: 0.0, w: 10.0, h: 10.0 }; scene.nodes.push(a);
+        let mut t = Node::default(); t.id = NodeId(2); t.kind = NodeKind::Text { content: "x".into() };
+        t.layout_rect = Rect { x: 100.0, y: 0.0, w: 10.0, h: 10.0 }; scene.nodes.push(t);
+        let mut b = Node::default(); b.id = NodeId(3);
+        b.layout_rect = Rect { x: 200.0, y: 0.0, w: 10.0, h: 10.0 }; scene.nodes.push(b);
+
+        let mut rns: Vec<RenderNode> = vec![
+            { let mut r = placeholder_rn(0); r.payload = NodePayload::Unchanged; r.mask_context = MaskContext(0); r },
+            mesh_rn_into_rn(1, 1, &scene), // tex1
+            text_rn(2),
+            mesh_rn_into_rn(3, 1, &scene), // tex1
+        ];
+        // 先赋 DFS 序 sort_key（模拟 assign_sort_keys 输出）+ mask_context。
+        for (k, r) in rns.iter_mut().enumerate() { r.sort_key = k as u32; r.mask_context = MaskContext(0); }
+
+        reorder_for_batching(&scene, &mut rns);
+        // Text(id=2) 必在 A(id=1) 与 B(id=3) 之间（保绘制序）。
+        let sk = |id: u32| rns.iter().find(|r| r.node_id == id).unwrap().sort_key;
+        assert!(sk(1) < sk(2), "A 在 Text 前");
+        assert!(sk(2) < sk(3), "Text 在 B 前（B 不跨 Text 前移）");
+    }
+
+    #[test]
+    fn reorder_splits_at_mask_context_boundary() {
+        // 两个 mask_context 的 Mesh 不跨边界重排（不同 DrawState）。
+        // A(ctx0,tex1) B(ctx1,tex1) C(ctx0,tex1)：A、C 同 ctx0 但被 B(ctx1) 断开，
+        // 且 AABB 不相交。C 不应跨 ctx 边界前移到 A 旁。
+        let mut scene = Scene { roots: vec![NodeId(0)], nodes: vec![] };
+        let mut root = Node::default(); root.id = NodeId(0);
+        root.children = vec![NodeId(1), NodeId(2), NodeId(3)];
+        scene.nodes.push(root);
+        scene.nodes.push({ let mut n = Node::default(); n.id = NodeId(1); n.layout_rect = Rect{x:0.0,y:0.0,w:10.0,h:10.0}; n });
+        scene.nodes.push({ let mut n = Node::default(); n.id = NodeId(2); n.layout_rect = Rect{x:100.0,y:0.0,w:10.0,h:10.0}; n });
+        scene.nodes.push({ let mut n = Node::default(); n.id = NodeId(3); n.layout_rect = Rect{x:200.0,y:0.0,w:10.0,h:10.0}; n });
+
+        let mut rns: Vec<RenderNode> = vec![
+            mesh_rn_into_rn(1, 1, &scene),
+            mesh_rn_into_rn(2, 1, &scene),
+            mesh_rn_into_rn(3, 1, &scene),
+        ];
+        // sort_key = DFS 序；mask_context: 0→ctx0, 1→ctx1, 2→ctx0（模拟跨 clip 边界）。
+        rns[0].sort_key = 0; rns[0].mask_context = MaskContext(0);
+        rns[1].sort_key = 1; rns[1].mask_context = MaskContext(1);
+        rns[2].sort_key = 2; rns[2].mask_context = MaskContext(0);
+
+        reorder_for_batching(&scene, &mut rns);
+        // C(ctx0) 不跨 B(ctx1) 前移：B 的 sort_key 仍在 A、C 之间或 A 前，但 C 不越 B。
+        // 关键断言：A 与 C 不相邻聚拢越过 B——B(node_id=2) 的 sort_key < C(node_id=3) 前移后的位置不可能。
+        let sk = |id: u32| rns.iter().find(|r| r.node_id == id).unwrap().sort_key;
+        // C 不应跑到 B 前面（不同 ctx 不跨边界）。
+        assert!(sk(2) < sk(3), "C(ctx0) 不跨 B(ctx1) 边界前移");
     }
 }
