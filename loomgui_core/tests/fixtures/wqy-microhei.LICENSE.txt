@@ -5,7 +5,7 @@ Source:  https://github.com/chai2010/wqy-microhei-go
            (path: data/wqy-microhei-0.2.0-beta/wqy-microhei.ttc)
          Upstream project: http://wenq.org/  (WenQuanYi)
 File:    wqy-microhei.ttc (TrueType Collection, ~5.0 MiB)
-SHA-256: see git history.
+SHA-256: e4bca8df123ce01b104780f576ea1a58b9a5ff1662a91124b6d3180cb6c88212
 Format:  .ttc — Face::parse(bytes, 0) selects index 0 = Micro Hei Regular
          (collection contains 2 faces; index 0 verified to carry the CJK
           ideograph 「中」 with non-zero advance — see
