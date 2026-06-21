@@ -31,6 +31,11 @@ namespace LoomGUI
         // Inspector 指定为主路径；EditMode 测试 / 未配场景用 AssetDatabase 兜底（见 EnsureFont）。
         [SerializeField] Font _font;
 
+        // §9.4 v1b.5：Stage 读取的 ttf 文件名（StreamingAssets 下，喂 Rust measure）。
+        // 默认 "DejaVuSans.ttf" 不破坏现有场景；CJK sample 配 "wqy-microhei.ttc"。
+        // 须与 _font（Unity 光栅用）是同一份 ttf（§4.3 跨平台一致性）。
+        [SerializeField] string _fontFile = "DejaVuSans.ttf";
+
         // §13 v1b.1：从二进制包加载（true）vs inline _html/_css（false，默认保现有行为）。
         // true 时从 StreamingAssets/_pkgFile 读 .pkg.bin → loomgui_stage_load_package。
         [SerializeField] bool _usePackage;
@@ -72,7 +77,7 @@ namespace LoomGUI
 
             // Stage::new 需字体路径（即使纯色块场景也要加载用于 measure）。
             // Application.streamingAssetsPath：editor 与 player 都可用（editor 返回 Assets/StreamingAssets）。
-            string fontPath = System.IO.Path.Combine(Application.streamingAssetsPath, "DejaVuSans.ttf");
+            string fontPath = System.IO.Path.Combine(Application.streamingAssetsPath, _fontFile);
             byte[] fpBytes = Encoding.UTF8.GetBytes(fontPath);
 
             fixed (byte* fp = fpBytes)
