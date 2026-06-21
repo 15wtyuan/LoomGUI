@@ -89,7 +89,7 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 - **measure 陷阱（v1b.2 测设计）**：`solve` 把**根节点** taffy size 强制覆盖为 root_size（`set_style`）→ Image 作根时 intrinsic 被 viewport 覆盖（测须包 Container 根、Image 作子叶）；默认 `align-items:Stretch`（column 容器）会把无显式宽子项 cross 轴拉伸 → 测无 CSS 尺寸的 Image 须设 `align_self:FlexStart` 禁 stretch。
 
 ### 2.6 render（§8）
-- `build_render_nodes(scene, font, &TextureRegistry)`：Container/Button→Mesh quad(背景色)，Image→Mesh quad（**tex_id 查注册表，未注册=0 哨兵→后端白占位**；v1b.2 前 v0 占位是 hash(src) 已删），Text→TextLayout 装 Text payload。
+- `build_render_nodes(scene, font, &TextureRegistry)`：Container/Button→Mesh quad(背景色，全图 UV `[0,0],[1,1]`)，Image→Mesh quad（**tex_id 查注册表 + UV region**：v1b.3 按 atlas 子区 `uv_min/uv_max` 烤 4 角 UV，未注册=0 哨兵+全图 UV→白占位；v1b.2 前 v0 占位是 hash(src) 已删），Text→TextLayout 装 Text payload。`mesh::quad(rect,color,uv_min,uv_max)` 接 uv_rect（vert TL,TR,BR,BL ↔ sprite 角；v1b.2 全图即 0,0,1,1）。
 - `assign_sort_keys`：DFS 单计数器 sort_key，clip 的 Container 是 BatchingRoot 开新 mask_context。
 - v0 保序（无 FairyBatching AABB 重排，v1.x 优化）。
 
@@ -102,7 +102,7 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 - ABI：`stage_new/free/load_html/tick/borrow_frame/shutdown`。string 走 UTF-8 `*const u8`+len；`borrow_frame(h, *mut usize) -> *const u8` 返 Rust 拥有的帧 blob（下 tick 失效；未 tick 返 null+len=0）。
 - `StageHandle{ stage, frame_blob: Vec<u8> }`——tick 时 `build_blob` 覆写 frame_blob。
 - `build_blob(&FrameData) -> Vec<u8>`（**v3**, version=3，v1b.2）：SOA 公共头 **14 列**（v2 的 13 + `tex_id:u32` 末列——Image→真 tex_id，其余=0）+ mesh arena + **text_arena**（per text 节点 `font_size:u32|color:f32×4|glyph_count:u32|glyphs[{codepoint,pen_x,pen_y}]`）+ **clip 表**（`context_id→design rect`，嵌套交集）。`num_col_offsets=columns.len()` 自动传播列数→header_len=92。magic+version 进 header，C# `FrameBlob.IsValid` 校验（防 stale v2 blob）。**mesh 顶点 re-base 到节点本地**（减 transform.x/y）。全 LE。改 blob 格式必重编+换 .dll（坑 10）+ C# fixture 同步（坑 17）。
-- v1b.2 FFI 新增（常驻不 gate）：`register_texture(h,src,len,w,h)->u32`（core 分配 tex_id>=1，src 幂等，非 UTF-8→0）、`image_src_count(h)->usize` / `image_src_at(h,i,*out_len)->*const u8`（collect scene 的 Image src，DFS 先序去重）。**`image_src_at` 返 `String::as_ptr()` 无尾 NUL + out_len**——C# 必 len-based 读（坑 16）。
+- v1b.3 FFI（常驻不 gate）：**删** v1b.2 的 `register_texture`/`image_src_count`/`image_src_at`（loose 散图模型被 atlas 取代）；**加** `atlas_count(h)->usize` / `atlas_info(h,i,*out_tex_id,*out_w,*out_h,*out_src_len)->*const u8`（返 atlas filename 无尾 NUL 串 + len，`*out_tex_id=(i+1)`，坑 16 len-based 读）。version 串 v1b.3。
 
 ### 2.9 Unity 后端（loomgui_unity，主文档 §14，v1a Phase 1）
 - `FrameBlob`（BitConverter 解析 v2 blob，`IsValid` 校验 magic+version）→ `MirrorPool.Sync`（`Dictionary<uint,RenderObj>` O(n) stale-flag diff）。**flatten（Phase 2）**：所有 GO 挂**根**（非巢状——local_x/local_y 是绝对 design 坐标，巢状 SetParent 会双计父位置，坑见 §2.11/Phase 1 单节点未暴露），`localPosition=绝对`、`sortingOrder=sort_key`；kind=1 Mesh / kind=2 Text（→TextRasterizer）/ kind=0 跳过。**buffer 复用**：RenderObj 持可复用 List，`SetVertices(List)` 零 alloc（T7，500 节点压测）。
@@ -123,20 +123,29 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 
 ### 2.12 打包器 + 包格式（v1b.1，§12/§5.5）
 - **`.pkg.bin` 是 Rust-internal**：`loomgui_pkg` 写、core runtime 读，**C# 永不解析**（Unity 只读文件→bytes→`load_package`）。与 frame blob（Rust↔C# 跨语言契约）本质不同——无需 C# reader/跨语言字节对齐，style 可直接 bincode 投影。
-- v1 格式（扁平 + stringTable，LE）：Header 28B（magic `LPKG`=0x474B504C + version=1 + flags + nodeCount + stringCount + rootSizeX/Y）+ StringTable（u16 len+UTF8，**只** text content + image src）+ NodeBlock（每节点 parentIndex i32 + kind u8 + styleLen u32 + `bincode(ResolvedStyle)` blob + textIdx/srcIdx u16；NULL_IDX=0xFFFF；kind 0=Container/1=Button/2=Image/3=Text）。indexTable/压缩/分支推 formatVersion=2（v1x-deferred §6）。
+- v1 格式（扁平 + stringTable，LE）：Header 28B（magic `LPKG`=0x474B504C + version=1 + flags + nodeCount + stringCount + rootSizeX/Y）+ StringTable（u16 len+UTF8，**只** text content + image src）+ NodeBlock（每节点 parentIndex i32 + kind u8 + styleLen u32 + `bincode(ResolvedStyle)` blob + textIdx/srcIdx u16；NULL_IDX=0xFFFF；kind 0=Container/1=Button/2=Image/3=Text）。indexTable/压缩/分支推 formatVersion=3+（v1x-deferred §6；v1b.3 已占 v2=AtlasSection）。
 - **StyleRecord = bincode(ResolvedStyle)**：taffy 开 `serde` feature（§3.7），ResolvedStyle/TextAlign 加 `Serialize/Deserialize/PartialEq` 派生——穷尽由派生保证（加字段编译期强制覆盖 encode/decode，R3≈0）。font_family 随 blob 走（不进 stringTable）。
 - `asset::write_package(&Scene,root_size)->Vec<u8>` / `read_package(&[u8])->Result<(Scene,root_size),PkgError>`（常驻，不依赖 parse）。read 全 `Result` 无 panic 跨 FFI（Reader 截断保护）。版本协商：magic + formatVersion∈[1,1]（fgui 缺，主设计 §12.2 要）。
 - **`Scene::build(&[(Option<usize>,NodeKind,ResolvedStyle)])`** 共享建树（常驻，不依赖 parse）——`build_scene`（parse 路径，gate）与 `read_package`（runtime 路径）共用，防建树逻辑分叉（R2）。NodeId=entries 下标；children 按 DFS 先序填。
 - **parse feature gate**：`scraper`/`cssparser` optional + `parse` feature（default on）。gate 在 parse 后：`parse/` 模块 + `style::cascade` + `build_scene`/`gather_rec` + `Stage::load_inline` + 用 parse 的测。常驻：`ResolvedStyle`/`TextAlign`/`Scene::build`/`mapping`/layout/render/text/scene/stage(除 load_inline)/asset。`loomgui_ffi_c`：`load_package` 常驻、`load_html` gate；**dev .dll 仍带 parse**（PlayMode inline 迭代要），gate 价值=架构正确 + 将来精简 build。构建矩阵门：`cargo build -p loomgui_{core,ffi_c} --no-default-features` 皆编。
 - **黄金等价测**（最强门）：`pkg→load_package→render_json` == `inline load_inline→render_json`（包路径与 inline 渲染逐节点等价，验收 #6）。fixture 覆盖 div/text/img/rect mask。
 - `loomgui_pkg` CLI（不引 clap，`std::env::args`）：`pack(html,css,root_size)` = `parse_html→parse_css→resolve_styles→build_scene→write_package`。packager **不**加载字体/不 solve/不 render。
+- **v1b.3 图集打包**：formatVersion 1→**2**（MIN=MAX=2，旧 v1 拒）；NodeBlock 后追加 **AtlasSection**（atlas_count + 每 atlas{filename_idx,w,h} + sprite_count + 每 sprite{src_idx,x,y,w,h region}）。`write_package(&Scene,root_size,&AtlasSection)` / `read_package -> (Scene,root_size,AtlasSection)`。`pack(html,css,root_size,res_dir) -> PackedPackage{pkg_bytes, atlas_png, atlas_filename}`：`image` crate 解码散图（§3.8）→ shelf 打包（NPOT/无旋转/trim/单图集，atlas_w=max(512,最宽)）→ blit 进 atlas buffer + 编码 atlas.png。缺图 build-time `Err`。详见 §2.14。
 
 ### 2.13 纹理注册层（v1b.2，§8.3/§14.3）
 - **TexId 是 FFI 代价**：fgui 单进程按 NTexture 对象引用纹理；LoomGUI Rust core + Unity 跨 FFI，blob 必用整数 id → core 持 `TextureRegistry{src→TexMeta{tex_id,w,h}, next_id}`（per Stage，纯 id+维度表无 GPU），Unity 持 `Dictionary<tex_id,Texture2D>`，握手靠 register/collect。
 - **registry 由 measure 强制**（非为 blob）：真实尺寸测量要每 src 的 w/h → core 必有 src→dims 表；register(src,w,h) 主因报维度，tex_id 顺带分配。故即便 blob 改带 src 串，core 仍要 register。
 - **注册握手**（LoomStage Awake，`_usePackage` 后、首 tick 前）：collect srcs → Unity `File.ReadAllBytes`+`Texture2D.LoadImage` → `register_texture` → 建 `_texMap`；缺图/坏图 try/catch→LogError+跳过（白占位）；OnDestroy Dispose 全部（`isPlaying?Destroy:DestroyImmediate`，坑 11 ExecuteAlways 泄漏）。
 - **5-hop tex_id 流**：render 查表填 `NodePayload::Mesh.texture` → blob v3 `col_tex_id` 列 → C# `FrameBlob.TexId(i)` → MirrorPool `texMap[tid]` 查表 → `mm.Get(0,tex,ctx)`。tex_id=0 哨兵→白占位。shader/MaterialManager **零改**（`tex2D×v.color` 已支持纯色块 tex_id=0 + 真图 tex_id>=1 两路）。
-- **散图外部文件**（非嵌包）：src 当 StreamingAssets 相对路径；改 PNG 内容 PlayMode 即变（纹理不进 .pkg.bin）。图集（TextureView UV region + refcount）留 v1b.3/C。
+- **v1b.3 演进为图集模型**（见 §2.14）：散图外部文件 + runtime register 被 packer 期 atlas 打包取代；`TextureRegistry` 改 `src→TexMeta{tex_id,**uv_min,uv_max**,w,h}`（core load 时 `build_registry` 建，**无 runtime register**）。§2.13 的 register/collect 握手已删（FFI 改 atlas_count/info）。
+
+### 2.14 图集层（v1b.3，§8.3/§12.3）
+- **打包器期打图集**（fgui 模型）：`loomgui_pkg` 读散图（`image` crate，§3.8）→ shelf 打包 → blit+编码 atlas.png + AtlasSprite 表写进 .pkg.bin v2。**散图不再进 StreamingAssets**（已烤进 atlas）；StreamingAssets 放 `.pkg.bin` + `atlas.png`。
+- **core 持 UV region**（去引擎化）：`build_registry(&AtlasSection)` 从表建 `src→TexMeta{tex_id,uv_min,uv_max,w,h}`（atlas[0]→tex_id 1，所有 sprite 共享；`uv_min=[x/aw,y/ah]`、`uv_max=[(x+w)/aw,(y+h)/ah]`，y-down convention）。render 按 uv 烤 quad 4 角（§2.6）。
+- **同图集共享 1 Texture2D**：Unity `_texMap[atlas_tex_id]` = 1 张 atlas；多 sprite 同 tex_id → MaterialManager 返同 Material（key 含 texture）→ **SRP Batcher 批合**（CPU 效率）+ 可选 URP Dynamic Batching 降 draw call。
+- **诚实 batching 认知**：mesh **不合并**（§8.5，每节点独立 MeshRenderer）→ **不保证 N→1 draw call**。图集给的是同 Material（SRP Batcher）+ 纹理内存/cache + 为 mesh 合并（v1b.4）铺路。验收看 FrameDebugger「同 Material」（底线）。
+- **blob v3 不变**：atlas 子区 UV 是 mesh_arena per-vertex uv 的不同值（非格式改）。UV 方向沿用 v1b.2 convention（packer region y-down px → core uv → root 一次性 y-flip），PlayMode 验方向正。
+- **defer（v1b.4+）**：rotation（UV 修正 §8.2 公式 `new_y=yMin+uv.x-xMin; new_x=xMin+yMax-uv.y`）、trim（originalSize/offset）、多图集（sprite 带 atlas_idx）、refcount/on_release（§12.4，atlas 随 Stage）、**mesh 合并**（真 N→1 draw call）。
 
 ## 3. 依赖 API 适配踩坑（v0 最大教训）
 
@@ -192,6 +201,12 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 - taffy 0.5.2 有 **`serde` feature**：`Style`（style/mod.rs:189）及全部字段类型（geometry/dimension/flex/grid/alignment）都 `#[cfg_attr(feature="serde", derive(Serialize,Deserialize))]` + `#[serde(default)]`；`Style` 还派生 `PartialEq`。开 `taffy = { version="0.5", features=["serde"] }` 后，含 `taffy_style: taffy::style::Style` 的 `ResolvedStyle` 能整体 `#[derive(Serialize,Deserialize,PartialEq)]`。
 - bincode 1.x：`bincode::serialize(&x)->Vec<u8>` / `bincode::deserialize::<T>(&bytes)`。`#[serde(default)]` 在 bincode（位置编码无缺字段概念）下透明。用于包格式的 StyleRecord——穷尽由 serde 派生保证，比手写枚举 taffy 30+ 字段稳健（R3≈0）。
 - bincode 格式随 taffy/bincode 版本——升级时 bump 包 `formatVersion`。
+
+### 3.8 image 0.25（loomgui_pkg，v1b.3）
+- **`save_buffer_to_memory` 不存在**（plan 草稿写错）→ 用 `RgbaImage::write_to(&mut std::io::Cursor<Vec<u8>>, ImageFormat::Png)` 编码 PNG 到内存。
+- 解码：`image::open(path)?.to_rgba8() -> RgbaImage`（像素+w/h）；合成 atlas：`RgbaImage::from_raw(w, h, buf)` 建图；回查测：`image::load_from_memory(&bytes).to_rgba8()`。
+- Cargo：`image = { version = "0.25", default-features = false, features = ["png"] }`（仅 png 最小依赖；**只在 packer，core 不碰像素**）。
+- 教训：plan 草稿的 crate API 名常错（本例 `save_buffer_to_memory`）→ 实现 RED 阶段验实际 API（`~/.cargo/registry/src/<image>-<ver>/src/`）。
 
 ## 4. AI 可预测性核心约束（首要准则，勿违背）
 
@@ -322,6 +337,18 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 **解决**：逐个 `GetBytes(0u)`/`GetBytes(1u)`...（对齐 MirrorPoolFlattenTests 已验证写法）；或循环。
 **教训**：手搓 blob byte[] 的 C# 测，索引/数据数组一律逐元素 `GetBytes`，禁数组语法。
 
+### 坑 20：打包器磁盘 atlas 文件名 ≠ .pkg.bin header 记的名 → Unity 找不到 atlas（v1b.3）
+**症状**：PlayMode atlas sprite 全白占位（atlas.png 没载），但 .pkg.bin 解析正常、Console 无报错。
+**根因**：main.rs 用 `out_path.with_extension("atlas.png")` 写磁盘 → `<stem>.pkg.atlas.png`；lib.rs 把 `"loom.atlas.png"` 写进 AtlasSection header。Unity 按 header 名 `Path.Combine(StreamingAssets, atlas_filename)` 找 → 名不匹配 → `File.ReadAllBytes` 抛 → 跳过 → 白占位。
+**解决**：main.rs 用 packer 返回的 `p.atlas_filename` 拼磁盘路径（`out_parent.join(&p.atlas_filename)`）→ header 与磁盘同串，by-construction 一致。
+**教训**：打包器产两文件（.pkg.bin + atlas.png）时，**磁盘 atlas 名必须 == header 的 `atlas_filename`**（后端按 header 载）；用同一变量拼两端，别各算各的。
+
+### 坑 21：删 pub API 只验单 crate → 依赖 crate 编译断裂（v1b.3）
+**症状**：T1 删 `TextureRegistry::register` 只跑 `cargo test -p loomgui_core`（绿），但 `loomgui_ffi_c`（register_texture FFI 调 register）编译断裂，到 T3 跑 workspace 才发现。
+**根因**：`register` 是 pub API，被 ffi_c 跨 crate 调用；单 crate 测不覆盖跨 crate 依赖。
+**解决**：删 pub API 必跑 `cargo test --workspace`（或至少 `cargo build` 所有依赖 crate）；T1 acceptance 只写 `-p loomgui_core` 是 plan 验测范围写窄。
+**教训**：删/改 pub API（尤其被 FFI 跨 crate 用）→ acceptance 必含 `cargo test --workspace`，单 crate 绿 ≠ workspace 绿。
+
 ## 6. 调试/验证技巧
 
 - **★ 实现 v1+ 后端/渲染/对象模型前，先参考 `temp/FairyGUI-unity/` 源码**（对照机制、避免走歪——本 session 因没先看 fgui 的 sortingOrder/rect-mask/MaterialManager，初版设计走了弯路：误用 z 排序、误以为 rect mask 要独立 GO、把绘制序想复杂）。
@@ -342,6 +369,10 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 - **stale .dll 诊断**：PlayMode **全不渲 + Console 干净** → `md5sum target/release/loomgui_ffi_c.dll loomgui_unity/Assets/Plugins/LoomGUI/loomgui_ffi_c.dll`，不等 = stale（Rust 改 blob/ABI 格式没换 .dll，坑 10）。
 - **T7 perf 基线**：500 节点静态 ~5-8ms/帧（120-200fps，无卡顿过 §9.3）。成本 = 朴素每帧全量重传（Rust 没 dirty/Unchanged 跳过 + `ReadMesh` per-frame alloc 数组）；优化（dirty 跳静态≈0 + ArrayPool 冷帧≤2ms）归 v1e。
 - PlayMode 验前 checklist：① Rust 改过 → 重编+换 .dll（关 Unity）② LoomStage `_font` 赋值 ③ Console 看红字 ④ Hierarchy 看 GO 不累积。
+- **删 pub API 必验 workspace**（v1b.3，坑 21）：`cargo test -p <crate>` 绿 ≠ workspace 绿——pub API 被 FFI/其他 crate 跨 crate 用时单 crate 测不覆盖。acceptance 写 `cargo test --workspace`。
+- **打包器两文件名一致**（v1b.3，坑 20）：packer 产 .pkg.bin + atlas.png，验磁盘 atlas 名 == .pkg.bin header `atlas_filename`（后端按 header 载）；各算各的 → 后端找不到 → 静默白占位。
+- **atlas batching 验收**（v1b.3）：FrameDebugger 看 atlas sprite 是否**同 Material**（底线）；draw call↓ 需开 URP Dynamic Batching（best-effort，mesh 不合并不保证 N→1）。
+- **重打 sample 流程**（v1b.3）：改 sample html/css/PNG 后 `cargo run -p loomgui_pkg -- samples/atlas/page.html samples/atlas/page.css -o StreamingAssets/loom_atlas.pkg.bin`（自动写 atlas.png 旁挂）；Unity 开着会 reimport，重进 PlayMode 重跑 Awake 载新包。
 
 ## 7. 已知问题/未完成（v0 ledger）
 
@@ -371,14 +402,18 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 
 **v1b.1 ✅ 完成（merged main @ 5706a7b）**：打包器 `loomgui_pkg` CLI + `.pkg.bin` v1 格式（Rust-internal，§2.12）+ `Stage::load_package` + `Scene::build` 共享建树 + parse feature gate（runtime 可无 parser）+ FFI `loomgui_stage_load_package` + Unity `_usePackage` 接线。**包路径渲染 == inline 渲染（黄金等价），PlayMode 验过**——验收 #6 达成。spec `docs/superpowers/specs/2026-06-20-v1b-packager-design.md`、plan `docs/superpowers/plans/2026-06-20-v1b-packager.md`。踩坑：magic 撞 frame blob（坑 15）。
 
-**v1b 拆分**：A 打包器/二进制包/加载器（v1b.1 ✅）、B 真纹理加载（v1b.2 ✅）、**C 图集打包（下一个）**、D 文本 CJK/多字体（text_arena 升三表）。各自后续 spec。
+**v1b 拆分**：A 打包器/二进制包/加载器（v1b.1 ✅）、B 真纹理加载（v1b.2 ✅）、**C 图集打包（v1b.3 ✅）**、D 文本 CJK/多字体（text_arena 升三表）。各自后续 spec。
 
 **v1b.2 ✅ 完成（merged main @ 691835a）**：真纹理加载——core `TextureRegistry`（src→TexMeta{tex_id,w,h}，§2.13）+ render/measure 三档（CSS>真实>64）+ blob v3（14 列加 tex_id）+ FFI `register_texture`/`image_src_count`/`image_src_at`（collect）+ C# FrameBlob v3 + MirrorPool 按 tex_id 绑材质 + LoomStage collect→load PNG→register→`_texMap`。**`<img src>` 渲真像素（PlayMode 验），命中 G7**。spec `docs/superpowers/specs/2026-06-20-v1b-texture-design.md`、plan `docs/superpowers/plans/2026-06-20-v1b-texture.md`、progress `.superpowers/sdd/progress.md`。踩坑：FFI 无尾 NUL 串契约（坑 16）、blob version bump 级联 C# fixture（坑 17）、`using System;` Object 歧义（坑 18）、BitConverter 无数组 overload（坑 19）。
 
-**v1b.2 defer**：图集（TextureView UV region + refcount/on_release，v1b.3/C）、alpha 纹理、多 Stage 全局 registry、Addressables/YooAsset 异步、移动端 StreamingAssets（UnityWebRequest）、inline 路径真纹理、NPOT/压缩/mipmap。
+**v1b.2 defer**：~~图集（TextureView UV region）~~（v1b.3 ✅，refcount 仍 defer）、alpha 纹理、多 Stage 全局 registry、Addressables/YooAsset 异步、移动端 StreamingAssets（UnityWebRequest）、inline 路径真纹理、NPOT/压缩/mipmap。
+
+**v1b.3 ✅ 完成（merged main @ 25171f8）**：图集打包——打包器 `image` crate + shelf（§3.8）→ atlas.png + AtlasSprite 表进 .pkg.bin **v2**（§2.12）+ core `TexMeta`+uv/`build_registry`（§2.14）+ render quad 按 region 烤 UV + FFI `atlas_count`/`atlas_info` 取代 v1b.2 loose collect/register + Unity `LoadAtlas`（1 atlas Texture2D 共享）。**blob v3 不变**（per-vertex UV 已在）。**PlayMode 验**：3 图共显方块 + FrameDebugger 同 Material（atlas 批合条件具备）。诚实认知：mesh 不合并→不保证 N→1 draw call（SRP Batcher + Dynamic Batching）。spec `docs/superpowers/specs/2026-06-21-v1b-atlas-design.md`、plan `docs/superpowers/plans/2026-06-21-v1b-atlas.md`、progress `.superpowers/sdd/progress.md`。踩坑：磁盘/header atlas 名不一致（坑 20）、删 pub API 漏验 workspace（坑 21）。
+
+**v1b.3 defer**：rotation/trim（UV 修正 §8.2）、多图集（sprite 带 atlas_idx）、refcount/on_release（§12.4）、**mesh 合并**（真 N→1 draw call，§8.5）、POT/压缩/mipmap。
 
 **v1 其余 defer（v0 起，未动）**：
-- 图集打包（v1b.3/C）—— **下一个**。
+- ~~图集打包~~（v1b.3 ✅）。**下一个（二选一）**：mesh 合并（v1b.4，真 N→1 draw call）/ D 文本 CJK+多字体。
 - event/命中/输入（v1c，G4）、anim GTween/ScrollPane（v1d，§11/§12.7）。
 - NativeHost/virtualization/shape mask：v1.x。
 
