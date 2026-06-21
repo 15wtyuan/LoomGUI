@@ -91,7 +91,7 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 ### 2.6 render（§8）
 - `build_render_nodes(scene, font, &TextureRegistry)`：Container/Button→Mesh quad(背景色，全图 UV `[0,0],[1,1]`)，Image→Mesh quad（**tex_id 查注册表 + UV region**：v1b.3 按 atlas 子区 `uv_min/uv_max` 烤 4 角 UV，未注册=0 哨兵+全图 UV→白占位；v1b.2 前 v0 占位是 hash(src) 已删），Text→TextLayout 装 Text payload。`mesh::quad(rect,color,uv_min,uv_max)` 接 uv_rect（vert TL,TR,BR,BL ↔ sprite 角；v1b.2 全图即 0,0,1,1）。
 - `assign_sort_keys`：DFS 单计数器 sort_key，clip 的 Container 是 BatchingRoot 开新 mask_context。
-- v0 保序（无 FairyBatching AABB 重排，v1.x 优化）。
+- **v1b.4 AABB 保序重排 + mesh 合并**（§8.5）：`build_render_nodes` 末尾 `assign_sort_keys → reorder_for_batching → merge_meshes`。`reorder_for_batching`（batch.rs）= fgui `DoFairyBatching`（Container.cs:877-941）稳定插入排序 core 化——同 DrawState((texture,program,mask_context)) 不相交元素前移聚拢，相交保相对序（坑 23）；Text(program=1) batch break 不重排。`merge_meshes`（merge.rs）按 sort_key 扫连续同 DrawState Mesh→拼 merged payload。**锚 node_id**（merged=min batch，坑 24）解动画 GO 抖动；**merged transform=0/alpha=1** 让 blob.rs:70 re-base（减 0）+ blob.rs:90 alpha 烤（×1）对 merged 无效 → **blob/MirrorPool 零改**（§2.8 列结构不动，spec §9）；colors 只烤 alpha 分量（rgb 不动，color_tint 不传，坑 9）。
 
 ### 2.7 stage
 - `Stage::new(font_path, root_size)` → `load_inline(html, css)` → `tick_and_render()` → `FrameData{nodes:Vec<RenderNode>, clips:Vec<ClipEntry>}`（v1a Phase 2：clips=嵌套交集后的 clip 表）→ `render_json()`。
@@ -143,9 +143,9 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 - **打包器期打图集**（fgui 模型）：`loomgui_pkg` 读散图（`image` crate，§3.8）→ shelf 打包 → blit+编码 atlas.png + AtlasSprite 表写进 .pkg.bin v2。**散图不再进 StreamingAssets**（已烤进 atlas）；StreamingAssets 放 `.pkg.bin` + `atlas.png`。
 - **core 持 UV region**（去引擎化）：`build_registry(&AtlasSection)` 从表建 `src→TexMeta{tex_id,uv_min,uv_max,w,h}`（atlas[0]→tex_id 1，所有 sprite 共享；`uv_min=[x/aw,y/ah]`、`uv_max=[(x+w)/aw,(y+h)/ah]`，y-down convention）。render 按 uv 烤 quad 4 角（§2.6）。
 - **同图集共享 1 Texture2D**：Unity `_texMap[atlas_tex_id]` = 1 张 atlas；多 sprite 同 tex_id → MaterialManager 返同 Material（key 含 texture）→ **SRP Batcher 批合**（CPU 效率）+ 可选 URP Dynamic Batching 降 draw call。
-- **诚实 batching 认知**：mesh **不合并**（§8.5，每节点独立 MeshRenderer）→ **不保证 N→1 draw call**。图集给的是同 Material（SRP Batcher）+ 纹理内存/cache + 为 mesh 合并（v1b.4）铺路。验收看 FrameDebugger「同 Material」（底线）。
+- **batching 认知（v1b.4 更新）**：v1b.3 时 mesh 不合并（每节点独立 MeshRenderer，仅同 Material/SRP Batcher，不保证 N→1 draw call）。**v1b.4 起 core 显式合并**（§2.6 reorder+merge）→ 连续同 atlas sprite 段真 N→1 draw call。**认知修正（坑 22）**：fgui DoFairyBatching 本身**不合并 mesh**（只重排 sortingOrder，靠 Unity Dynamic Batching 隐式合——不可控+URP 下与 SRP Batcher 互斥）；LoomGUI core 显式合并是补 fgui 没做的。
 - **blob v3 不变**：atlas 子区 UV 是 mesh_arena per-vertex uv 的不同值（非格式改）。UV 方向沿用 v1b.2 convention（packer region y-down px → core uv → root 一次性 y-flip），PlayMode 验方向正。
-- **defer（v1b.4+）**：rotation（UV 修正 §8.2 公式 `new_y=yMin+uv.x-xMin; new_x=xMin+yMax-uv.y`）、trim（originalSize/offset）、多图集（sprite 带 atlas_idx）、refcount/on_release（§12.4，atlas 随 Stage）、**mesh 合并**（真 N→1 draw call）。
+- **defer（v1b.5+）**：rotation（UV 修正 §8.2 公式 `new_y=yMin+uv.x-xMin; new_x=xMin+yMax-uv.y`）、trim（originalSize/offset）、多图集（sprite 带 atlas_idx）、refcount/on_release（§12.4，atlas 随 Stage）。~~mesh 合并~~（v1b.4 ✅）。
 
 ## 3. 依赖 API 适配踩坑（v0 最大教训）
 
@@ -349,6 +349,30 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 **解决**：删 pub API 必跑 `cargo test --workspace`（或至少 `cargo build` 所有依赖 crate）；T1 acceptance 只写 `-p loomgui_core` 是 plan 验测范围写窄。
 **教训**：删/改 pub API（尤其被 FFI 跨 crate 用）→ acceptance 必含 `cargo test --workspace`，单 crate 绿 ≠ workspace 绿。
 
+### 坑 22：fgui DoFairyBatching 不合并 mesh——照搬不够，core 要显式合并（v1b.4）
+**症状**：初版 v1b.4 设计以为「照搬 fgui DoFairyBatching = N→1 draw call」。
+**根因**：读 fgui Unity 源码（NGraphics.cs）发现每元素独立 MeshFilter+MeshRenderer，零 Graphics.DrawMesh/跨元素顶点拼接——DoFairyBatching 只重排 sortingOrder 让同 material 相邻，靠 **Unity Dynamic Batching 隐式合**（不可控、URP 下与 SRP Batcher 互斥、顶点≤300 限）。
+**解决**：LoomGUI core 显式合并（render::merge::merge_meshes）——补 fgui 靠 Unity 隐式做的那步，确定性 N→1、跨后端。
+**教训**：调研参考引擎时读源码确认「它实际做什么」vs「文档/印象说做什么」——fgui「合批」≠「合并 mesh」。
+
+### 坑 23：fgui AABB 相交语义——同 material 相交仍聚拢保相对序（v1b.4）
+**症状**：brief 测 `reorder_unit_overlapping_keeps_order` 断言 `[0,1,2]`（相交保序不动），实际 `[0,2,1]`。
+**根因**：fgui 算法（Container.cs:923-931）相交 break 时用**已算出的 k**（同 material 聚拢点）——同 material 相交仍前移紧邻（不越目标，保绘制序 A→C）；不同 material 相交才不越过（k=m=i 不动）。「相交保序」=保相对绘制序非「完全不动」。
+**解决**：断言改 `[0,2,1]` + 注释澄清。同 material 相交合并视觉安全（index buffer 保相对序）。
+**教训**：算法移植按源码逐行 trace 验，勿按文字描述想当然；同 material 相交也能合（利好合批率）。
+
+### 坑 24：merged node_id 必须=锚（batch 内 min）否则动画 GO 抖动（v1b.4）
+**症状**：merge 后节点身份若每帧变（batch 划分随动画变），MirrorPool `_pool[node_id]→GO` 频繁增删 GO。
+**根因**：merged 节点「虚拟」（多原始节点合并），无稳定 node_id → batch 划分变 → node_id 变 → GO 抖动。fgui 无此问题（不 merge，每元素稳定 GO）。
+**解决**：merged node_id=batch 内最小原始 node_id（锚）——batch 划分不变时锚稳定→GO 复用零抖动。MirrorPool 零改（按 node_id 复用，看不出 merged vs 单）。
+**教训**：merge 改变节点结构，必须给 merged 节点稳定身份（锚），否则后端池复用抖动。
+
+### 坑 25：既有测用 N 同级同 DrawState 节点，merge 后 index OOB（v1b.4）
+**症状**：`build_assigns_monotonic_keys`（root>[a,b] 3 Container）merge 后 3→1 节点，`rns[1]`/`rns[2]` OOB。
+**根因**：3 同级 Container 同 DrawState（tex=0,program=0,mask=0）→ merge 成 1。
+**解决**：改嵌套 clip 链（root clip→mid clip→leaf，3 不同 mask_context）→ 不同 DrawState → 不 merge → 保 3 节点，原 intent 保留。
+**教训**：merge 上线后，既有「多同级同 DrawState 节点」测会 OOB——改成不同 DrawState（嵌套 clip/不同 tex_id）保留多节点。
+
 ## 6. 调试/验证技巧
 
 - **★ 实现 v1+ 后端/渲染/对象模型前，先参考 `temp/FairyGUI-unity/` 源码**（对照机制、避免走歪——本 session 因没先看 fgui 的 sortingOrder/rect-mask/MaterialManager，初版设计走了弯路：误用 z 排序、误以为 rect mask 要独立 GO、把绘制序想复杂）。
@@ -373,6 +397,9 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 - **打包器两文件名一致**（v1b.3，坑 20）：packer 产 .pkg.bin + atlas.png，验磁盘 atlas 名 == .pkg.bin header `atlas_filename`（后端按 header 载）；各算各的 → 后端找不到 → 静默白占位。
 - **atlas batching 验收**（v1b.3）：FrameDebugger 看 atlas sprite 是否**同 Material**（底线）；draw call↓ 需开 URP Dynamic Batching（best-effort，mesh 不合并不保证 N→1）。
 - **重打 sample 流程**（v1b.3）：改 sample html/css/PNG 后 `cargo run -p loomgui_pkg -- samples/atlas/page.html samples/atlas/page.css -o StreamingAssets/loom_atlas.pkg.bin`（自动写 atlas.png 旁挂）；Unity 开着会 reimport，重进 PlayMode 重跑 Awake 载新包。
+- **blob 零改验证**（v1b.4，spec §9）：merge 改 build_render_nodes 输出但 blob/MirrorPool 必零改。验证：① `git diff --stat` 确认 blob.rs 改动全在 `mod tests`（生产 build_blob body 零行 diff）；② blob round-trip 测（TestView 逐顶点读 `mesh_vert`/`mesh_color_alpha`）验 merged transform=0→re-base 减 0=绝对 verts + alpha=1→×1=不二次烤。
+- **merge 两路径一致**（v1b.4）：黄金等价测（inline==pkg）验 merge 对两路径同构——FAIL=inline/pkg scene 不一致（真实 bug 非测问题）。
+- **merge PlayMode 验收**（v1b.4）：FrameDebugger draw call 数（连续同 atlas 段理想 1）+ Hierarchy loom_node GO 数（=batch 数<<节点数）+ 无花屏（证 merge 正确性，index buffer 保相对序）。
 
 ## 7. 已知问题/未完成（v0 ledger）
 
@@ -410,10 +437,14 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 
 **v1b.3 ✅ 完成（merged main @ 25171f8）**：图集打包——打包器 `image` crate + shelf（§3.8）→ atlas.png + AtlasSprite 表进 .pkg.bin **v2**（§2.12）+ core `TexMeta`+uv/`build_registry`（§2.14）+ render quad 按 region 烤 UV + FFI `atlas_count`/`atlas_info` 取代 v1b.2 loose collect/register + Unity `LoadAtlas`（1 atlas Texture2D 共享）。**blob v3 不变**（per-vertex UV 已在）。**PlayMode 验**：3 图共显方块 + FrameDebugger 同 Material（atlas 批合条件具备）。诚实认知：mesh 不合并→不保证 N→1 draw call（SRP Batcher + Dynamic Batching）。spec `docs/superpowers/specs/2026-06-21-v1b-atlas-design.md`、plan `docs/superpowers/plans/2026-06-21-v1b-atlas.md`、progress `.superpowers/sdd/progress.md`。踩坑：磁盘/header atlas 名不一致（坑 20）、删 pub API 漏验 workspace（坑 21）。
 
-**v1b.3 defer**：rotation/trim（UV 修正 §8.2）、多图集（sprite 带 atlas_idx）、refcount/on_release（§12.4）、**mesh 合并**（真 N→1 draw call，§8.5）、POT/压缩/mipmap。
+**v1b.3 defer**：rotation/trim（UV 修正 §8.2）、多图集（sprite 带 atlas_idx）、refcount/on_release（§12.4）、~~mesh 合并~~（v1b.4 ✅）、POT/压缩/mipmap。
+
+**v1b.4 ✅ 完成（merged main @ a09bb0b）**：mesh 合并 + AABB 保序重排——core `reorder_for_batching`（batch.rs，fgui DoFairyBatching core 化）+ `merge_meshes`（merge.rs，连续同 DrawState Mesh→单 merged payload）。**blob v3/MirrorPool 零改**（merged transform=0/alpha=1 让 re-base+alpha 烤对 merged 无效，spec §9）。锚 node_id（min batch）解动画 GO 抖动。**PlayMode 验**：3 连续同 atlas sprite→1 draw call + GO 数=batch 数 + 无花屏。重要认知修正：fgui 不合并 mesh（靠 Unity Dynamic Batching 隐式），LoomGUI core 显式合并补它没做的。spec `docs/superpowers/specs/2026-06-21-v1b-mesh-merge-design.md`、plan `docs/superpowers/plans/2026-06-21-v1b-mesh-merge.md`。踩坑：fgui 不合并（坑 22）、AABB 相交语义（坑 23）、锚 node_id（坑 24）、既有测 OOB（坑 25）。
+
+**v1b.4 defer**：动画 opt-out merge、增量 dirty merge/diff（同 v1e perf）、同字体 Text 合并（后端改）、blend 进 DrawState key、AABB 高级优化（sweep-and-prune）、GPU instancing（v2 自建 renderer）。
 
 **v1 其余 defer（v0 起，未动）**：
-- ~~图集打包~~（v1b.3 ✅）。**下一个（二选一）**：mesh 合并（v1b.4，真 N→1 draw call）/ D 文本 CJK+多字体。
+- ~~图集打包~~（v1b.3 ✅）、~~mesh 合并~~（v1b.4 ✅）。**下一个（二选一）**：D 文本 CJK+多字体（text_arena 升三表、font fallback）/ v1c event/命中/输入（G4）。
 - event/命中/输入（v1c，G4）、anim GTween/ScrollPane（v1d，§11/§12.7）。
 - NativeHost/virtualization/shape mask：v1.x。
 

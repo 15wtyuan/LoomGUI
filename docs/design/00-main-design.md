@@ -350,11 +350,11 @@ struct TextureView {
 - 后端按 `(program+flags+blend+texture+mask_context)` 维护 **DrawState 缓存**（Unity 侧等价 MaterialManager）。
 
 ### 8.5 批合：FairyBatching（保序重排）
-两元素能并入同批 ⟺ **DrawState 相同** 且 **AABB 不相交**（保序重排，避免遮挡错乱）。
+两元素能并入同批 ⟺ **DrawState 相同**（AABB 不相交则可重排聚拢；同 DrawState 相交仍可合，合并后 index buffer 保相对绘制序——v1b.4 坑 23）。
 - 算法照搬 fgui `DoFairyBatching`：稳定插入排序 + AABB 重叠检测，只在无视觉歧义时把同 DrawState 元素前移。
 - 核心算每节点 `sort_key`（重排后绘制顺序），后端据此设该引擎的排序字段（Unity sortingOrder / Godot z_index）。
 - **批合边界结构强制**（照搬 fgui）：DFS 遇 `clip_rect` 的 Container **强制其为 BatchingRoot**；批合收集**不下钻**进 root 子树（root 子树独立成批）。批物理上跨不过裁剪边界。（v1.x: shape mask/paintingMode 也是 root 边界。）
-- 批合局部（每 BatchingRoot 独立）。不合并 mesh（每节点各自原生渲染对象）。
+- 批合局部（每 BatchingRoot 独立）。**v1b.4 起 core 合并 mesh**：`reorder_for_batching`（fgui DoFairyBatching core 化，同 DrawState 不相交元素聚拢）+ `merge_meshes`（连续同 DrawState Mesh→单 merged payload）→ 真 N→1 draw call。merged transform=0/alpha=1 让 blob re-base+alpha 烤对 merged 无效（blob/MirrorPool 零改，spec §9）。锚 node_id（batch 内 min）解动画 GO 抖动。fgui 本身不合并（靠 Unity Dynamic Batching 隐式），LoomGUI core 显式合并补之。
 
 ### 8.6 裁剪/遮罩（意图表达，机制后端自选）
 v1 实现 **rect mask（硬矩形裁剪）**：意图=矩形区域裁剪。核心给 clip_box；后端自选实现（Unity: shader uniform `|clipPos|>1` discard；Godot: canvas_item_set_clip；软件: scanline）。`mask_context`（rect clip 上下文）是批合边界（§8.5）。**嵌套 `overflow:hidden`**：clip 区域取**祖先 clip 链的交集**（核心 DFS 累积交集，每 clip 上下文绑定一个交集后的 rect；后端每 context 一个 clip uniform，照搬 fgui 折叠语义——非逐层独立裁剪）。
