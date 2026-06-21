@@ -576,6 +576,40 @@ mod tests {
         fn tex_id(&self, i: usize) -> u32 {
             u32::from_le_bytes(self.buf[self.col_off[13] + i * 4..][0..4].try_into().unwrap())
         }
+        // v1b.4：per-vertex 读法（merged mesh round-trip 测用）。test-only 扩展，不进生产代码。
+        /// 节点数（从 header 读 n:u32 @ offset 8）。
+        fn node_count(&self) -> u32 {
+            u32::from_le_bytes(self.buf[8..12].try_into().unwrap())
+        }
+        /// 节点 i 的 payload_kind（u8 列，col_off[8] + i*1）。
+        fn payload_kind(&self, i: usize) -> u8 {
+            self.buf[self.col_off[8] + i]
+        }
+        /// 节点 i 的 mesh segment vert_count + idx_count（segment 首 8B）。
+        fn mesh_vert_count(&self, i: usize) -> (u32, u32) {
+            let (seg, _vc) = self.mesh_seg(i);
+            let vc = u32::from_le_bytes(self.buf[seg..seg + 4].try_into().unwrap());
+            let ic = u32::from_le_bytes(self.buf[seg + 4..seg + 8].try_into().unwrap());
+            (vc, ic)
+        }
+        /// 节点 i 的第 vi 个 mesh 顶点 (vx, vy)（已 re-base 后的本地坐标）。
+        fn mesh_vert(&self, i: usize, vi: usize) -> (f32, f32) {
+            let (seg, _vc) = self.mesh_seg(i);
+            // seg+8 起为 verts[vc×2 f32]；第 vi 顶点位于 seg+8 + vi*2*4。
+            let p = seg + 8 + vi * 2 * 4;
+            let vx = f32::from_le_bytes(self.buf[p..p + 4].try_into().unwrap());
+            let vy = f32::from_le_bytes(self.buf[p + 4..p + 8].try_into().unwrap());
+            (vx, vy)
+        }
+        /// 节点 i 的第 vi 个 mesh 顶点色的 alpha 分量（§4.2b：已 ×node.alpha 烤进）。
+        fn mesh_color_alpha(&self, i: usize, vi: usize) -> f32 {
+            let (seg, vc) = self.mesh_seg(i);
+            // seg+8 起 verts[vc×2] + uvs[vc×2] 各 vc*2*4 = vc*2*4*2，colors 起。
+            let colors_off = seg + 8 + vc * 2 * 4 * 2;
+            // 每色 f32×4 = 16B；第 vi 顶点的 alpha 在 colors_off + vi*16 + 12。
+            let a_off = colors_off + vi * 16 + 12;
+            f32::from_le_bytes(self.buf[a_off..a_off + 4].try_into().unwrap())
+        }
         fn text_arena_len(&self) -> u32 { self.text_arena_len }
         fn text_arena_off(&self) -> usize { self.text_arena_off }
 
@@ -662,5 +696,69 @@ mod tests {
         assert_eq!(view.clip_count(), 0);
         assert_eq!(view.clip_table_len, 4, "空 clip 表 len=4（仅 clip_count=0）");
         assert_eq!(view.read_clips().len(), 0);
+    }
+
+    /// §v1b.4：merged FrameData（transform=0、alpha=1、多 quad 拼接）经 build_blob，
+    /// re-base 减 0 = 顶点保持绝对；alpha×1 = 不变。blob 列结构零改（spec §9 硬契约）。
+    /// merged 由 merge_meshes 产：transform/alpha 已置 (0, 1)，colors.a 已 ×原 alpha 烤进。
+    /// blob 再做 `c[3] × rn.alpha(=1)` → 不二次烤；`v - transform(=0)` → 顶点保持绝对。
+    #[test]
+    fn merged_mesh_blob_keeps_absolute_verts_and_no_double_alpha() {
+        // 构造一个 merged 节点：8 verts（2 quad 拼接）、transform=0、alpha=1。
+        let merged = RenderNode {
+            node_id: 1,
+            parent_id: None,
+            visible: true,
+            alpha: 1.0,
+            grayed: false,
+            color_tint: [1.0; 4],
+            transform: NodeTransform { x: 0.0, y: 0.0, ..NodeTransform::default() },
+            blend: BlendMode::Normal,
+            mask_context: MaskContext(0),
+            sort_key: 0,
+            payload: NodePayload::Mesh {
+                // 顶点已是绝对 design 坐标（merge 不 re-base）；re-base 减 transform(0) = 不变。
+                verts: vec![
+                    [0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0],
+                    [100.0, 0.0], [110.0, 0.0], [110.0, 10.0], [100.0, 10.0],
+                ],
+                uvs: vec![[0.0, 0.0]; 8],
+                // 第二组 alpha 已烤 0.5（模拟 merge_batch 把第二节点 alpha=0.5 乘进 colors.a）。
+                colors: vec![
+                    [1.0, 1.0, 1.0, 1.0], [1.0, 1.0, 1.0, 1.0],
+                    [1.0, 1.0, 1.0, 1.0], [1.0, 1.0, 1.0, 1.0],
+                    [1.0, 1.0, 1.0, 0.5], [1.0, 1.0, 1.0, 0.5],
+                    [1.0, 1.0, 1.0, 0.5], [1.0, 1.0, 1.0, 0.5],
+                ],
+                indices: vec![0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7],
+                texture: 1,
+                program: 0,
+            },
+        };
+        let frame = FrameData {
+            nodes: vec![merged],
+            clips: vec![],
+        };
+        let buf = build_blob(&frame);
+        let view = TestView::parse(&buf);
+        assert_eq!(view.node_count(), 1);
+        assert_eq!(view.payload_kind(0), 1, "merged 仍是 Mesh payload_kind=1");
+        // merged 顶点 8 个，re-base 减 0 = 绝对原值。
+        let (vc, _ic) = view.mesh_vert_count(0);
+        assert_eq!(vc, 8, "merged segment 8 顶点");
+        // 第一顶点 = (0,0) 绝对（re-base 减 0）。
+        let (vx, vy) = view.mesh_vert(0, 0);
+        assert_eq!((vx, vy), (0.0, 0.0));
+        // 第五顶点（第二 quad 首）= (100,0) 绝对，证明未 re-base 到本地。
+        let (vx5, vy5) = view.mesh_vert(0, 4);
+        assert_eq!((vx5, vy5), (100.0, 0.0));
+        // 第二组 colors alpha=0.5，blob 再 ×alpha(1.0) = 不变。
+        let ca = view.mesh_color_alpha(0, 4);
+        assert!((ca - 0.5).abs() < 1e-6, "merged alpha=1 → blob 不二次烤");
+        // 顺带验第一组（vi=0..3）alpha=1.0。
+        for vi in 0..4 {
+            let a = view.mesh_color_alpha(0, vi);
+            assert!((a - 1.0).abs() < 1e-6, "第一组 colors.a=1.0");
+        }
     }
 }

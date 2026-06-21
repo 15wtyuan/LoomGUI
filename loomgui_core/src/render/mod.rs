@@ -138,6 +138,11 @@ pub fn build_render_nodes(scene: &Scene, font: &Font, textures: &TextureRegistry
         }
     }
     let clips = batch::assign_sort_keys(scene, &mut nodes);
+    // §8.5/§8.8 v1b.4：先按 BatchingRoot AABB 保序重排（同 DrawState 不相交聚拢），
+    // 再合并连续同 DrawState 的 program=0 Mesh → 1 draw call。clips 表由
+    // assign_sort_keys 产（mask_context 在 reorder/merge 中透传，表内容不受影响）。
+    batch::reorder_for_batching(scene, &mut nodes);
+    let nodes = merge::merge_meshes(nodes);
     FrameData { nodes, clips }
 }
 
@@ -417,21 +422,88 @@ mod tests {
 
     #[test]
     fn build_assigns_monotonic_keys() {
-        // root > [a, b]：sort_key 0 < 1 < 2（batch 已测，这里走端到端确认 build 接通）。
+        // v1b.4 后：reorder+merge 接入。3 个同 DrawState Container 会合并成 1 个节点，
+        // 故原「root > [a, b]」结构不再保 3 节点。改用嵌套 clip 链（root > mid > leaf，
+        // 每层 clip_rect 开新 mask_context）→ 3 个不同 DrawState → 不合并 → 保 3 节点。
+        // 验 sort_key 单调（batch 已测，这里走端到端确认 build 接通 assign_sort_keys）。
         let mut scene = Scene {
             roots: vec![NodeId(0)],
             nodes: vec![],
         };
         let mut root = container_node(0, None, Rect::default(), None);
-        root.children = vec![NodeId(1), NodeId(2)];
+        root.clip_rect = Some(Rect::default()); // 开 mask_context=1
+        root.children = vec![NodeId(1)];
         scene.nodes.push(root);
-        scene.nodes.push(container_node(1, Some(0), Rect::default(), None));
-        scene.nodes.push(container_node(2, Some(0), Rect::default(), None));
+        let mut mid = container_node(1, Some(0), Rect::default(), None);
+        mid.clip_rect = Some(Rect::default()); // 开 mask_context=2
+        mid.children = vec![NodeId(2)];
+        scene.nodes.push(mid);
+        let mut leaf = container_node(2, Some(1), Rect::default(), None);
+        leaf.clip_rect = Some(Rect::default()); // 开 mask_context=3
+        scene.nodes.push(leaf);
 
         let font = test_font().expect("need test font");
         let frame = build_render_nodes(&scene, &font, &TextureRegistry::default());
         let rns = &frame.nodes;
+        // 3 个不同 mask_context → 不合并 → 保 3 节点；sort_key 经 reorder 重赋后仍单调。
+        assert_eq!(rns.len(), 3, "3 个不同 mask_context → 不合并");
         assert!(rns[0].sort_key < rns[1].sort_key);
         assert!(rns[1].sort_key < rns[2].sort_key);
+    }
+
+    /// §8.5/§8.8 v1b.4：端到端——build_render_nodes 已接 reorder + merge。
+    /// root(Container, tex_id=0) > [img A, img B]（同 tex_id=1、同 mask_context、
+    /// AABB 不相交）。reorder 让两 Image 相邻，merge 合两 Image 成 1 个 8-vert
+    /// merged mesh；root 是 Container(tex_id=0) 不同 DrawState → 不合。
+    /// 结果：FrameData 含恰好 1 个 8-vert Mesh payload（两 Image 合并）。
+    #[test]
+    fn build_merges_adjacent_same_drawstate_meshes() {
+        let mut scene = Scene { roots: vec![NodeId(0)], nodes: vec![] };
+        let mut root = container_node(
+            0,
+            None,
+            Rect { x: 0.0, y: 0.0, w: 300.0, h: 50.0 },
+            None,
+        );
+        root.children = vec![NodeId(1), NodeId(2)];
+        scene.nodes.push(root);
+        let mut a = Node::default();
+        a.id = NodeId(1);
+        a.parent = Some(NodeId(0));
+        a.kind = NodeKind::Image { src: "a.png".into() };
+        a.layout_rect = Rect { x: 0.0, y: 0.0, w: 10.0, h: 10.0 };
+        scene.nodes.push(a);
+        let mut b = Node::default();
+        b.id = NodeId(2);
+        b.parent = Some(NodeId(0));
+        b.kind = NodeKind::Image { src: "a.png".into() };
+        b.layout_rect = Rect { x: 100.0, y: 0.0, w: 10.0, h: 10.0 };
+        scene.nodes.push(b);
+
+        let font = test_font().expect("need test font");
+        let mut tex = TextureRegistry::default();
+        tex.insert(
+            "a.png",
+            TexMeta { tex_id: 1, uv_min: [0.0, 0.0], uv_max: [1.0, 1.0], width: 10, height: 10 },
+        );
+
+        let frame = build_render_nodes(&scene, &font, &tex);
+        // root(Container, tex_id=0) + 1 merged(Image tex_id=1) = 2 节点（原 3）。
+        let mesh_count = frame
+            .nodes
+            .iter()
+            .filter(|n| matches!(&n.payload, NodePayload::Mesh { verts, .. } if verts.len() == 8))
+            .count();
+        assert_eq!(mesh_count, 1, "两同 atlas Image → 1 个 8-vert merged mesh");
+        // merged node 的 transform 应为 (0,0)（merge_batch 把锚 transform 置 0），
+        // 顶点保持绝对 design 坐标。
+        let merged = frame
+            .nodes
+            .iter()
+            .find(|n| matches!(&n.payload, NodePayload::Mesh { verts, .. } if verts.len() == 8))
+            .expect("merged node 存在");
+        assert_eq!(merged.transform.x, 0.0);
+        assert_eq!(merged.transform.y, 0.0);
+        assert!((merged.alpha - 1.0).abs() < 1e-6, "merged alpha=1 防 blob 二次烤");
     }
 }
