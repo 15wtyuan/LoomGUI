@@ -1,1 +1,1 @@
-.c{display:flex;flex-direction:row;width:600px;height:200px;gap:8px;background-color:#222222;}
+.c{display:flex;flex-direction:row;align-items:flex-start;width:600px;height:200px;gap:8px;background-color:#222222;}
