@@ -27,6 +27,20 @@ namespace LoomGUI.Tests
 #endif
         }
 
+        const string CjkFontPath = "Assets/LoomGUI/Fonts/wqy-microhei.ttc";
+
+        static Font LoadCjkFont()
+        {
+#if UNITY_EDITOR
+            var font = UnityEditor.AssetDatabase.LoadAssetAtPath<Font>(CjkFontPath);
+            Assert.IsNotNull(font, $"CJK 字体应在 {CjkFontPath}（T3 拷入）");
+            return font;
+#else
+            Assert.Inconclusive("PlayMode/build 无 AssetDatabase——跳过");
+            return null;
+#endif
+        }
+
         /// "A" @ pen (0, 20) → 1 glyph → 4 verts / 6 idx。
         [Test]
         public void BuildMesh_OneGlyph_ProducesOneQuad()
@@ -38,6 +52,21 @@ namespace LoomGUI.Tests
 
             Assert.AreEqual(4, mesh.Verts.Length, "1 glyph = 4 verts（BL,TL,TR,BR）");
             Assert.AreEqual(6, mesh.Idx.Length, "1 quad = 6 idx（0,1,2,0,2,3）");
+        }
+
+        /// CJK glyph（「中」）走同一光栅路径（codepoint-based，坑 14）：
+        /// BuildMesh 内部 RequestCharactersInTexture + GetCharacterInfo → 1 quad。
+        /// 验 CJK codepoint 在 TextRasterizer.BuildMesh 产 quad（4 verts / 6 idx）——生产代码零改。
+        [Test]
+        public void BuildMesh_CjkGlyph_ProducesOneQuad()
+        {
+            var font = LoadCjkFont();
+            const int fontSize = 24;
+            var glyphs = new[] { new GlyphData('中', 0f, 20f) };
+            var mesh = TextRasterizer.BuildMesh(font, fontSize, Color.white, 1f, glyphs);
+
+            Assert.AreEqual(4, mesh.Verts.Length, "CJK 1 glyph = 4 verts（BL,TL,TR,BR）");
+            Assert.AreEqual(6, mesh.Idx.Length, "CJK 1 quad = 6 idx（0,1,2,0,2,3）");
         }
 
         /// quad 四角位置 == pen + box 数学（§4.3 step 4）。用 BuildMesh 内同源 GetCharacterInfo
