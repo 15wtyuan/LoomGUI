@@ -58,10 +58,29 @@ namespace LoomGUI
         // 同 atlas 的多个 sprite 共享同一 Texture2D（atlas.png）→ MaterialManager key 命中同实例 → batchable。
         readonly Dictionary<uint, Texture2D> _texMap = new();
 
+        // v1c.1：输入采集 + 事件派发（Inspector 指定；为 null 时跳过输入/事件路径）。
+        // _inputCollector 通常与本 MonoBehaviour 同 GO（Awake 时 GetComponent 兜底）。
+        [SerializeField] LoomInputCollector _inputCollector;
+        // LoomEventHandler 非 UnityEngine.Object（纯 C# class）——不能 SerializeField 持有
+        // （Unity 不序列化非 Object 引用字段为资产链接）。改为 Awake new + 外部 AddListener 注册。
+        readonly LoomEventHandler _eventHandler = new();
+
         // 上一帧 Screen 尺寸，检测 resize 重配根/相机。
         int _lastScreenW = -1, _lastScreenH = -1;
 
         const int LoomUILayer = 6;
+
+        /// v1c.1：游戏侧通过此属性注册 listener（AddListener/RemoveListener），例如
+        /// stage.EventHandler.AddListener(nodeId, EventType.Click, OnBtnClick)。
+        public LoomEventHandler EventHandler => _eventHandler;
+
+        /// v1c.1：UI 挡住时游戏不响应点击（§10.6）。= cur_hit 非空且非根。
+        /// 游戏侧每帧/点击时查此 bool 决定是否消费输入（true → 游戏不响应）。
+        public bool IsPointerOnUI()
+        {
+            if (_stage == null) return false;
+            return Native.loomgui_stage_is_pointer_on_ui(_stage);
+        }
 
         void Awake()
         {
@@ -134,6 +153,10 @@ namespace LoomGUI
             gameObject.layer = LoomUILayer;
             EnsureCamera();
             ConfigureTransforms();
+
+            // v1c.1：_inputCollector 未在 Inspector 指定时，兜底取同 GO 上的组件
+            // （常见用法：LoomInputCollector 挂在 LoomStage 同 GameObject）。
+            if (_inputCollector == null) _inputCollector = GetComponent<LoomInputCollector>();
         }
 
         /// <summary>
@@ -365,6 +388,10 @@ namespace LoomGUI
                 ConfigureTransforms();
             }
 
+            // v1c.1：输入采集 → set_input（tick 前——input 管线消费本帧输入产事件）。
+            if (_inputCollector != null)
+                _inputCollector.Collect((System.IntPtr)_stage, _designSize);
+
             // tick → build_blob 写入 Rust 拥有缓存（dt v0 忽略）。
             Native.loomgui_stage_tick(_stage, Time.deltaTime);
 
@@ -372,16 +399,26 @@ namespace LoomGUI
             // 局部变量已在栈上固定，直接 & 取址传入（fixed 反而报 CS0213 "already fixed"）。
             nuint lenRaw = 0;
             byte* ptr = Native.loomgui_stage_borrow_frame(_stage, &lenRaw);
-            if (ptr == null || lenRaw == 0) return;
-
             int len = (int)lenRaw;
-            // 原子拷贝到托管 buffer（§14.3）。v1a 先 new；ArrayPool 留 v1e。
-            if (_frameBuf == null || _frameBuf.Length < len)
-                _frameBuf = new byte[len];
-            Marshal.Copy((IntPtr)ptr, _frameBuf, 0, len);
+            if (ptr != null && len > 0)
+            {
+                // 原子拷贝到托管 buffer（§14.3）。v1a 先 new；ArrayPool 留 v1e。
+                if (_frameBuf == null || _frameBuf.Length < len)
+                    _frameBuf = new byte[len];
+                Marshal.Copy((IntPtr)ptr, _frameBuf, 0, len);
 
-            var blob = new FrameBlob(_frameBuf);
-            _pool.Sync(blob, transform, _mm, _texMap, Texture2D.whiteTexture, _font);
+                var blob = new FrameBlob(_frameBuf);
+                _pool.Sync(blob, transform, _mm, _texMap, Texture2D.whiteTexture, _font);
+            }
+
+            // v1c.1：事件派发（tick 后——borrow_events 读本帧 last_events，下 tick 失效）。
+            // 即使 borrow_frame 为空（无渲染节点），事件仍须派发（hover/点击不依赖渲染）。
+            if (_eventHandler != null)
+            {
+                nuint evLen = 0;
+                byte* evPtr = Native.loomgui_stage_borrow_events(_stage, &evLen);
+                _eventHandler.DispatchPending((System.IntPtr)evPtr, (int)evLen);
+            }
         }
 
         void OnDestroy()
