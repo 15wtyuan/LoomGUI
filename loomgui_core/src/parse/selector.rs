@@ -312,8 +312,7 @@ use crate::scene::node::{Node, NodeKind};
 
 /// 运行时版 compound 匹配（消费 Node 而非 ElementData，运行时无 ElementTree）。
 /// 匹配 tag/classes/id（不含伪类状态——状态由 T6 match_element_with_state 门控）。
-/// **依赖 T3 给 Node 加 classes/id 字段**——T2 先占位：tag 映射 div/button/img/span，
-/// class/id 暂返回 false（T3 填 Node.classes/id 后改）。
+/// id 属性存 Node.id_attr（`id="..."`）；Node.id 是 NodeId 索引身份，二者不同。
 pub fn compound_matches_node(c: &Compound, node: &Node) -> bool {
     if let Some(t) = &c.tag {
         let kind_tag = match &node.kind {
@@ -326,13 +325,15 @@ pub fn compound_matches_node(c: &Compound, node: &Node) -> bool {
             return false;
         }
     }
-    if let Some(_id) = &c.id {
-        // Node 暂无 id 字段——T3 加 Node.id 后填实。暂返回 false（保守不命中）。
-        return false;
+    if let Some(id) = &c.id {
+        if node.id_attr.as_deref() != Some(id.as_str()) {
+            return false;
+        }
     }
-    for _cls in &c.classes {
-        // Node 暂无 classes 字段——T3 加 Node.classes 后填实。暂返回 false。
-        return false;
+    for cls in &c.classes {
+        if !node.classes.iter().any(|nc| nc == cls) {
+            return false;
+        }
     }
     true
 }

@@ -276,8 +276,8 @@ mod tests {
         img_style.taffy_style.size.width = Dimension::Length(100.0);
         img_style.taffy_style.size.height = Dimension::Length(50.0);
         let entries = [
-            (None, NodeKind::Container, ResolvedStyle::default()),
-            (Some(0), NodeKind::Image { src: "x.png".into() }, img_style),
+            (None, NodeKind::Container, ResolvedStyle::default(), Vec::new(), None),
+            (Some(0), NodeKind::Image { src: "x.png".into() }, img_style, Vec::new(), None),
         ];
         let mut scene = Scene::build(&entries);
         let mut tex = TextureRegistry::default();
@@ -296,8 +296,8 @@ mod tests {
         let mut img_style = ResolvedStyle::default();
         img_style.taffy_style.align_self = Some(AlignSelf::FlexStart);
         let entries = [
-            (None, NodeKind::Container, ResolvedStyle::default()),
-            (Some(0), NodeKind::Image { src: "x.png".into() }, img_style),
+            (None, NodeKind::Container, ResolvedStyle::default(), Vec::new(), None),
+            (Some(0), NodeKind::Image { src: "x.png".into() }, img_style, Vec::new(), None),
         ];
         let mut scene = Scene::build(&entries);
         let mut tex = TextureRegistry::default();
@@ -315,8 +315,8 @@ mod tests {
         let mut img_style = ResolvedStyle::default();
         img_style.taffy_style.align_self = Some(AlignSelf::FlexStart);
         let entries = [
-            (None, NodeKind::Container, ResolvedStyle::default()),
-            (Some(0), NodeKind::Image { src: "x.png".into() }, img_style),
+            (None, NodeKind::Container, ResolvedStyle::default(), Vec::new(), None),
+            (Some(0), NodeKind::Image { src: "x.png".into() }, img_style, Vec::new(), None),
         ];
         let mut scene = Scene::build(&entries);
         let tex = TextureRegistry::default();

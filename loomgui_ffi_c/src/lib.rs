@@ -277,8 +277,8 @@ mod abi_tests {
         let (fp, fplen) = font_path();
         // 手搓 scene（不走 parse），打成包
         let entries = vec![
-            (None, NodeKind::Container, ResolvedStyle::default()),
-            (Some(0), NodeKind::Text { content: "hi".into() }, ResolvedStyle::default()),
+            (None, NodeKind::Container, ResolvedStyle::default(), Vec::new(), None),
+            (Some(0), NodeKind::Text { content: "hi".into() }, ResolvedStyle::default(), Vec::new(), None),
         ];
         let pkg = write_package(&Scene::build(&entries), (100.0, 50.0), &loomgui_core::asset::AtlasSection::default());
 
@@ -318,9 +318,9 @@ mod abi_tests {
         use loomgui_core::style::resolved::ResolvedStyle;
         let (fp, fplen) = font_path();
         let entries = vec![
-            (None, NodeKind::Container, ResolvedStyle::default()),
-            (Some(0), NodeKind::Image { src: "a.png".into() }, ResolvedStyle::default()),
-            (Some(0), NodeKind::Image { src: "b.png".into() }, ResolvedStyle::default()),
+            (None, NodeKind::Container, ResolvedStyle::default(), Vec::new(), None),
+            (Some(0), NodeKind::Image { src: "a.png".into() }, ResolvedStyle::default(), Vec::new(), None),
+            (Some(0), NodeKind::Image { src: "b.png".into() }, ResolvedStyle::default(), Vec::new(), None),
         ];
         let atlas = AtlasSection {
             atlases: vec![AtlasInfo { filename: "loom.atlas.png".into(), width: 512, height: 256 }],

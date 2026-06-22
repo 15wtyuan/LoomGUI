@@ -47,6 +47,20 @@ pub struct Node {
     pub children: Vec<NodeId>,
     pub dirty_mesh: bool,
     pub dirty_text: bool,
+    /// 打包期 resolve_styles 产物（不变，rematch 基线）。style 是运行时 rematch 覆写值。
+    pub base_style: ResolvedStyle,
+    /// 运行时 class 列表（建树时从 ElementData.classes 填；供动态规则 class 选择器匹配）。
+    pub classes: Vec<String>,
+    /// 运行时 id（建树时从 ElementData.id 填；供动态规则 id 选择器匹配）。
+    pub id_attr: Option<String>,
+    /// pointer-events:auto=true / none=false（T1 解析，建树时从 style.touchable 填）。
+    pub touchable: bool,
+    /// 当前帧命中（运行时，每帧命中 diff 更新）。
+    pub hovered: bool,
+    /// 指针按下且命中（运行时状态机）。
+    pub active: bool,
+    /// 业务设（set_node_disabled），伪类源 + active/click 抑制。
+    pub disabled: bool,
 }
 
 impl Default for Node {
@@ -65,6 +79,13 @@ impl Default for Node {
             children: Vec::new(),
             dirty_mesh: true,
             dirty_text: false,
+            base_style: ResolvedStyle::default(),
+            classes: Vec::new(),
+            id_attr: None,
+            touchable: true,
+            hovered: false,
+            active: false,
+            disabled: false,
         }
     }
 }
@@ -73,6 +94,8 @@ impl Default for Node {
 pub struct Scene {
     pub roots: Vec<NodeId>,
     pub nodes: Vec<Node>,
+    /// 运行时伪类重匹配规则表（spec §5.5）。默认空；T7 包加载填，T8 inline 路径空。
+    pub dynamic_rules: crate::style::dynamic::DynamicRuleTable,
 }
 
 impl Scene {
@@ -80,17 +103,19 @@ impl Scene {
     /// `parent_idx` 指向 entries 下标，`None` = 根。
     /// clip_rect slot / dirty 标志按 style.overflow_hidden / kind 派生。
     /// parse 路径（build_scene）与包加载路径（read_package）共用——防建树逻辑分叉。
-    pub fn build(entries: &[(Option<usize>, NodeKind, ResolvedStyle)]) -> Scene {
+    pub fn build(entries: &[(Option<usize>, NodeKind, ResolvedStyle, Vec<String>, Option<String>)]) -> Scene {
         let mut scene = Scene {
             roots: Vec::new(),
             nodes: Vec::new(),
+            dynamic_rules: crate::style::dynamic::DynamicRuleTable::default(),
         };
-        for (i, (parent_idx, kind, style)) in entries.iter().enumerate() {
+        for (i, (parent_idx, kind, style, classes, id_attr)) in entries.iter().enumerate() {
             scene.nodes.push(Node {
                 id: NodeId(i),
                 parent: parent_idx.map(NodeId),
                 kind: kind.clone(),
                 style: style.clone(),
+                base_style: style.clone(),
                 taffy_id: None,
                 layout_rect: Rect::default(),
                 clip_rect: if style.overflow_hidden {
@@ -101,6 +126,12 @@ impl Scene {
                 children: Vec::new(),
                 dirty_mesh: true,
                 dirty_text: matches!(kind, NodeKind::Text { .. }),
+                classes: classes.clone(),
+                id_attr: id_attr.clone(),
+                touchable: style.touchable,
+                hovered: false,
+                active: false,
+                disabled: false,
             });
         }
         // 接 children + roots（entries 先序 → 按 parent 出现序填，与旧 build_rec 一致）
@@ -119,7 +150,7 @@ impl Scene {
 /// `styles` 必须与 `tree.nodes` 同长且同序（由 `style::cascade::resolve_styles` 保证）。
 #[cfg(feature = "parse")]
 pub fn build_scene(tree: &ElementTree, styles: &[ResolvedStyle]) -> Scene {
-    let mut entries: Vec<(Option<usize>, NodeKind, ResolvedStyle)> = Vec::new();
+    let mut entries: Vec<(Option<usize>, NodeKind, ResolvedStyle, Vec<String>, Option<String>)> = Vec::new();
     for root in &tree.roots {
         gather_rec(tree, styles, *root, None, &mut entries);
     }
@@ -132,7 +163,7 @@ fn gather_rec(
     styles: &[ResolvedStyle],
     el_id: ElementId,
     parent_idx: Option<usize>,
-    entries: &mut Vec<(Option<usize>, NodeKind, ResolvedStyle)>,
+    entries: &mut Vec<(Option<usize>, NodeKind, ResolvedStyle, Vec<String>, Option<String>)>,
 ) -> usize {
     let el = &tree.nodes[el_id.0];
     let style = &styles[el_id.0];
@@ -155,7 +186,7 @@ fn gather_rec(
         ),
     };
     let my_idx = entries.len();
-    entries.push((parent_idx, kind.clone(), style.clone()));
+    entries.push((parent_idx, kind.clone(), style.clone(), el.classes.clone(), el.id.clone()));
 
     // §4.2：Container/Button 的裸文本 → Text 子节点。文本子像无 class 的 <span>：
     // taffy_style 取 DEFAULT（由测量定尺寸），视觉/字体字段继承父值。
@@ -172,7 +203,7 @@ fn gather_rec(
             ts.letter_spacing = style.letter_spacing;
             ts.text_align = style.text_align;
             ts.white_space_nowrap = style.white_space_nowrap;
-            entries.push((Some(my_idx), NodeKind::Text { content: text.clone() }, ts));
+            entries.push((Some(my_idx), NodeKind::Text { content: text.clone() }, ts, Vec::new(), None));
         }
     }
 
@@ -189,14 +220,40 @@ mod tests {
     use super::*;
 
     #[test]
+    fn node_has_runtime_state_fields_default() {
+        let n = Node::default();
+        assert!(n.touchable, "touchable 默认 true");
+        assert!(!n.hovered);
+        assert!(!n.active);
+        assert!(!n.disabled);
+        assert!(n.classes.is_empty());
+        assert!(n.id_attr.is_none());
+        // base_style 与 style 初始相同（Default）
+        assert_eq!(n.base_style, n.style);
+    }
+
+    #[test]
+    fn scene_default_has_empty_dynamic_rules() {
+        let s = Scene {
+            roots: vec![],
+            nodes: vec![],
+            dynamic_rules: Default::default(),
+        };
+        assert!(
+            s.dynamic_rules.rules.is_empty(),
+            "Scene 默认 dynamic_rules 空"
+        );
+    }
+
+    #[test]
     fn scene_build_constructs_tree_without_parse() {
         // 手搓 entries：root Container + 一个 Text 子（parent=Some(0)）。
         // 不走 parse_html/build_scene——证明 Scene::build 独立于 parse（read_package 依赖此）。
         let root_style = ResolvedStyle::default();
         let text_style = ResolvedStyle::default();
-        let entries: Vec<(Option<usize>, NodeKind, ResolvedStyle)> = vec![
-            (None, NodeKind::Container, root_style),
-            (Some(0), NodeKind::Text { content: "hi".into() }, text_style),
+        let entries: Vec<(Option<usize>, NodeKind, ResolvedStyle, Vec<String>, Option<String>)> = vec![
+            (None, NodeKind::Container, root_style, Vec::new(), None),
+            (Some(0), NodeKind::Text { content: "hi".into() }, text_style, Vec::new(), None),
         ];
         let scene = Scene::build(&entries);
 
@@ -215,7 +272,7 @@ mod tests {
         // overflow_hidden → clip slot 派生
         let mut of = ResolvedStyle::default();
         of.overflow_hidden = true;
-        let scene2 = Scene::build(&[(None, NodeKind::Container, of)]);
+        let scene2 = Scene::build(&[(None, NodeKind::Container, of, Vec::new(), None)]);
         assert!(scene2.nodes[0].clip_rect.is_some(), "overflow_hidden=true → clip slot");
     }
 }
@@ -226,6 +283,21 @@ mod parse_tests {
     use super::*;
     use crate::parse::{css::parse_css, dom::parse_html};
     use crate::style::cascade::resolve_styles;
+
+    #[test]
+    fn build_scene_fills_classes_and_id() {
+        let html = r#"<div class="a b" id="x"><span class="c">hi</span></div>"#;
+        let css = "";
+        let tree = parse_html(html).unwrap();
+        let sheet = parse_css(css).unwrap();
+        let styles = resolve_styles(&tree, &sheet);
+        let scene = build_scene(&tree, &styles);
+        let root = &scene.nodes[scene.roots[0].0];
+        assert_eq!(root.classes, vec!["a".to_string(), "b".to_string()]);
+        assert_eq!(root.id_attr.as_deref(), Some("x"));
+        let span = &scene.nodes[root.children[0].0];
+        assert_eq!(span.classes, vec!["c".to_string()]);
+    }
 
     #[test]
     fn builds_div_button_text_image() {

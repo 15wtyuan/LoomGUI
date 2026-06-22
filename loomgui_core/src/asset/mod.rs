@@ -236,7 +236,7 @@ pub fn read_package(bytes: &[u8]) -> Result<(Scene, (f32, f32), AtlasSection), P
         strings.push(s);
     }
     // NodeBlock → entries
-    let mut entries: Vec<(Option<usize>, NodeKind, ResolvedStyle)> = Vec::with_capacity(node_count);
+    let mut entries: Vec<(Option<usize>, NodeKind, ResolvedStyle, Vec<String>, Option<String>)> = Vec::with_capacity(node_count);
     for _ in 0..node_count {
         let pidx = r.i32("parent_idx")?;
         let kind_tag = r.u8("kind")?;
@@ -256,7 +256,7 @@ pub fn read_package(bytes: &[u8]) -> Result<(Scene, (f32, f32), AtlasSection), P
             },
             other => return Err(PkgError::BadKind(other)),
         };
-        entries.push((parent, kind, style));
+        entries.push((parent, kind, style, Vec::new(), None));
     }
     // —— AtlasSection（v2）——
     let atlas_count = r.u32("atlas_count")? as usize;
@@ -376,14 +376,16 @@ mod tests {
         // 手搓一个覆盖 4 种 kind + 嵌套的 Scene（不走 parse，靠 Scene::build）。
         let mut img_style = ResolvedStyle::default();
         img_style.background_color = Some([1.0, 0.0, 0.0, 1.0]);
-        let entries: Vec<(Option<usize>, NodeKind, ResolvedStyle)> = vec![
-            (None, NodeKind::Container, ResolvedStyle::default()),
+        let entries: Vec<(Option<usize>, NodeKind, ResolvedStyle, Vec<String>, Option<String>)> = vec![
+            (None, NodeKind::Container, ResolvedStyle::default(), Vec::new(), None),
             (
                 Some(0),
                 NodeKind::Text {
                     content: "hi".into(),
                 },
                 ResolvedStyle::default(),
+                Vec::new(),
+                None,
             ),
             (
                 Some(0),
@@ -391,8 +393,10 @@ mod tests {
                     src: "logo.png".into(),
                 },
                 img_style.clone(),
+                Vec::new(),
+                None,
             ),
-            (None, NodeKind::Button, ResolvedStyle::default()),
+            (None, NodeKind::Button, ResolvedStyle::default(), Vec::new(), None),
         ];
         let scene = Scene::build(&entries);
 
@@ -431,8 +435,8 @@ mod tests {
     fn read_rejects_unsupported_version() {
         // 借 round-trip 测的合法包（v2），把 version 字段（offset 4）改成 3 / 1。
         // MIN_VERSION=MAX_VERSION=2：v1 → TooOld，v3 → TooNew。
-        let entries: Vec<(Option<usize>, NodeKind, ResolvedStyle)> =
-            vec![(None, NodeKind::Container, ResolvedStyle::default())];
+        let entries: Vec<(Option<usize>, NodeKind, ResolvedStyle, Vec<String>, Option<String>)> =
+            vec![(None, NodeKind::Container, ResolvedStyle::default(), Vec::new(), None)];
         let mut bytes = write_package(&Scene::build(&entries), (100.0, 100.0), &AtlasSection::default());
         bytes[4..8].copy_from_slice(&3u32.to_le_bytes()); // version=3 → too new
         assert!(matches!(read_package(&bytes), Err(PkgError::TooNew(3))));
@@ -445,7 +449,7 @@ mod tests {
         // 空 scene + 非空 AtlasSection → round-trip 后 atlas 字段逐项相等。
         // 覆盖：filename intern、sprite src intern（与 NodeBlock 共 stringTable）、
         // u32 × 4 sprite 字段、atlas_count/sprite_count。
-        let entries = vec![(None, NodeKind::Container, ResolvedStyle::default())];
+        let entries = vec![(None, NodeKind::Container, ResolvedStyle::default(), Vec::new(), None)];
         let scene = Scene::build(&entries);
         let atlas = AtlasSection {
             atlases: vec![AtlasInfo { filename: "a.atlas.png".into(), width: 512, height: 256 }],
@@ -493,14 +497,16 @@ mod tests {
     #[test]
     fn stringtable_dedups_repeated_strings() {
         // 两个 Text 同 content → stringTable 只一条，textIdx 相同。
-        let entries: Vec<(Option<usize>, NodeKind, ResolvedStyle)> = vec![
-            (None, NodeKind::Container, ResolvedStyle::default()),
+        let entries: Vec<(Option<usize>, NodeKind, ResolvedStyle, Vec<String>, Option<String>)> = vec![
+            (None, NodeKind::Container, ResolvedStyle::default(), Vec::new(), None),
             (
                 Some(0),
                 NodeKind::Text {
                     content: "dup".into(),
                 },
                 ResolvedStyle::default(),
+                Vec::new(),
+                None,
             ),
             (
                 Some(0),
@@ -508,6 +514,8 @@ mod tests {
                     content: "dup".into(),
                 },
                 ResolvedStyle::default(),
+                Vec::new(),
+                None,
             ),
         ];
         let bytes = write_package(&Scene::build(&entries), (10.0, 10.0), &AtlasSection::default());
