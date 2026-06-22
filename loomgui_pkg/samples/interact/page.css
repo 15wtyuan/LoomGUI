@@ -22,3 +22,9 @@
 .btn.disabled {
   opacity: 0.5;
 }
+/* v1c.1：Text 节点（span/裸文本）pointer-events:none——让命中穿透到父按钮。
+   否则文字盖在按钮上半段，hover 文字区命中 Text 而非按钮，:hover 不触发。
+   UI 常识：点按钮的文字 = 点按钮本身。 */
+span {
+  pointer-events: none;
+}
