@@ -1,5 +1,6 @@
 pub mod asset;
 pub mod hit;
+pub mod input;
 pub mod layout;
 #[cfg(feature = "parse")]
 pub mod parse;
