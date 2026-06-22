@@ -54,6 +54,11 @@ enum MeasureContext {
 /// `root_size` 是根节点固定尺寸（viewport / surface 尺寸）。`font` 借用到
 /// `compute_layout_with_measure` 结束，闭包内解引用喂给 `measure_text`。
 pub fn solve(scene: &mut Scene, font: &Font, root_size: (f32, f32), textures: &TextureRegistry) {
+    // 防御：空 roots（空 scene）无几何可 solve——直接返回，避免 roots[0] 越界 panic。
+    // v1c.1：Stage 可能在 scene 未装内容时 tick（如测/边界），不应 panic。
+    if scene.roots.is_empty() {
+        return;
+    }
     let mut taffy_tree: TaffyTree<MeasureContext> = TaffyTree::new();
     // scene NodeId → taffy NodeId 映射（按 NodeId.0 索引）。
     let mut taffy_ids: Vec<Option<taffy::NodeId>> = vec![None; scene.nodes.len()];

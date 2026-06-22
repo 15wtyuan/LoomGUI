@@ -4,6 +4,8 @@
 //! solve + build_render_nodes。`render_json` serde 序列化产 spec §5 JSON。
 //! v0 无输入/动画/打包器，Stage 只是「装配 + 单帧」的薄壳。
 
+use crate::hit::hit_test;
+use crate::input::{EventRecord, PointerEvent, PointerState};
 use crate::layout::solve;
 #[cfg(feature = "parse")]
 use crate::parse::css::parse_css;
@@ -13,7 +15,8 @@ use crate::render::build_render_nodes;
 use crate::render::FrameData;
 #[cfg(feature = "parse")]
 use crate::scene::node::build_scene;
-use crate::scene::node::Scene;
+use crate::scene::node::{NodeId, Scene};
+use crate::style::dynamic::rematch_pseudo_classes;
 #[cfg(feature = "parse")]
 use crate::style::cascade::resolve_styles;
 use crate::text::layout::Font;
@@ -27,6 +30,14 @@ pub struct Stage {
     /// v1b.3：图集元数据（.pkg.bin v2 AtlasSection.atlases）。FFI T5 读（atlas_count/info）。
     /// inline 路径恒空（inline 不走打包器，无图集）。
     pub atlases: Vec<crate::asset::AtlasInfo>,
+    /// v1c.1：单指针状态机（hover/active 状态 + 命中 diff + 产事件）。
+    pub pointer_state: PointerState,
+    /// v1c.1：set_input 缓存的本帧输入；tick_and_render 消费后 clear。
+    pub pending_input: Vec<PointerEvent>,
+    /// v1c.1：本帧 tick 产出的事件序列（process 返回）；last_events/borrow_events 读。
+    pub last_events: Vec<EventRecord>,
+    /// v1c.1：当前帧命中节点（is_pointer_on_ui 读；命中根不算 UI 挡）。
+    pub cur_hit: Option<NodeId>,
 }
 
 impl Stage {
@@ -39,6 +50,10 @@ impl Stage {
             root_size,
             textures: crate::asset::texture::TextureRegistry::default(),
             atlases: Vec::new(),
+            pointer_state: PointerState::new(),
+            pending_input: Vec::new(),
+            last_events: Vec::new(),
+            cur_hit: None,
         })
     }
 
@@ -69,10 +84,63 @@ impl Stage {
         Ok(())
     }
 
-    /// 静态首帧：solve + render。v0 无输入/动画。返回 nodes + clip 表（§4.4）。
+    /// 缓存本帧指针输入（tick 前调；覆盖式——每帧全量替换 pending_input）。
+    pub fn set_input(&mut self, events: &[PointerEvent]) {
+        self.pending_input.clear();
+        self.pending_input.extend_from_slice(events);
+    }
+
+    /// 业务设节点 disabled（伪类源 + active/click 抑制）。NodeId.0 越界静默跳过。
+    pub fn set_node_disabled(&mut self, node_id: NodeId, disabled: bool) {
+        if let Some(scene) = self.scene.as_mut() {
+            if node_id.0 < scene.nodes.len() {
+                scene.nodes[node_id.0].disabled = disabled;
+            }
+        }
+    }
+
+    /// UI 挡住时游戏不响应点击（§10.6）。= cur_hit 非空且非根（根是背景，不算 UI 挡）。
+    pub fn is_pointer_on_ui(&self) -> bool {
+        match self.cur_hit {
+            None => false,
+            Some(id) => {
+                let scene = self.scene.as_ref().expect("load first");
+                !scene.roots.contains(&id)
+            }
+        }
+    }
+
+    /// 本帧产出的事件（tick 后读；FFI borrow_events 用）。
+    pub fn last_events(&self) -> &[EventRecord] {
+        &self.last_events
+    }
+
+    /// 每帧管线（§4.5 + 首帧修正）：
+    /// ①solve（算 layout_rect——hit_test 必须用已解矩形，故 solve 在 process 前）
+    /// ②process（hit+状态 diff+产事件，存 last_events，更新 hovered/active）
+    /// ③cur_hit=hit_test(last_pos)（is_pointer_on_ui 读）
+    /// ④rematch_pseudo_classes（按新 hover/active 状态改 Node.style——本帧渲染吃到视觉变）
+    /// ⑤build_render_nodes
+    ///
+    /// **与 spec §4.5 的差异**：spec 原「process→rematch→solve」在首帧 hit_test 读全零
+    /// layout_rect（未 solve）→ 无命中 → 1 tick 出不来事件。本实现把 solve 前移到 process
+    /// 前——hit_test 用本帧刚解的矩形，首帧即能产 RollOver。代价：rematch 改的 *layout*
+    /// 属性（如 `.btn:hover { width:200px }`）延到下帧 solve 才吃（spec §15 已认此为延迟
+    /// 项）；rematch 的纯视觉变（background-color 等）本帧 render 立即吃到（render 读 style
+    /// 不读 layout_rect.size）。v1c.1 视觉伪类为主，layout 伪类为边角，此权衡 OK。
     pub fn tick_and_render(&mut self) -> FrameData {
         let scene = self.scene.as_mut().expect("load first");
+        // 1. solve（先解 layout_rect，hit_test 要用）
         solve(scene, &self.font, self.root_size, &self.textures);
+        // 借用冲突解（brief Step 3 注）：process 借 &mut scene + &input——scene 与 pending_input
+        // 都是 self 字段，同时借 self 冲突。先 take 出 input（离开 self 借用），process 返回后 drop。
+        let input = std::mem::take(&mut self.pending_input);
+        self.last_events = self.pointer_state.process(scene, &input);
+        // 3. 更新 cur_hit（is_pointer_on_ui 读）——用 pointer_state.last_pos
+        self.cur_hit = hit_test(scene, self.pointer_state.last_pos);
+        // 4. 伪类重匹配（按新 hover/active 改 Node.style——视觉变本帧 render 吃到）
+        rematch_pseudo_classes(scene);
+        // 5. 渲染
         build_render_nodes(scene, &self.font, &self.textures)
     }
 
@@ -117,5 +185,67 @@ mod tests {
         let pkg_json = s_pkg.render_json();
 
         assert_eq!(inline_json, pkg_json, "包路径渲染输出必须 == inline（含真实 tex_id + 尺寸）");
+    }
+
+    #[cfg(feature = "parse")]
+    #[test]
+    fn set_input_hover_emits_rollover_and_rematch() {
+        let font_path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/DejaVuSans.ttf");
+        // 按钮 + :hover 规则
+        let html = r#"<div class="root"><button class="btn">OK</button></div>"#;
+        let css = r#".btn { width: 100px; height: 50px; background-color: #cccccc; } .btn:hover { background-color: #0000ff; }"#;
+        let mut s = Stage::new(font_path, (200.0, 100.0)).unwrap();
+        s.load_inline(html, css).unwrap();
+        // inline 路径 dynamic_rules 空——伪类不生效；打成包验伪类：
+        let scene = s.scene.as_ref().unwrap().clone();
+        let sheet = crate::parse::css::parse_css(css).unwrap();
+        let dynamic = crate::asset::extract_dynamic_rules(&sheet);
+        let pkg = crate::asset::write_package(&scene, (200.0, 100.0), &crate::asset::AtlasSection::default(), &dynamic);
+        let mut s2 = Stage::new(font_path, (200.0, 100.0)).unwrap();
+        s2.load_package(&pkg).unwrap();
+        // 输入：Move 到按钮 (50,25)（按钮在 (0,0,100,50)）
+        s2.set_input(&[crate::input::PointerEvent { kind: crate::input::PointerKind::Move, x: 50.0, y: 25.0, button: 0 }]);
+        s2.tick_and_render();
+        let events = s2.last_events();
+        assert!(events.iter().any(|e| e.event_type == crate::input::EVT_ROLL_OVER), "Move 到按钮 → RollOver");
+        assert!(s2.is_pointer_on_ui(), "命中按钮 → is_pointer_on_ui=true");
+        // hover 后 rematch：btn style.background_color 应变蓝（dynamic 规则 .btn:hover）
+        let btn = &s2.scene.as_ref().unwrap().nodes[1];
+        assert_eq!(btn.style.background_color, Some([0.0, 0.0, 1.0, 1.0]), ":hover 伪类重匹配 → 蓝");
+    }
+
+    #[cfg(feature = "parse")]
+    #[test]
+    fn set_node_disabled_inhibits_click() {
+        let font_path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/DejaVuSans.ttf");
+        let html = r#"<div class="root"><button class="btn">OK</button></div>"#;
+        let css = r#".btn { width: 100px; height: 50px; }"#;
+        let mut s = Stage::new(font_path, (200.0, 100.0)).unwrap();
+        s.load_inline(html, css).unwrap();
+        let scene = s.scene.as_ref().unwrap().clone();
+        let pkg = crate::asset::write_package(&scene, (200.0, 100.0), &crate::asset::AtlasSection::default(), &crate::style::dynamic::DynamicRuleTable::default());
+        let mut s2 = Stage::new(font_path, (200.0, 100.0)).unwrap();
+        s2.load_package(&pkg).unwrap();
+        s2.set_node_disabled(crate::scene::node::NodeId(1), true);
+        // Down + Up 在按钮上——disabled 不产 Click
+        s2.set_input(&[
+            crate::input::PointerEvent { kind: crate::input::PointerKind::Down, x: 50.0, y: 25.0, button: 0 },
+            crate::input::PointerEvent { kind: crate::input::PointerKind::Up, x: 50.0, y: 25.0, button: 0 },
+        ]);
+        s2.tick_and_render();
+        let events = s2.last_events();
+        assert!(!events.iter().any(|e| e.event_type == crate::input::EVT_CLICK), "disabled → 不产 Click");
+    }
+
+    #[test]
+    fn is_pointer_on_ui_false_when_miss() {
+        // 空 scene / 命中根外 → false。手搓 Stage（不走 parse）
+        let font_path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/DejaVuSans.ttf");
+        let mut s = Stage::new(font_path, (200.0, 100.0)).unwrap();
+        // 手搓空 scene
+        s.scene = Some(crate::scene::node::Scene { roots: vec![], nodes: vec![], dynamic_rules: Default::default() });
+        s.set_input(&[crate::input::PointerEvent { kind: crate::input::PointerKind::Move, x: 50.0, y: 50.0, button: 0 }]);
+        s.tick_and_render();
+        assert!(!s.is_pointer_on_ui(), "空 scene → false");
     }
 }
