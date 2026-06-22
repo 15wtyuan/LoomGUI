@@ -1,0 +1,24 @@
+.root {
+  width: 300px;
+  height: 200px;
+  background-color: #222222;
+  padding: 20px;
+  gap: 12px;
+  align-items: stretch;
+}
+.btn {
+  height: 40px;
+  background-color: #888888;
+  color: #ffffff;
+  font-size: 18px;
+  text-align: center;
+}
+.btn:hover {
+  background-color: #2266ff;
+}
+.btn:active {
+  background-color: #ff4444;
+}
+.btn.disabled {
+  opacity: 0.5;
+}
