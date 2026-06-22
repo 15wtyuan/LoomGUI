@@ -3,9 +3,56 @@
 //! `DynamicRuleTable`/`DynamicRule` 在 T3 定义；本模块填实
 //! `match_element_with_state`（完整后代链匹配 + 伪类状态门）+
 //! `rematch_pseudo_classes`（全量节点重 cascade，写 Node.style + 标 layout dirty）。
+//!
+//! **常驻（不 gate）：**本模块的选择器数据模型（`ParsedSelector`/`Compound`/`Combinator`/
+//! `Specificity`）+ `Declaration`（CSS 声明）+ `compound_matches_node`（运行时 compound 匹配）+
+//! 动态规则匹配全不依赖 parse feature——bincode 序列化进 `.pkg.bin` 的就是这些结构
+//! （spec §5.2/坑 21：runtime 不重新 parse，直接用反序列化结构）。`parse::selector`/`parse::css`
+//! 只保留解析器函数（string → 这些结构），仍 `#[cfg(feature="parse")]`，本模块 `pub use` 重导出
+//! 数据类型以维持路径兼容（`loomgui_core::parse::selector::ParsedSelector` 仍可达）。
 
-use crate::parse::css::Declaration;
-use crate::parse::selector::{compound_matches_node, Combinator, Compound, ParsedSelector};
+use serde::{Deserialize, Serialize};
+
+// ── 选择器数据模型（常驻；parse feature off 时仍可用于 bincode 反序列化 + rematch）──
+
+/// CSS 声明（prop + value）。序列化进 .pkg.bin DynamicRuleSection。
+/// 与 `parse::css::Declaration` 同型——parse feature 下 `parse::css` 重导出本类型保持路径兼容。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Declaration {
+    pub prop: String,
+    pub value: String,
+}
+
+/// 选择器组合子：标签/类/id/后代/子代 + 伪类状态门（hover/active/disabled）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ParsedSelector {
+    pub raw: String,
+    pub compound: Vec<Compound>, // 复合选择器链（后代/子代分隔）
+    pub specificity: Specificity,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Compound {
+    pub tag: Option<String>,
+    pub classes: Vec<String>,
+    pub id: Option<String>,
+    pub combinator: Combinator, // 本 compound 与前一个的关系
+    pub pseudo_hover: bool,
+    pub pseudo_active: bool,
+    pub pseudo_disabled: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub enum Combinator {
+    Descendant,
+    Child,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct Specificity(pub u32, pub u32, pub u32); // (id 数, class 数, tag 数)
+
+// ── 动态规则表（DynamicRule 持有 ParsedSelector + Declarations，均 bincode 可序列化）──
+
 use crate::scene::node::{NodeId, Scene};
 use crate::style::mapping::apply_decl;
 
@@ -18,6 +65,38 @@ pub struct DynamicRuleTable {
 pub struct DynamicRule {
     pub selector: ParsedSelector,
     pub declarations: Vec<Declaration>,
+}
+
+use crate::scene::node::{Node, NodeKind};
+
+/// 运行时版 compound 匹配（消费 Node 而非 ElementData，运行时无 ElementTree）。
+/// 匹配 tag/classes/id（不含伪类状态——状态由 match_element_with_state 门控）。
+/// id 属性存 Node.id_attr（`id="..."`）；Node.id 是 NodeId 索引身份，二者不同。
+///
+/// **常驻：**runtime rematch 用，不依赖 parse feature。
+pub fn compound_matches_node(c: &Compound, node: &Node) -> bool {
+    if let Some(t) = &c.tag {
+        let kind_tag = match &node.kind {
+            NodeKind::Container => "div",
+            NodeKind::Button => "button",
+            NodeKind::Image { .. } => "img",
+            NodeKind::Text { .. } => "span",
+        };
+        if kind_tag != t.as_str() {
+            return false;
+        }
+    }
+    if let Some(id) = &c.id {
+        if node.id_attr.as_deref() != Some(id.as_str()) {
+            return false;
+        }
+    }
+    for cls in &c.classes {
+        if !node.classes.iter().any(|nc| nc == cls) {
+            return false;
+        }
+    }
+    true
 }
 
 /// 判定 compound 是否匹配 node + 伪类状态门。

@@ -6,8 +6,6 @@
 //! style 字段 = bincode(ResolvedStyle)。字符串表放 text content + image src +
 //! atlas filename + sprite src + classes + id_attr（统一 intern 去重）。
 
-use crate::parse::css::StyleSheet;
-use crate::parse::selector::parse_selector;
 use crate::scene::{NodeKind, NodeId, Scene};
 use crate::style::dynamic::DynamicRuleTable;
 use crate::style::resolved::ResolvedStyle;
@@ -126,7 +124,11 @@ impl From<bincode::Error> for PkgError {
 
 /// §5.5：从 StyleSheet 抽含 :hover/:active/:disabled 的规则 → DynamicRuleTable。
 /// 纯静态规则不进（已在 base_style 烤好）。判定：parse_selector 后任一 compound 含伪类标志。
-pub fn extract_dynamic_rules(sheet: &StyleSheet) -> DynamicRuleTable {
+///
+/// **parse-gated：**消费 parse 后的 StyleSheet（CSS 文本产物），runtime 无此输入。
+#[cfg(feature = "parse")]
+pub fn extract_dynamic_rules(sheet: &crate::parse::css::StyleSheet) -> DynamicRuleTable {
+    use crate::parse::selector::parse_selector;
     use crate::style::dynamic::DynamicRule;
     let mut rules = Vec::new();
     for rule in &sheet.rules {

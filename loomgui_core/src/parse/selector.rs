@@ -1,34 +1,12 @@
 use crate::parse::css::Rule;
 use crate::parse::dom::{ElementData, ElementId, ElementTree};
-use serde::{Deserialize, Serialize};
 
-/// 选择器组合子：标签/类/id/后代/子代 + 伪类状态门（hover/active/disabled）。
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ParsedSelector {
-    pub raw: String,
-    pub compound: Vec<Compound>, // 复合选择器链（后代/子代分隔）
-    pub specificity: Specificity,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Compound {
-    pub tag: Option<String>,
-    pub classes: Vec<String>,
-    pub id: Option<String>,
-    pub combinator: Combinator, // 本 compound 与前一个的关系
-    pub pseudo_hover: bool,
-    pub pseudo_active: bool,
-    pub pseudo_disabled: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub enum Combinator {
-    Descendant,
-    Child,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-pub struct Specificity(pub u32, pub u32, pub u32); // (id 数, class 数, tag 数)
+// 选择器数据模型（ParsedSelector/Compound/Combinator/Specificity）+ compound_matches_node
+// 定义在常驻模块 `style::dynamic`（bincode 序列化进 .pkg.bin，runtime 不依赖 parse feature）。
+// 本 parse-gated 模块只提供解析器函数（string → 这些结构）+ ElementTree 版匹配。
+pub use crate::style::dynamic::{
+    compound_matches_node, Combinator, Compound, ParsedSelector, Specificity,
+};
 
 /// 极简解析：按空格切 descendant，`>` 切 child；复合内 tag/.class/#id。
 pub fn parse_selector(raw: &str) -> Result<ParsedSelector, String> {
@@ -306,36 +284,6 @@ pub fn match_element<'a>(
     // specificity 降序，同级按出现顺序（i 升序）
     matched.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
     matched.into_iter().map(|(_, _, r)| r).collect()
-}
-
-use crate::scene::node::{Node, NodeKind};
-
-/// 运行时版 compound 匹配（消费 Node 而非 ElementData，运行时无 ElementTree）。
-/// 匹配 tag/classes/id（不含伪类状态——状态由 T6 match_element_with_state 门控）。
-/// id 属性存 Node.id_attr（`id="..."`）；Node.id 是 NodeId 索引身份，二者不同。
-pub fn compound_matches_node(c: &Compound, node: &Node) -> bool {
-    if let Some(t) = &c.tag {
-        let kind_tag = match &node.kind {
-            NodeKind::Container => "div",
-            NodeKind::Button => "button",
-            NodeKind::Image { .. } => "img",
-            NodeKind::Text { .. } => "span",
-        };
-        if kind_tag != t.as_str() {
-            return false;
-        }
-    }
-    if let Some(id) = &c.id {
-        if node.id_attr.as_deref() != Some(id.as_str()) {
-            return false;
-        }
-    }
-    for cls in &c.classes {
-        if !node.classes.iter().any(|nc| nc == cls) {
-            return false;
-        }
-    }
-    true
 }
 
 #[cfg(test)]

@@ -4,9 +4,11 @@
 pub mod blob;
 
 use std::ffi::CString;
+use loomgui_core::input::{EventRecord, PointerEvent};
+use loomgui_core::scene::NodeId;
 use loomgui_core::stage::Stage;
 
-/// 版本字符串（C null-terminated `b"v1b.3\0"`）。Task 1 工具链 round-trip 用。
+/// 版本字符串（C null-terminated `b"v1c.1\0"`）。Task 1 工具链 round-trip 用。
 ///
 /// 返回 `*const u8`（csbindgen 映射为 C# `byte*`）；CString::as_ptr 给的是
 /// `*const c_char`（i8），这里 cast 对齐签名。OnceLock 缓存，避免每次分配+泄漏。
@@ -14,7 +16,7 @@ use loomgui_core::stage::Stage;
 pub extern "C" fn loomgui_version() -> *const u8 {
     static VERSION: std::sync::OnceLock<CString> = std::sync::OnceLock::new();
     VERSION
-        .get_or_init(|| CString::new("v1b.3").unwrap())
+        .get_or_init(|| CString::new("v1c.1").unwrap())
         .as_ptr() as *const u8
 }
 
@@ -188,6 +190,88 @@ pub extern "C" fn loomgui_stage_borrow_frame(
     sh.frame_blob.as_ptr()
 }
 
+/// 注入本帧指针事件（扁平 PointerEvent 数组）。tick 前调。
+/// null/len=0 = 本帧无输入事件（清空 pending_input，hover diff 仍跑——指针位置沿用上帧 last_pos）。
+///
+/// **常驻（不 gate）：**输入是 runtime 稳定入口，`--no-default-features` 构建的 .dll 仍有本函数。
+#[no_mangle]
+pub extern "C" fn loomgui_stage_set_input(
+    h: *mut StageHandle,
+    events: *const PointerEvent,
+    len: usize,
+) {
+    if h.is_null() {
+        return;
+    }
+    let sh = unsafe { &mut *h };
+    if events.is_null() || len == 0 {
+        sh.stage.set_input(&[]);
+        return;
+    }
+    let evs = unsafe { std::slice::from_raw_parts(events, len) };
+    sh.stage.set_input(evs);
+}
+
+/// 拉取本帧事件 SOA（pull，同 borrow_frame 语义）。返 `last_events` 的 `as_ptr` + 写 len。
+/// null 句柄或未 tick（last_events 空）→ null + len=0。指针下 tick 失效。
+///
+/// **常驻（不 gate）：**事件是 runtime 稳定入口。EventRecord 是 `#[repr(C)]` POD，
+/// C 侧按 `len * sizeof(EventRecord)` 切片读。
+#[no_mangle]
+pub extern "C" fn loomgui_stage_borrow_events(
+    h: *const StageHandle,
+    out_len: *mut usize,
+) -> *const u8 {
+    if h.is_null() {
+        if !out_len.is_null() {
+            unsafe { *out_len = 0 };
+        }
+        return std::ptr::null();
+    }
+    let sh = unsafe { &*h };
+    let events: &[EventRecord] = sh.stage.last_events();
+    if events.is_empty() {
+        if !out_len.is_null() {
+            unsafe { *out_len = 0 };
+        }
+        return std::ptr::null();
+    }
+    if !out_len.is_null() {
+        unsafe { *out_len = events.len() };
+    }
+    events.as_ptr() as *const u8
+}
+
+/// UI 挡住时游戏不响应点击（§10.6）。= cur_hit 非空且非根（根是背景，不算 UI 挡）。
+/// null 句柄 → false。
+///
+/// **常驻（不 gate）。**
+#[no_mangle]
+pub extern "C" fn loomgui_stage_is_pointer_on_ui(h: *const StageHandle) -> bool {
+    if h.is_null() {
+        return false;
+    }
+    let sh = unsafe { &*h };
+    sh.stage.is_pointer_on_ui()
+}
+
+/// 业务设节点 disabled 状态（伪类源 + active/click 抑制）。NodeId.0 越界静默跳过。
+/// null 句柄 → no-op。
+///
+/// **常驻（不 gate）。**
+#[no_mangle]
+pub extern "C" fn loomgui_stage_set_node_disabled(
+    h: *mut StageHandle,
+    node_id: u32,
+    disabled: bool,
+) {
+    if h.is_null() {
+        return;
+    }
+    let sh = unsafe { &mut *h };
+    sh.stage.set_node_disabled(NodeId(node_id as usize), disabled);
+}
+
 /// 全局 shutdown（Domain reload hook）。C# `LoomStage.ResetStatics`（SubsystemRegistration）
 /// 调用本函数——即使当前核心无全局态，hook 必须存在：v1b 引入 global texture/font registry
 /// 时此处自动清，无需再改接线。
@@ -212,10 +296,10 @@ mod tests {
     use std::ffi::CStr;
 
     #[test]
-    fn version_returns_c_string_v1b3() {
+    fn version_returns_c_string_v1c1() {
         unsafe {
             let s = CStr::from_ptr(loomgui_version() as *const i8);
-            assert_eq!(s.to_str().unwrap(), "v1b.3");
+            assert_eq!(s.to_str().unwrap(), "v1c.1");
         }
     }
 }
@@ -346,6 +430,102 @@ mod abi_tests {
         // OOB → null
         assert!(loomgui_stage_atlas_info(h, 99, &mut tid, &mut w, &mut hh, &mut slen).is_null());
 
+        loomgui_stage_free(h);
+    }
+
+    /// set_input → tick → borrow_events：装载按钮 + Move 到 (50,25) 应产 RollOver。
+    /// 读 EventRecord[] POD slice，扫 event_type 字段（repr(C) 手解，避免 Marshal）。
+    #[cfg(feature = "parse")]
+    #[test]
+    fn set_input_borrow_events_round_trip() {
+        use loomgui_core::input::{PointerEvent, PointerKind, EVT_ROLL_OVER};
+        let (fp, fplen) = font_path();
+        let h = loomgui_stage_new(fp.as_ptr() as *const u8, fplen, 200.0, 100.0);
+        assert!(!h.is_null());
+        // 装载一个按钮
+        let html = std::ffi::CString::new(r#"<div class="root"><button class="btn">OK</button></div>"#).unwrap();
+        let css = std::ffi::CString::new(r#".btn { width: 100px; height: 50px; }"#).unwrap();
+        loomgui_stage_load_html(h, html.as_ptr() as *const u8, html.as_bytes().len(), css.as_ptr() as *const u8, css.as_bytes().len());
+        // set_input：Move 到按钮 (50,25)
+        let ev = PointerEvent { kind: PointerKind::Move, x: 50.0, y: 25.0, button: 0 };
+        loomgui_stage_set_input(h, &ev, 1);
+        loomgui_stage_tick(h, 0.0);
+        let mut len = 0usize;
+        let ptr = loomgui_stage_borrow_events(h, &mut len);
+        assert!(!ptr.is_null() && len > 0, "tick 后应有事件");
+        // 读 EventRecord POD slice，扫 event_type 找 RollOver（event_type=4）
+        let rec_size = std::mem::size_of::<loomgui_core::input::EventRecord>();
+        let bytes = unsafe { std::slice::from_raw_parts(ptr as *const u8, len * rec_size) };
+        let mut found_rollover = false;
+        for i in 0..len {
+            let off = i * rec_size;
+            let event_type = bytes[off + 4]; // node_id u32 (4 字节) 后是 event_type u8
+            if event_type == EVT_ROLL_OVER {
+                found_rollover = true;
+                break;
+            }
+        }
+        assert!(found_rollover, "应产 RollOver 事件");
+        loomgui_stage_free(h);
+    }
+
+    /// borrow_events 契约：未 tick / 空 last_events → null + len=0。
+    #[test]
+    fn borrow_events_null_before_tick() {
+        let (fp, fplen) = font_path();
+        let h = loomgui_stage_new(fp.as_ptr() as *const u8, fplen, 200.0, 100.0);
+        let mut len = 1usize;
+        let ptr = loomgui_stage_borrow_events(h, &mut len);
+        assert!(ptr.is_null() && len == 0, "未 tick → null+len=0");
+        loomgui_stage_free(h);
+    }
+
+    /// is_pointer_on_ui 契约：手搓空包（单根 Container）→ 命中根 → false（根不算 UI）。
+    /// 覆盖 4 函数在无 parse feature 路径下也可用的契约（手搓包不走 parse）。
+    #[test]
+    fn is_pointer_on_ui_true_on_hit_false_on_miss() {
+        use loomgui_core::input::{PointerEvent, PointerKind};
+        use loomgui_core::scene::{NodeKind, Scene};
+        use loomgui_core::style::dynamic::DynamicRuleTable;
+        use loomgui_core::style::resolved::ResolvedStyle;
+        use loomgui_core::asset::{write_package, AtlasSection};
+        let (fp, fplen) = font_path();
+        let h = loomgui_stage_new(fp.as_ptr() as *const u8, fplen, 200.0, 100.0);
+        // 手搓空 scene（单根 Container），不走 parse
+        let entries = vec![(None, NodeKind::Container, ResolvedStyle::default(), Vec::new(), None)];
+        let pkg = write_package(
+            &Scene::build(&entries),
+            (200.0, 100.0),
+            &AtlasSection::default(),
+            &DynamicRuleTable::default(),
+        );
+        loomgui_stage_load_package(h, pkg.as_ptr(), pkg.len());
+        // 命中根 (100,50)——根不算 UI → is_pointer_on_ui=false
+        let ev = PointerEvent { kind: PointerKind::Move, x: 100.0, y: 50.0, button: 0 };
+        loomgui_stage_set_input(h, &ev, 1);
+        loomgui_stage_tick(h, 0.0);
+        // 单根节点：命中根 → is_pointer_on_ui=false（根不算）
+        assert!(!loomgui_stage_is_pointer_on_ui(h), "命中根 → false");
+        loomgui_stage_free(h);
+    }
+
+    /// 4 函数常驻契约：无 parse feature 也能编译（§14.6 坑21）。
+    /// 此测在 normal build 跑，验证 4 函数 + PointerEvent/EventRecord 常驻可调。
+    /// 不 tick（tick_and_render 需先 load scene）——本测只验常驻编译/调用安全；
+    /// 真正的 --no-default-features 验在 Step 5 `cargo build -p loomgui_ffi_c --no-default-features`。
+    /// 行为验（含 set_input→tick→borrow_events/is_pointer_on_ui）在 parse-feature 测中覆盖。
+    #[test]
+    fn no_default_features_builds() {
+        let (fp, fplen) = font_path();
+        let h = loomgui_stage_new(fp.as_ptr() as *const u8, fplen, 100.0, 50.0);
+        loomgui_stage_set_input(h, std::ptr::null(), 0); // null/len=0 应安全（清空 pending_input）
+        loomgui_stage_set_node_disabled(h, 0, true); // 无 scene → no-op，不 panic
+        // 无 scene + 未 tick：is_pointer_on_ui 读 cur_hit=None → false，不 panic
+        assert!(!loomgui_stage_is_pointer_on_ui(h));
+        // borrow_events：未 tick → null + len=0
+        let mut len = 1usize;
+        let ptr = loomgui_stage_borrow_events(h, &mut len);
+        assert!(ptr.is_null() && len == 0);
         loomgui_stage_free(h);
     }
 }

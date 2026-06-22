@@ -2,13 +2,10 @@ use cssparser::{
     AtRuleParser, CowRcStr, DeclarationParser, ParseError, Parser, ParserInput, ParserState,
     QualifiedRuleParser, RuleBodyItemParser, RuleBodyParser, StyleSheetParser,
 };
-use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Declaration {
-    pub prop: String,
-    pub value: String,
-}
+// Declaration 数据类型常驻在 `style::dynamic`（序列化进 .pkg.bin，runtime 不依赖 parse）。
+// 本 parse-gated 模块重导出保持 `loomgui_core::parse::css::Declaration` 路径兼容。
+pub use crate::style::dynamic::Declaration;
 
 #[derive(Debug, Clone)]
 pub struct StyleSheet {
