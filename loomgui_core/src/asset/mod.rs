@@ -1,18 +1,23 @@
-//! 包格式（spec §5）：.pkg.bin v2。Rust-internal（packager 写、runtime 读，C# 不解析）。
+//! 包格式（spec §5）：.pkg.bin v3。
+//! Rust-internal（packager 写、runtime 读，C# 不解析）。
 //!
-//! 扁平布局：Header(28B) + StringTable + NodeBlock（DFS 先序）+ AtlasSection（v2 新增）。
+//! 扁平布局：Header(28B) + StringTable + NodeBlock（DFS 先序，含 classes/id）+
+//! AtlasSection + DynamicRuleSection（v3 新增，bincode 整个 DynamicRuleTable）。
 //! style 字段 = bincode(ResolvedStyle)。字符串表放 text content + image src +
-//! atlas filename + sprite src（统一 intern 去重，font_family 随 style blob）。
+//! atlas filename + sprite src + classes + id_attr（统一 intern 去重）。
 
+use crate::parse::css::StyleSheet;
+use crate::parse::selector::parse_selector;
 use crate::scene::{NodeKind, NodeId, Scene};
+use crate::style::dynamic::DynamicRuleTable;
 use crate::style::resolved::ResolvedStyle;
 
 pub mod texture; // v1b.2：纹理注册表（src→TexMeta）
 
 pub const PKG_MAGIC: u32 = 0x474B504C; // 磁盘字节(LE) "LPKG"（不与 frame blob "LOOM" 撞）
-pub const PKG_FORMAT_VERSION: u32 = 2; // v2：加 AtlasSection（v1=纯 scene）
-const MIN_VERSION: u32 = 2;
-const MAX_VERSION: u32 = 2;
+pub const PKG_FORMAT_VERSION: u32 = 3; // v3：+ DynamicRuleSection + NodeBlock classes/id_attr（v2=+AtlasSection，v1=纯 scene）
+const MIN_VERSION: u32 = 3;
+const MAX_VERSION: u32 = 3;
 const NULL_IDX: u16 = 0xFFFF;
 
 const KIND_CONTAINER: u8 = 0;
@@ -119,12 +124,42 @@ impl From<bincode::Error> for PkgError {
     }
 }
 
-/// 序列化 Scene → .pkg.bin bytes（spec §5；v2 = +AtlasSection 末段）。
+/// §5.5：从 StyleSheet 抽含 :hover/:active/:disabled 的规则 → DynamicRuleTable。
+/// 纯静态规则不进（已在 base_style 烤好）。判定：parse_selector 后任一 compound 含伪类标志。
+pub fn extract_dynamic_rules(sheet: &StyleSheet) -> DynamicRuleTable {
+    use crate::style::dynamic::DynamicRule;
+    let mut rules = Vec::new();
+    for rule in &sheet.rules {
+        let sel = match parse_selector(&rule.selector_text) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+        let has_pseudo = sel
+            .compound
+            .iter()
+            .any(|c| c.pseudo_hover || c.pseudo_active || c.pseudo_disabled);
+        if has_pseudo {
+            rules.push(DynamicRule {
+                selector: sel,
+                declarations: rule.declarations.clone(),
+            });
+        }
+    }
+    DynamicRuleTable { rules }
+}
+
+/// 序列化 Scene → .pkg.bin bytes（spec §5；v3 = +NodeBlock classes/id_attr + 末段 DynamicRuleSection）。
 ///
-/// 布局：Header(28B) + StringTable + NodeBlock + AtlasSection。
-/// StringTable 收 text content + image src + atlas filename + sprite src（统一 intern
-/// 去重，filename 与 image src 复用同一 stringTable 与 idx_of map）。
-pub fn write_package(scene: &Scene, root_size: (f32, f32), atlas: &AtlasSection) -> Vec<u8> {
+/// 布局：Header(28B) + StringTable + NodeBlock + AtlasSection + DynamicRuleSection。
+/// StringTable 收 text content + image src + atlas filename + sprite src +
+/// classes + id_attr（统一 intern 去重，filename 与 image src 共用同一 stringTable 与 idx_of map）。
+/// DynamicRuleSection = bincode(dynamic)（ParsedSelector + Declaration 已 Serialize/Deserialize）。
+pub fn write_package(
+    scene: &Scene,
+    root_size: (f32, f32),
+    atlas: &AtlasSection,
+    dynamic: &DynamicRuleTable,
+) -> Vec<u8> {
     // 1. 收 stringTable（text content + image src + atlas filename + sprite src），
     //    首次出现序建索引。filename 也走同一 stringTable（与 image src 共用 intern）。
     //    **所有 intern 必须在写 header(string_count) 之前完成**——header 的 stringCount
@@ -163,6 +198,25 @@ pub fn write_package(scene: &Scene, root_size: (f32, f32), atlas: &AtlasSection)
         sprite_src_idx.push(intern(&s.src, &mut strings, &mut idx_of));
     }
 
+    // 预 intern 每节点 classes + id_attr（v3：NodeBlock 新增段，与 NodeBlock/atlas
+    // 字符串共用同一 stringTable）。classes 每元素 intern；id_attr 若 None → NULL_IDX。
+    let mut node_class_idx: Vec<Vec<u16>> = Vec::with_capacity(scene.nodes.len());
+    let mut node_id_idx: Vec<u16> = Vec::with_capacity(scene.nodes.len());
+    for n in &scene.nodes {
+        let cls: Vec<u16> = n
+            .classes
+            .iter()
+            .map(|c| intern(c, &mut strings, &mut idx_of))
+            .collect();
+        node_class_idx.push(cls);
+        let id_idx = n
+            .id_attr
+            .as_ref()
+            .map(|id| intern(id, &mut strings, &mut idx_of))
+            .unwrap_or(NULL_IDX);
+        node_id_idx.push(id_idx);
+    }
+
     let mut out: Vec<u8> = Vec::new();
     // Header (28B)
     out.extend_from_slice(&PKG_MAGIC.to_le_bytes());
@@ -179,13 +233,19 @@ pub fn write_package(scene: &Scene, root_size: (f32, f32), atlas: &AtlasSection)
         out.extend_from_slice(bytes);
     }
     // NodeBlock
-    for (parent_idx, kind_tag, style_blob, text_idx, src_idx) in &nodes {
+    for (node_i, (parent_idx, kind_tag, style_blob, text_idx, src_idx)) in nodes.iter().enumerate() {
         out.extend_from_slice(&parent_idx.to_le_bytes());
         out.push(*kind_tag);
         out.extend_from_slice(&(style_blob.len() as u32).to_le_bytes());
         out.extend_from_slice(style_blob);
         out.extend_from_slice(&text_idx.to_le_bytes());
         out.extend_from_slice(&src_idx.to_le_bytes());
+        // v3：classes + id_attr（每节点）
+        out.extend_from_slice(&(node_class_idx[node_i].len() as u16).to_le_bytes());
+        for &cidx in &node_class_idx[node_i] {
+            out.extend_from_slice(&cidx.to_le_bytes());
+        }
+        out.extend_from_slice(&node_id_idx[node_i].to_le_bytes());
     }
     // —— AtlasSection（v2 新增，NodeBlock 之后）——
     // atlas_count + 每 atlas{filename_idx,u16; w,u32; h,u32}
@@ -204,11 +264,17 @@ pub fn write_package(scene: &Scene, root_size: (f32, f32), atlas: &AtlasSection)
         out.extend_from_slice(&s.w.to_le_bytes());
         out.extend_from_slice(&s.h.to_le_bytes());
     }
+    // —— DynamicRuleSection（v3 新增，AtlasSection 之后）——
+    // bincode 整个 DynamicRuleTable（含 ParsedSelector + Declarations，均已 Serialize/Deserialize）。
+    let dynamic_blob = bincode::serialize(dynamic).expect("DynamicRuleTable serializable");
+    out.extend_from_slice(&(dynamic_blob.len() as u32).to_le_bytes());
+    out.extend_from_slice(&dynamic_blob);
     out
 }
 
 /// 反序列化 .pkg.bin → (Scene, root_size, AtlasSection)（spec §5 + §6 版本协商）。
-/// v2：NodeBlock 之后追加 AtlasSection。
+/// v3：NodeBlock 含 classes/id_attr；末段 DynamicRuleSection 填 Scene.dynamic_rules。
+/// 返回元组不变（dynamic 填进 Scene，不外露）。
 pub fn read_package(bytes: &[u8]) -> Result<(Scene, (f32, f32), AtlasSection), PkgError> {
     let mut r = Reader::new(bytes);
     // Header
@@ -244,6 +310,19 @@ pub fn read_package(bytes: &[u8]) -> Result<(Scene, (f32, f32), AtlasSection), P
         let style: ResolvedStyle = bincode::deserialize(r.take(style_len, "style_blob")?)?;
         let text_idx = r.u16("text_idx")?;
         let src_idx = r.u16("src_idx")?;
+        // v3：classes + id_attr
+        let class_count = r.u16("class_count")? as usize;
+        let mut classes: Vec<String> = Vec::with_capacity(class_count);
+        for _ in 0..class_count {
+            let cidx = r.u16("class_idx")?;
+            classes.push(string_at(&strings, cidx)?);
+        }
+        let id_idx = r.u16("id_idx")?;
+        let id_attr = if id_idx == NULL_IDX {
+            None
+        } else {
+            Some(string_at(&strings, id_idx)?)
+        };
         let parent = if pidx < 0 { None } else { Some(pidx as usize) };
         let kind = match kind_tag {
             KIND_CONTAINER => NodeKind::Container,
@@ -256,7 +335,7 @@ pub fn read_package(bytes: &[u8]) -> Result<(Scene, (f32, f32), AtlasSection), P
             },
             other => return Err(PkgError::BadKind(other)),
         };
-        entries.push((parent, kind, style, Vec::new(), None));
+        entries.push((parent, kind, style, classes, id_attr));
     }
     // —— AtlasSection（v2）——
     let atlas_count = r.u32("atlas_count")? as usize;
@@ -287,7 +366,11 @@ pub fn read_package(bytes: &[u8]) -> Result<(Scene, (f32, f32), AtlasSection), P
             h,
         });
     }
-    let scene = Scene::build(&entries);
+    // —— DynamicRuleSection（v3）——
+    let dynamic_len = r.u32("dynamic_len")? as usize;
+    let dynamic: DynamicRuleTable = bincode::deserialize(r.take(dynamic_len, "dynamic_blob")?)?;
+    let mut scene = Scene::build(&entries);
+    scene.dynamic_rules = dynamic;
     Ok((scene, (root_w, root_h), AtlasSection { atlases, sprites }))
 }
 
@@ -400,7 +483,7 @@ mod tests {
         ];
         let scene = Scene::build(&entries);
 
-        let bytes = write_package(&scene, (1080.0, 1920.0), &AtlasSection::default());
+        let bytes = write_package(&scene, (1080.0, 1920.0), &AtlasSection::default(), &crate::style::dynamic::DynamicRuleTable::default());
         let (scene2, rs, _atlas) = read_package(&bytes).expect("read ok");
 
         assert_eq!(rs, (1080.0, 1920.0));
@@ -433,15 +516,15 @@ mod tests {
 
     #[test]
     fn read_rejects_unsupported_version() {
-        // 借 round-trip 测的合法包（v2），把 version 字段（offset 4）改成 3 / 1。
-        // MIN_VERSION=MAX_VERSION=2：v1 → TooOld，v3 → TooNew。
+        // 借 round-trip 测的合法包（v3），把 version 字段（offset 4）改成 4 / 2。
+        // MIN_VERSION=MAX_VERSION=3：v2 → TooOld，v4 → TooNew。
         let entries: Vec<(Option<usize>, NodeKind, ResolvedStyle, Vec<String>, Option<String>)> =
             vec![(None, NodeKind::Container, ResolvedStyle::default(), Vec::new(), None)];
-        let mut bytes = write_package(&Scene::build(&entries), (100.0, 100.0), &AtlasSection::default());
-        bytes[4..8].copy_from_slice(&3u32.to_le_bytes()); // version=3 → too new
-        assert!(matches!(read_package(&bytes), Err(PkgError::TooNew(3))));
-        bytes[4..8].copy_from_slice(&1u32.to_le_bytes()); // version=1 → too old
-        assert!(matches!(read_package(&bytes), Err(PkgError::TooOld(1))));
+        let mut bytes = write_package(&Scene::build(&entries), (100.0, 100.0), &AtlasSection::default(), &crate::style::dynamic::DynamicRuleTable::default());
+        bytes[4..8].copy_from_slice(&4u32.to_le_bytes()); // version=4 → too new
+        assert!(matches!(read_package(&bytes), Err(PkgError::TooNew(4))));
+        bytes[4..8].copy_from_slice(&2u32.to_le_bytes()); // version=2 → too old（v3 起拒 v2）
+        assert!(matches!(read_package(&bytes), Err(PkgError::TooOld(2))));
     }
 
     #[test]
@@ -458,7 +541,7 @@ mod tests {
                 AtlasSprite { src: "y.png".into(), x: 64, y: 0, w: 100, h: 200 },
             ],
         };
-        let bytes = write_package(&scene, (10.0, 10.0), &atlas);
+        let bytes = write_package(&scene, (10.0, 10.0), &atlas, &crate::style::dynamic::DynamicRuleTable::default());
         let (_s, _rs, a2) = read_package(&bytes).unwrap();
         assert_eq!(a2, atlas);
     }
@@ -495,6 +578,111 @@ mod tests {
     }
 
     #[test]
+    fn pkg_v3_round_trip_preserves_dynamic_rules() {
+        use crate::parse::css::Declaration;
+        use crate::parse::selector::parse_selector;
+        use crate::style::dynamic::{DynamicRule, DynamicRuleTable};
+        use crate::style::resolved::ResolvedStyle;
+        let entries = vec![(
+            None,
+            NodeKind::Container,
+            ResolvedStyle::default(),
+            Vec::new(),
+            None,
+        )];
+        let scene = Scene::build(&entries);
+        let dynamic = DynamicRuleTable {
+            rules: vec![DynamicRule {
+                selector: parse_selector(".btn:hover").unwrap(),
+                declarations: vec![Declaration {
+                    prop: "background-color".to_string(),
+                    value: "#0000ff".to_string(),
+                }],
+            }],
+        };
+        let pkg = write_package(
+            &scene,
+            (100.0, 50.0),
+            &AtlasSection::default(),
+            &dynamic,
+        );
+        let (scene2, _rs, _atlas) = read_package(&pkg).unwrap();
+        assert_eq!(scene2.dynamic_rules.rules.len(), 1);
+        assert!(scene2.dynamic_rules.rules[0].selector.compound[0].pseudo_hover);
+        assert_eq!(
+            scene2.dynamic_rules.rules[0].declarations[0].prop,
+            "background-color"
+        );
+    }
+
+    #[test]
+    fn pkg_v3_rejects_v2() {
+        // 手搓 v2 包（version=2）——应被 MIN=3 拒
+        let mut pkg = Vec::new();
+        pkg.extend_from_slice(&PKG_MAGIC.to_le_bytes());
+        pkg.extend_from_slice(&2u32.to_le_bytes()); // version=2
+        pkg.extend_from_slice(&0u32.to_le_bytes());
+        pkg.extend_from_slice(&0u32.to_le_bytes());
+        pkg.extend_from_slice(&0u32.to_le_bytes());
+        pkg.extend_from_slice(&100.0f32.to_le_bytes());
+        pkg.extend_from_slice(&50.0f32.to_le_bytes());
+        match read_package(&pkg) {
+            Err(PkgError::TooOld(2)) => (), // 预期
+            other => panic!("v2 应被拒，got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn pkg_v3_empty_dynamic_rules() {
+        use crate::style::dynamic::DynamicRuleTable;
+        use crate::style::resolved::ResolvedStyle;
+        let entries = vec![(
+            None,
+            NodeKind::Container,
+            ResolvedStyle::default(),
+            Vec::new(),
+            None,
+        )];
+        let scene = Scene::build(&entries);
+        let pkg = write_package(
+            &scene,
+            (100.0, 50.0),
+            &AtlasSection::default(),
+            &DynamicRuleTable::default(),
+        );
+        let (scene2, _, _) = read_package(&pkg).unwrap();
+        assert!(
+            scene2.dynamic_rules.rules.is_empty(),
+            "空 dynamic → rules 空"
+        );
+    }
+
+    #[test]
+    fn pkg_v3_nodeblock_preserves_classes_and_id_attr() {
+        use crate::style::resolved::ResolvedStyle;
+        let entries = vec![(
+            None,
+            NodeKind::Container,
+            ResolvedStyle::default(),
+            vec!["a".to_string(), "b".to_string()],
+            Some("x".to_string()),
+        )];
+        let scene = Scene::build(&entries);
+        let pkg = write_package(
+            &scene,
+            (100.0, 50.0),
+            &AtlasSection::default(),
+            &crate::style::dynamic::DynamicRuleTable::default(),
+        );
+        let (scene2, _, _) = read_package(&pkg).unwrap();
+        assert_eq!(
+            scene2.nodes[0].classes,
+            vec!["a".to_string(), "b".to_string()]
+        );
+        assert_eq!(scene2.nodes[0].id_attr.as_deref(), Some("x"));
+    }
+
+    #[test]
     fn stringtable_dedups_repeated_strings() {
         // 两个 Text 同 content → stringTable 只一条，textIdx 相同。
         let entries: Vec<(Option<usize>, NodeKind, ResolvedStyle, Vec<String>, Option<String>)> = vec![
@@ -518,7 +706,7 @@ mod tests {
                 None,
             ),
         ];
-        let bytes = write_package(&Scene::build(&entries), (10.0, 10.0), &AtlasSection::default());
+        let bytes = write_package(&Scene::build(&entries), (10.0, 10.0), &AtlasSection::default(), &crate::style::dynamic::DynamicRuleTable::default());
         // stringCount（offset 16）应为 1（"dup" 去重）
         let sc = u32::from_le_bytes(bytes[16..20].try_into().unwrap());
         assert_eq!(sc, 1, "重复 content 应去重为 1 条");

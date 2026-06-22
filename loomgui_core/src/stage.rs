@@ -108,7 +108,7 @@ mod tests {
         // 不走 build_registry 路径，故传空 atlas section；包路径 load_package 时 build_registry
         // 建空 registry，再手工 insert 覆盖为真实 tex_id，与 inline 路径对齐）
         let scene = s_inline.scene.as_ref().unwrap();
-        let pkg = crate::asset::write_package(scene, (200.0, 100.0), &crate::asset::AtlasSection::default());
+        let pkg = crate::asset::write_package(scene, (200.0, 100.0), &crate::asset::AtlasSection::default(), &crate::style::dynamic::DynamicRuleTable::default());
 
         // 包路径（新 Stage，同字体，同纹理注册）
         let mut s_pkg = Stage::new(font_path, (200.0, 100.0)).unwrap();

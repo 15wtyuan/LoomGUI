@@ -35,6 +35,7 @@ pub fn pack(
 ) -> Result<PackedPackage, String> {
     let tree = loomgui_core::parse::dom::parse_html(html).map_err(|e| format!("parse_html: {e}"))?;
     let sheet = loomgui_core::parse::css::parse_css(css).map_err(|e| format!("parse_css: {e}"))?;
+    let dynamic_rules = loomgui_core::asset::extract_dynamic_rules(&sheet);
     let styles = loomgui_core::style::cascade::resolve_styles(&tree, &sheet);
     let scene = loomgui_core::scene::build_scene(&tree, &styles);
 
@@ -51,7 +52,7 @@ pub fn pack(
 
     // 2. 无图 → 空 atlas。
     if srcs.is_empty() {
-        let pkg = loomgui_core::asset::write_package(&scene, root_size, &AtlasSection::default());
+        let pkg = loomgui_core::asset::write_package(&scene, root_size, &AtlasSection::default(), &dynamic_rules);
         return Ok(PackedPackage {
             pkg_bytes: pkg,
             atlas_png: Vec::new(),
@@ -120,7 +121,7 @@ pub fn pack(
             })
             .collect(),
     };
-    let pkg = loomgui_core::asset::write_package(&scene, root_size, &atlas_section);
+    let pkg = loomgui_core::asset::write_package(&scene, root_size, &atlas_section, &dynamic_rules);
 
     Ok(PackedPackage {
         pkg_bytes: pkg,

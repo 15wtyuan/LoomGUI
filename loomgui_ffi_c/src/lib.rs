@@ -280,7 +280,7 @@ mod abi_tests {
             (None, NodeKind::Container, ResolvedStyle::default(), Vec::new(), None),
             (Some(0), NodeKind::Text { content: "hi".into() }, ResolvedStyle::default(), Vec::new(), None),
         ];
-        let pkg = write_package(&Scene::build(&entries), (100.0, 50.0), &loomgui_core::asset::AtlasSection::default());
+        let pkg = write_package(&Scene::build(&entries), (100.0, 50.0), &loomgui_core::asset::AtlasSection::default(), &loomgui_core::style::dynamic::DynamicRuleTable::default());
 
         let h = loomgui_stage_new(fp.as_ptr() as *const u8, fplen, 100.0, 50.0);
         assert!(!h.is_null());
@@ -329,7 +329,7 @@ mod abi_tests {
                 AtlasSprite { src: "b.png".into(), x: 64, y: 0, w: 100, h: 200 },
             ],
         };
-        let pkg = write_package(&Scene::build(&entries), (100.0, 50.0), &atlas);
+        let pkg = write_package(&Scene::build(&entries), (100.0, 50.0), &atlas, &loomgui_core::style::dynamic::DynamicRuleTable::default());
 
         let h = loomgui_stage_new(fp.as_ptr() as *const u8, fplen, 100.0, 50.0);
         assert!(!h.is_null());
