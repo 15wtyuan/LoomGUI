@@ -270,6 +270,11 @@ pub fn apply_decl(style: &mut ResolvedStyle, prop: &str, value: &str) -> bool {
             style.order = value.trim().parse::<i32>().unwrap_or(0);
             true
         }
+        "pointer-events" => {
+            // v1c.1：auto/默认=true（可命中），none=false（跳过自身，继续测子——CSS 语义）
+            style.touchable = value.trim() != "none";
+            true
+        }
         _ => false, // 装饰属性静默忽略（§4.1）
     }
 }
@@ -340,5 +345,19 @@ mod tests {
         let mut s3 = ResolvedStyle::default();
         assert!(apply_decl(&mut s3, "order", "-1"));
         assert_eq!(s3.order, -1);
+    }
+
+    #[test]
+    fn pointer_events_none_sets_touchable_false() {
+        let mut s = ResolvedStyle::default();
+        assert!(apply_decl(&mut s, "pointer-events", "none"));
+        assert!(!s.touchable, "pointer-events:none → touchable=false");
+    }
+
+    #[test]
+    fn pointer_events_auto_keeps_touchable_true() {
+        let mut s = ResolvedStyle::default();
+        assert!(apply_decl(&mut s, "pointer-events", "auto"));
+        assert!(s.touchable, "pointer-events:auto → touchable=true");
     }
 }

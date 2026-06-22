@@ -23,6 +23,8 @@ pub struct ResolvedStyle {
     /// flex 顺序（CSS `order`）。taffy 0.5 Style 无此字段，存在这里由
     /// Task 6 layout 在 flex 排序前消费。默认 0 = DOM 顺序。
     pub order: i32,
+    /// pointer-events:auto=true / none=false（v1c.1 命中门控）。默认 true。
+    pub touchable: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -56,6 +58,7 @@ impl Default for ResolvedStyle {
             letter_spacing: 0.0,
             white_space_nowrap: false,
             order: 0,
+            touchable: true,
         }
     }
 }
@@ -98,5 +101,20 @@ mod tests {
         let back: ResolvedStyle = bincode::deserialize(&bytes).expect("deserialize");
 
         assert_eq!(back, s, "全字段经 bincode round-trip 应相等");
+    }
+
+    #[test]
+    fn default_touchable_is_true() {
+        assert!(ResolvedStyle::default().touchable, "touchable 默认 true（pointer-events:auto）");
+    }
+
+    #[test]
+    fn touchable_bincode_roundtrip() {
+        let mut s = ResolvedStyle::default();
+        s.touchable = false;
+        let bytes = bincode::serialize(&s).unwrap();
+        let back: ResolvedStyle = bincode::deserialize(&bytes).unwrap();
+        assert_eq!(back.touchable, false);
+        assert_eq!(back, s, "加字段后全字段 round-trip 仍相等");
     }
 }
