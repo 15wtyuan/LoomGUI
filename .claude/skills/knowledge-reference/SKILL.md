@@ -147,6 +147,14 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 - **blob v3 不变**：atlas 子区 UV 是 mesh_arena per-vertex uv 的不同值（非格式改）。UV 方向沿用 v1b.2 convention（packer region y-down px → core uv → root 一次性 y-flip），PlayMode 验方向正。
 - **defer（v1b.5+）**：rotation（UV 修正 §8.2 公式 `new_y=yMin+uv.x-xMin; new_x=xMin+yMax-uv.y`）、trim（originalSize/offset）、多图集（sprite 带 atlas_idx）、refcount/on_release（§12.4，atlas 随 Stage）。~~mesh 合并~~（v1b.4 ✅）。
 
+### 2.15 事件/命中/输入层（v1c.1，§10）
+- **input.rs**（常驻）：`PointerEvent`/`EventRecord`（#[repr(C)] FFI POD）+ `PointerState` 单指针状态机（`process` 产 Down/Up/Move/Click/RollOver/RollOut；click ~10px 阈值 §10.3）+ **hover/active 祖先链**：`set_hovered_chain`/`set_active_chain` 沿 parent 链设 target+所有祖先（对齐 fgui rollOverChain + CSS :hover「后代上→祖也 hover」，坑 29）。
+- **hit.rs**：`hit_test(scene, point) -> Option<NodeId>` 逆等效绘制序（读 `node.style.order` 降序 + `Reverse` 同 order 后绘制者顶层），`layout_rect` AABB + clip 子树门控 + pointer-events:none 跳自身测子 + disabled 仍命中（active/click 在状态机层抑制，§4.4 偏离 fgui 支持 :disabled hover 反馈）。
+- **style/dynamic.rs**（常驻；selector 类型从 parse 迁此修 parse-gate，坑 28 同源）：`DynamicRuleTable`（含伪类规则，打包器 `extract_dynamic_rules` 抽）+ `match_element_with_state`（后代链 + 每 compound 伪类状态门）+ `rematch_pseudo_classes`（全量节点重 cascade 仅动态规则子集，base_style 重起，§5.3 不缓存；invalidation set 留 v1e 撞墙）。
+- **Stage tick 管线**（§15）：solve→process(hit+状态diff)→cur_hit→rematch→render。**solve 必须在 hit 前**（§15「命中用本帧刚 solve 布局」；brief §4.5 写 process→rematch→solve 是笔误，T8 修前移 solve）。事件回调改布局延下帧（防反馈环）；rematch 改 layout 也延下帧（sample 伪类全视觉字段不受影响）。
+- **FFI**（pull 模式绕 §14.2 IL2CPP 回调坑）：`set_input`/`borrow_events`/`is_pointer_on_ui`/`set_node_disabled` 全常驻不 gate。listener 在 C# 侧（对齐 fgui），核心只算命中+产事件+伪类重匹配。
+- **Scene/Node 加**：`base_style`(不变)/`classes`/`id_attr`(CSS id，非 `Node.id: NodeId` 占用)/`touchable`/`hovered`/`active`/`disabled` + `dynamic_rules`。pkg.bin v2→v3 加 DynamicRuleSection（bincode DynamicRuleTable）+ NodeBlock classes/id_attr 段。
+
 ## 3. 依赖 API 适配踩坑（v0 最大教训）
 
 > **plan/brief 写的 API 草稿常与实际 crate 版本不符**。遇编译错按本节对照，**勿硬改依赖版本**，按 crate 实际源码（`~/.cargo/registry/src/<crate>-<ver>/src/`）调。
@@ -214,6 +222,11 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 - 返回 `usize` = **byte offset**（非 char index），升序；offset 语义 = 可在该 byte offset 处断（前段 `content[..offset]`，后段 `content[offset..]`）。unicode-linebreak 在空白**后**断 → segment 自含尾空白 → 行首无多余空格。
 - 用法（layout.rs:194+）：`linebreaks(content).collect()` → 按 offset 切 segments `Vec<(&str, BreakOpportunity)>` → greedy fill（累加 seg 宽超 max_w 换行，Mandatory 强制结束行）。
 - 教训：brief/草稿写 `Vec<(usize, BreakType)>` 实际是 `impl Iterator`+`BreakOpportunity`（坑 1/2/8 同源）→ 实现 RED 阶段验 `~/.cargo/registry/src/<unicode-linebreak>-<ver>/src/`。
+
+### 3.10 Unity Input System 1.19（LoomInputCollector.cs，v1c.1）
+- **新 API**：`Mouse.current.position.ReadValue()`（左下原点 screen 像素，同旧 `Input.mousePosition` 语义）/ `Mouse.current.leftButton.wasPressedThisFrame`·`wasReleasedThisFrame`（vs 旧 `Input.GetMouseButtonDown/Up`）。
+- **双路径**：`#if ENABLE_INPUT_SYSTEM`（Player Settings Active Input Handling=New/Both 定义此宏）走新 API，else 旧 `UnityEngine.Input`。asmdef references 加 `"Unity.InputSystem"`（非 `UnityEngine.InputSystemModule`——那个名错编译失败）。
+- 教训：plan 选旧 Input 但工程切了 Input System package → 运行时 `InvalidOperationException`（坑 28）。Unity Input System 是 package（assembly `Unity.InputSystem`），非UnityEngine 内置。
 
 ## 4. AI 可预测性核心约束（首要准则，勿违背）
 
@@ -392,6 +405,24 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 **解决**（defer post-merge，M3）：mandatory flush 前 `cur.trim_end_matches(|c| c=='\n'||c=='\r')` + 回归测断行 glyph 数。**当前不阻塞**：v1b.5 sample 无 `\n`；Unity `TextRasterizer.cs:67` `GetCharacterInfo('\n')`=false→continue 静默跳过幽灵字形，**无视觉伪影**（Rust 侧冗余，渲染干净）。
 **教训**：断行产出喂 glyph gen 前须净化控制符；但后端 `GetCharacterInfo` false→continue 是天然兜底（坑 14 codepoint 路径副产物）。
 
+### 坑 28：Unity 新旧输入系统不匹配 → InvalidOperationException（v1c.1 PlayMode）
+**症状**：PlayMode 每帧 `InvalidOperationException: You are trying to read Input using UnityEngine.Input class, but you have switched active input handling to Input System package`。
+**根因**：plan §7 选旧 `UnityEngine.Input`（桌面 Mono 最简），但工程装了 Input System package 1.19 且 Player Settings Active Input Handling≠Old → 旧 API 运行时禁用。
+**解决**：`LoomInputCollector` 双路径 `#if ENABLE_INPUT_SYSTEM`（`Mouse.current` API）+ asmdef 加 `"Unity.InputSystem"` reference + Player Settings 改 Both/New（§3.10）。
+**教训**：Unity 输入系统是工程级配置，plan 选型须先查工程 `ProjectSettings.asset activeInputHandler` + manifest 是否装 InputSystem package；默认走双路径兼容最稳。
+
+### 坑 29：hover/active 只设命中点自身 → 文字子挡父 hover（v1c.1 PlayMode）
+**症状**：hover 按钮的**文字区（上半段）不变蓝**，下半段（非文字）变蓝；click 文字区也无响应。
+**根因**：v1c.1 `hover_diff` 只设 `cur_hit.hovered=true`（单点），父不因子孙 hover 而 hover。但 CSS `:hover` 语义是「鼠标在元素**或后代**上」+ fgui `HandleRollOver` 维护 `rollOverChain` 沿祖先链（`element=element.parent`）给 target+所有祖先派 RollOver/Out。命中 Text 子 → 只 Text.hovered，btn.hovered=false → `.btn:hover` 不匹配。
+**解决**：`set_hovered_chain`/`set_active_chain` 沿 parent 链设 target+所有祖先 hovered/active；事件派发仍单点（v1c.1 无冒泡，v1c.2 加 BubbleEvent）。
+**教训**：伪类状态须沿祖先链（对齐 fgui rollOverChain + CSS 祖先语义），单点设导致子孙挡父；「子节点挡父 hover/click」是 UI 框架经典坑，对照 fgui rollOverChain 设计。
+
+### 坑 30：自动 Text 子节点不消费 StyleSheet（v1c.1 defer 根因 a）
+**症状**：`span{pointer-events:none}` 写进 CSS，但 `<div>文字</div>` 自动建的 Text 子 `touchable` 仍 true（CSS 没匹配到它）。
+**根因**：`build_scene` 给 Container 裸文本自动建的 Text 子**不是 DOM 元素**——`resolve_styles` 跑在 build_scene 前只算 DOM 元素，自动 Text 子拿不到任何 CSS 规则。只有显式 `<span>` 走 DOM resolve 才吃到 CSS。
+**解决**（defer v1c.x）：修坑 29（hover 祖先链）后影响降级——文字挡命中但父也 hover，故不需 pointer-events 穿透。根治须 build_scene 后给自动 Text 子补 resolve（架构改），或框架默认 Text `touchable=false`。v1c.1 sample 用显式 `<span>` 绕（修坑 29 后已回归裸文本）。
+**教训**：自动建的节点（非 DOM 元素）不消费 StyleSheet——CSS 规则只作用于 parse 期 DOM 元素；给自动子样式化须显式标签或框架默认。
+
 ## 6. 调试/验证技巧
 
 - **★ 实现 v1+ 后端/渲染/对象模型前，先参考 `temp/FairyGUI-unity/` 源码**（对照机制、避免走歪——本 session 因没先看 fgui 的 sortingOrder/rect-mask/MaterialManager，初版设计走了弯路：误用 z 排序、误以为 rect mask 要独立 GO、把绘制序想复杂）。
@@ -404,6 +435,8 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 - 改 `ResolvedStyle` 默认/映射后，跑 layout + snapshot 测试看布局变化。
 - taffy 布局调试：看 `Node.layout_rect`（solve 回写的绝对坐标）。
 - 查 crate 实际 API：`~/.cargo/registry/src/<crate>-<ver>/src/`。
+- **PlayMode 命中诊断**（v1c.1）：Unity 侧加 diag log——`LoomInputCollector.Collect` Down 时 log `design=(dx,dy)` + `LoomStage.LateUpdate` log `mouse/screen/evLen/onUI`。core 侧独立验：写临时 `examples/dump_xxx.rs` 跑 `Stage::tick_and_render` 后 `hit_test(scene, design_pt)`。**core 命中但 PlayMode onUI=false → 坐标映射或 set_input 传输问题**（如输入系统不匹配坑 28）；**core 也不命中 → AABB/坐标换算**。例：坑 29 诊断时 core `hit_test(270,46)→Some(btn1)` 但 PlayMode onUI=false，定位到 Collect 未被调（LoomInputCollector 组件没挂 GO）。
+- **命中 y 偏移诊断**（v1c.1）：「按钮下半段响应上半段不响应」= Text 子节点 AABB 盖父上半段（`<div>文字</div>` 自动 Text 子 `layout_rect` 与父重叠上半）→ 逆等效序命中 Text 而非父。dump 节点 AABB 确认子是否盖父 + 对照坑 29（hover 祖先链）根治。
 - Rust→Unity 闭环：改 Rust 后 `cargo build -p loomgui_ffi_c --release` → 关 Unity → `cp target/release/loomgui_ffi_c.dll loomgui_unity/Assets/Plugins/LoomGUI/`。
 - Unity 验证：Test Runner EditMode（`Window→General→Test Runner`）；PlayMode 看 Game 视图渲染；PlayMode 前确认 `.dll` 是最新版。
 - 跨语言 round-trip：Rust `build_blob` ↔ C# `FrameBlob` 靠手搓 blob byte[] 的 EditMode 测互验（blob 布局是 Rust↔C# 契约，两端须字节级一致；改列/偏移必同步）。**手搓多节点 fixture 必 SOA 列优先**（坑 12，单节点掩盖 AoS 错）。
@@ -470,9 +503,13 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 
 **v1b.5 defer**：font fallback 链、多 font-family、per-glyph font_id、TextLayout runs 三表投 blob、emoji/组合符号 shaping/RTL、kinsoku 标点禁则、measure 缓存、line-height/baseline 校准、Font `Box::leak` 缓存化（v1e）、M3 mandatory `\n` 净化（post-merge follow-up，Unity GetCharacterInfo 静默跳过故无视觉伪影）。
 
+**v1c.1 ✅ 完成（merged main @ 44e715c）**：事件/命中/输入最小交互闭环——`input.rs`（PointerEvent/EventRecord + PointerState 单指针状态机 + hover/active **祖先链**）+ `hit.rs`（逆等效绘制序命中，layout_rect AABB+clip+pointer-events+disabled 仍命中）+ `style/dynamic.rs`（伪类重匹配，全量重 cascade §5.3；selector 类型从 parse 迁此修 parse-gate）+ pkg.bin v2→v3（DynamicRuleSection bincode + NodeBlock classes/id_attr）+ FFI 4 函数（pull 模式绕 IL2CPP 回调）+ Unity `LoomInputCollector`/`LoomEventHandler`（listener 在 C#）。命中验收 #3（hover/active 反馈）/#5（is_pointer_on_ui）。spec `docs/superpowers/specs/2026-06-21-v1c.1-event-hit-input-design.md`、plan `docs/superpowers/plans/2026-06-21-v1c.1-event-hit-input.md`、progress `.superpowers/sdd/progress.md`。**PlayMode 验收修 3 真实坑**：Unity 新旧输入系统不匹配（坑 28，双路径 `#if ENABLE_INPUT_SYSTEM`）、hover/active 只设命中点无祖先链（坑 29，对齐 fgui rollOverChain 修）、自动 Text 子不消费 StyleSheet（坑 30，defer 根因 a）。subagent-driven 11 task 全 Approved，3 次 API 限流中断无质量损失（T3 半成品 discard 重派，T9/T11 产出完整只重派 review）。`id_attr` 偏离（`Node.id: NodeId` 占用，合理）。
+
+**v1c.1 defer**：根因 a（自动 Text 子消费 StyleSheet，架构改，修坑 29 后降级）、事件冒泡 BubbleEvent（v1c.2）、多触摸 capture（v1c.3）、invalidation set 伪类重匹配优化（v1e 撞墙）、transform world_to_local 命中（v1d）、滚轮/键盘/IME 输入（v1d+/G5）。
+
 **v1 其余 defer（v0 起，未动）**：
-- v1b 全收尾（A/B/C/mesh/CJK ✅）。**下一个（二选一）**：v1c event/命中/输入（G4，交互闭环）/ 文本 follow-up（M3 `\n` 净化 + emoji fallback 链）。
-- event/命中/输入（v1c，G4）、anim GTween/ScrollPane（v1d，§11/§12.7）。
+- v1b 全收尾（A/B/C/mesh/CJK ✅）+ **v1c.1 最小交互闭环 ✅**。
+- **下一个**：v1c.2 路由完整化（DOM 三阶段冒泡+stop_propagation+EventBridge）/ v1c.3 多触摸 / v1d 动画滚动拖拽焦点（§11/§12.7，#2 可滚动容器）。
 - NativeHost/virtualization/shape mask：v1.x。
 
 完整 defer 表见各 spec §7；v1a Phase 1 实现 ledger 见 `.git/sdd/progress.md`。
