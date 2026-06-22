@@ -1,29 +1,33 @@
 use crate::parse::css::Rule;
 use crate::parse::dom::{ElementData, ElementId, ElementTree};
+use serde::{Deserialize, Serialize};
 
-/// 选择器组合子：标签/类/id/后代/子代。v0 不含伪类（状态恒定）。
-#[derive(Debug, Clone)]
+/// 选择器组合子：标签/类/id/后代/子代 + 伪类状态门（hover/active/disabled）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ParsedSelector {
     pub raw: String,
     pub compound: Vec<Compound>, // 复合选择器链（后代/子代分隔）
     pub specificity: Specificity,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Compound {
     pub tag: Option<String>,
     pub classes: Vec<String>,
     pub id: Option<String>,
     pub combinator: Combinator, // 本 compound 与前一个的关系
+    pub pseudo_hover: bool,
+    pub pseudo_active: bool,
+    pub pseudo_disabled: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum Combinator {
     Descendant,
     Child,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct Specificity(pub u32, pub u32, pub u32); // (id 数, class 数, tag 数)
 
 /// 极简解析：按空格切 descendant，`>` 切 child；复合内 tag/.class/#id。
@@ -117,7 +121,7 @@ pub fn parse_selector(raw: &str) -> Result<ParsedSelector, String> {
         };
         while idx < bytes.len() {
             let c = bytes[idx] as char;
-            if c == '.' || c == '#' {
+            if c == '.' || c == '#' || c == ':' {
                 push_token(kind, &cur, &mut tag, &mut classes, &mut id);
                 cur.clear();
                 kind = c;
@@ -135,11 +139,32 @@ pub fn parse_selector(raw: &str) -> Result<ParsedSelector, String> {
         if tag.is_some() {
             spec.2 += 1;
         }
+        let mut pseudo_hover = false;
+        let mut pseudo_active = false;
+        let mut pseudo_disabled = false;
+        let mut rest = text.as_str();
+        while let Some(colon) = rest.find(':') {
+            let after = &rest[colon + 1..];
+            let end = after
+                .find(|c: char| c == '.' || c == '#' || c == ':')
+                .unwrap_or(after.len());
+            let name = &after[..end];
+            match name {
+                "hover" => pseudo_hover = true,
+                "active" => pseudo_active = true,
+                "disabled" => pseudo_disabled = true,
+                _ => {} // 未知伪类静默忽略（v1c.1 只认这三个）
+            }
+            rest = &after[end..];
+        }
         compound.push(Compound {
             tag,
             classes,
             id,
             combinator: *comb,
+            pseudo_hover,
+            pseudo_active,
+            pseudo_disabled,
         });
     }
 
@@ -283,6 +308,35 @@ pub fn match_element<'a>(
     matched.into_iter().map(|(_, _, r)| r).collect()
 }
 
+use crate::scene::node::{Node, NodeKind};
+
+/// 运行时版 compound 匹配（消费 Node 而非 ElementData，运行时无 ElementTree）。
+/// 匹配 tag/classes/id（不含伪类状态——状态由 T6 match_element_with_state 门控）。
+/// **依赖 T3 给 Node 加 classes/id 字段**——T2 先占位：tag 映射 div/button/img/span，
+/// class/id 暂返回 false（T3 填 Node.classes/id 后改）。
+pub fn compound_matches_node(c: &Compound, node: &Node) -> bool {
+    if let Some(t) = &c.tag {
+        let kind_tag = match &node.kind {
+            NodeKind::Container => "div",
+            NodeKind::Button => "button",
+            NodeKind::Image { .. } => "img",
+            NodeKind::Text { .. } => "span",
+        };
+        if kind_tag != t.as_str() {
+            return false;
+        }
+    }
+    if let Some(_id) = &c.id {
+        // Node 暂无 id 字段——T3 加 Node.id 后填实。暂返回 false（保守不命中）。
+        return false;
+    }
+    for _cls in &c.classes {
+        // Node 暂无 classes 字段——T3 加 Node.classes 后填实。暂返回 false。
+        return false;
+    }
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -380,6 +434,59 @@ mod tests {
     /// 子代选择器要求直接父匹配。`div.a > span`：span 的直接父是普通 div（nodes[1]），
     /// 而 `div.a` 只是祖父（nodes[0]）。子代要求直接父命中 `div.a` → 不应命中。
     /// （对比：`div.a span` 后代会命中——见上一个测试的同一棵树。）
+    #[test]
+    fn parse_hover_pseudo() {
+        let s = parse_selector(".btn:hover").unwrap();
+        assert_eq!(s.compound.len(), 1);
+        assert!(s.compound[0].pseudo_hover, ":hover → pseudo_hover=true");
+        assert!(!s.compound[0].pseudo_active);
+        assert!(!s.compound[0].pseudo_disabled);
+        assert_eq!(s.compound[0].classes, vec!["btn".to_string()]);
+    }
+
+    #[test]
+    fn parse_multiple_pseudos() {
+        let s = parse_selector(".btn:hover:active").unwrap();
+        assert!(s.compound[0].pseudo_hover);
+        assert!(s.compound[0].pseudo_active);
+        assert!(!s.compound[0].pseudo_disabled);
+    }
+
+    #[test]
+    fn parse_disabled_pseudo() {
+        let s = parse_selector("button:disabled").unwrap();
+        assert!(s.compound[0].pseudo_disabled);
+        assert_eq!(s.compound[0].tag.as_deref(), Some("button"));
+    }
+
+    #[test]
+    fn parse_no_pseudo_defaults_false() {
+        let s = parse_selector(".btn").unwrap();
+        assert!(!s.compound[0].pseudo_hover);
+        assert!(!s.compound[0].pseudo_active);
+        assert!(!s.compound[0].pseudo_disabled);
+    }
+
+    #[test]
+    fn parse_descendant_with_pseudo() {
+        let s = parse_selector(".parent:hover .child").unwrap();
+        assert_eq!(s.compound.len(), 2);
+        assert!(s.compound[0].pseudo_hover, "parent compound 含 :hover");
+        assert!(!s.compound[1].pseudo_hover, "child compound 无 :hover");
+        assert_eq!(s.compound[1].classes, vec!["child".to_string()]);
+    }
+
+    #[test]
+    fn parsed_selector_bincode_roundtrip() {
+        let s = parse_selector(".btn:hover:active .child").unwrap();
+        let bytes = bincode::serialize(&s).unwrap();
+        let back: ParsedSelector = bincode::deserialize(&bytes).unwrap();
+        assert_eq!(back.compound.len(), 2);
+        assert!(back.compound[0].pseudo_hover);
+        assert!(back.compound[0].pseudo_active);
+        assert_eq!(back.compound[1].classes, vec!["child".to_string()]);
+    }
+
     #[test]
     fn child_combinator_requires_direct_parent() {
         // nodes: 0=div.a (root), 1=div (普通), 2=span
