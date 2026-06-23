@@ -53,6 +53,15 @@ namespace LoomGUI
             h.AddListener(OuterId, EventType.Click, ctx =>
                 Debug.Log($"[interact] outer bubble click target={ctx.target} cur={ctx.currentTarget} phase={ctx.phase}"));
 
+            // v1c.3 capture demo：Down 在 btn 时 CaptureTouch → 手指移出仍收 Move（核心 add_touch_monitor）
+            h.AddListener(BtnId, EventType.Down, ctx => {
+                ctx.CaptureTouch();
+                Debug.Log($"[interact] btn Down touch={ctx.touchId} → capture");
+            });
+            h.AddListener(BtnId, EventType.Move, ctx => {
+                Debug.Log($"[interact] btn Move (capture 中) touch={ctx.touchId} pos=({ctx.x},{ctx.y})");
+            });
+
             // hover 祖先链演示：outer RollOver（btn hover 时 outer 也 RollOver——v1c.2 祖先链 diff）
             h.AddListener(OuterId, EventType.RollOver, ctx =>
                 Debug.Log($"[interact] outer RollOver cur={ctx.currentTarget}"));
