@@ -59,7 +59,7 @@ namespace LoomGUI
     }
 
     /// EventBridge（照 fgui EventBridge.cs）：capture + bubble 两组多播委托。
-    internal class EventBridge
+    public class EventBridge
     {
         EventCallback _bubble, _capture;
         public void Add(EventCallback cb) { _bubble -= cb; _bubble += cb; }       // -= 去重

@@ -67,16 +67,15 @@ namespace LoomGUI.Tests
             finally { Marshal.FreeHGlobal(ptr); }
         }
 
-        /// v1c.2-T3：对象池复用。Get → Return → Get 拿回同一实例；stop/prevent 在 Get 时重置。
+        /// v1c.2-T3：对象池复用。Get → Return → Get 拿回同一实例。
+        /// 注意：EventContext.Get() 只重置 _stopsPropagation/_defaultPrevented，不重置 payload（target 等）。
         [Test]
         public void EventContext_Pool_ReusesInstances()
         {
             var a = LoomGUI.EventContext.Get();
-            a.target = 7;
             LoomGUI.EventContext.Return(a);
             var b = LoomGUI.EventContext.Get();
-            Assert.AreSame(a, b, "池复用同一实例");
-            Assert.AreEqual(0u, b.target, "Get 时重置标志（target 不重置，但 stop/prevent 重置）");
+            Assert.AreSame(a, b, "Return 后 Get 复用同实例（池复用）");
             LoomGUI.EventContext.Return(b);
         }
 
