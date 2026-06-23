@@ -17,13 +17,15 @@ namespace LoomGUI
     }
 
     /// C# 镜像 Rust loomgui_core::input::EventRecord（#[repr(C)]）。
-    /// 字段序：node_id:u32 @0 → event_type:u8 @4 → pad 3 → x:f32 @8 → y:f32 @12（sizeof=16）。
-    /// 与 Rust ABI 一致（StructLayout.Sequential 默认 pack=0）。
+    /// 字段序：node_id:u32 @0 → event_type:u8 @4 → pad 3 → touch_id:i32 @8 → x:f32 @12 → y:f32 @16（sizeof=20）。
+    /// 与 Rust ABI 一致（StructLayout.Sequential 默认 pack=0；pad 在 C# 侧隐式——u32(4)+enum:byte(1)+[3 隐式对齐 int@8]+int(4)+float(4)+float(4)）。
+    /// touch_id 用 snake_case 匹配 csbindgen 生成的字段名（Rust EventRecord 字段 snake_case）。
     [StructLayout(LayoutKind.Sequential)]
     public struct LoomEvent
     {
         public uint nodeId;
         public EventType type;
+        public int touch_id;   // v1c.3：-1=鼠标，>=0=触摸（Rust EventRecord @8）
         public float x;
         public float y;
     }
@@ -41,16 +43,19 @@ namespace LoomGUI
         public uint currentTarget;     // 路由当前节点
         public Phase phase;
         public EventType type;
+        public int touchId;            // v1c.3：事件所属触摸（-1=鼠标）
         public float x, y;
-        internal bool _stopsPropagation, _defaultPrevented;
+        internal bool _stopsPropagation, _defaultPrevented, _touchCapture;
         public void StopPropagation() => _stopsPropagation = true;
         public void PreventDefault() => _defaultPrevented = true;
+        /// capture 当前触摸（照 fgui：设标志，BubbleRoute 消费即清，cap/bub 各加一 monitor）。
+        public void CaptureTouch() => _touchCapture = true;
 
         static readonly System.Collections.Generic.Stack<EventContext> _pool = new();
         internal static EventContext Get()
         {
             var ctx = _pool.Count > 0 ? _pool.Pop() : new EventContext();
-            ctx._stopsPropagation = false; ctx._defaultPrevented = false;
+            ctx._stopsPropagation = false; ctx._defaultPrevented = false; ctx._touchCapture = false;
             return ctx;
         }
         internal static void Return(EventContext ctx) => _pool.Push(ctx);
@@ -79,6 +84,8 @@ namespace LoomGUI
         readonly System.Collections.Generic.Dictionary<uint, System.Collections.Generic.Dictionary<EventType, EventBridge>> _listeners = new();
         readonly System.Collections.Generic.Dictionary<uint, uint> _parentCache = new();   // node_parent 缓存
         IntPtr _handle;   // node_parent FFI 用（LoomStage 初始化/load 后 SetHandle）
+        uint? _captureNodeCap;   // capture 阶段调 CaptureTouch 的节点（消费即清）
+        uint? _captureNodeBub;   // bubble 阶段调 CaptureTouch 的节点
 
         /// LoomStage 在 Awake/load 后调，传 (IntPtr)_stage。清 _parentCache（新 scene 的 parent 关系变了）。
         public void SetHandle(IntPtr handle) { _handle = handle; _parentCache.Clear(); }
@@ -110,11 +117,25 @@ namespace LoomGUI
             for (int i = 0; i < count; i++)
             {
                 var evt = System.Runtime.InteropServices.Marshal.PtrToStructure<LoomEvent>(ptr + i * recSize);
+                _captureNodeCap = null; _captureNodeBub = null;   // 每事件重置
                 switch (evt.type)
                 {
-                    case EventType.Down: case EventType.Up:
-                    case EventType.Move: case EventType.Click: BubbleRoute(evt); break;
-                    case EventType.RollOver: case EventType.RollOut: DirectDispatch(evt); break;
+                    case EventType.Down:
+                        BubbleRoute(evt);
+                        // Down 路由后，capture 阶段 + bubble 阶段各消费一次 → 各加一 monitor（照 fgui）
+                        if (_captureNodeCap.HasValue)
+                            Native.loomgui_stage_add_touch_monitor((StageHandle*)_handle, evt.touch_id, _captureNodeCap.Value);
+                        if (_captureNodeBub.HasValue)
+                            Native.loomgui_stage_add_touch_monitor((StageHandle*)_handle, evt.touch_id, _captureNodeBub.Value);
+                        break;
+                    case EventType.Up:
+                    case EventType.Click:
+                        BubbleRoute(evt); break;
+                    case EventType.Move:
+                        DirectDispatch(evt); break;   // v1c.3：Move 改直派（核心算好的 monitor 目标）
+                    case EventType.RollOver:
+                    case EventType.RollOut:
+                        DirectDispatch(evt); break;
                 }
             }
         }
@@ -124,20 +145,22 @@ namespace LoomGUI
         {
             var chain = AncestorChain(evt.nodeId);   // [target, ..., root]
             var ctx = EventContext.Get();
-            ctx.target = evt.nodeId; ctx.type = evt.type; ctx.x = evt.x; ctx.y = evt.y;
-            // capture 阶段：根→target 反向，全跑（照 fgui line 302-311 不检查 stop）
+            ctx.target = evt.nodeId; ctx.type = evt.type; ctx.touchId = evt.touch_id; ctx.x = evt.x; ctx.y = evt.y;
+            // capture 阶段：根→target 反向，全跑（照 fgui line 302-311 不检查 stop）。消费 _touchCapture 记 _captureNodeCap。
             for (int i = chain.Count - 1; i >= 0; i--)
             {
                 ctx.currentTarget = chain[i]; ctx.phase = Phase.Capture;
                 TryGetBridge(chain[i], evt.type)?.CallCapture(ctx);
+                if (ctx._touchCapture) { ctx._touchCapture = false; _captureNodeCap = chain[i]; }
             }
-            // bubble 阶段：target→root 正向，stop break（照 fgui line 315-328）
+            // bubble 阶段：target→root 正向，stop break（照 fgui line 315-328）。消费 _touchCapture 记 _captureNodeBub。
             if (!ctx._stopsPropagation)
                 for (int i = 0; i < chain.Count; i++)
                 {
                     ctx.currentTarget = chain[i];
                     ctx.phase = (chain[i] == ctx.target) ? Phase.Target : Phase.Bubble;
                     TryGetBridge(chain[i], evt.type)?.CallBubble(ctx);
+                    if (ctx._touchCapture) { ctx._touchCapture = false; _captureNodeBub = chain[i]; }
                     if (ctx._stopsPropagation) break;
                 }
             EventContext.Return(ctx);
@@ -148,7 +171,7 @@ namespace LoomGUI
         {
             var ctx = EventContext.Get();
             ctx.target = ctx.currentTarget = evt.nodeId; ctx.phase = Phase.Target;
-            ctx.type = evt.type; ctx.x = evt.x; ctx.y = evt.y;
+            ctx.type = evt.type; ctx.touchId = evt.touch_id; ctx.x = evt.x; ctx.y = evt.y;
             var bridge = TryGetBridge(evt.nodeId, evt.type);
             if (bridge != null) { bridge.CallCapture(ctx); bridge.CallBubble(ctx); }
             EventContext.Return(ctx);
@@ -168,5 +191,9 @@ namespace LoomGUI
                 _parentCache[nodeId] = p = Native.loomgui_node_parent((StageHandle*)_handle, nodeId);   // csbindgen 绑定（Task 2 生成）
             return p;
         }
+
+        /// 主动释放某节点的 touch monitor（业务调，如拖拽结束）。转发核心 remove。
+        public void RemoveTouchMonitor(uint nodeId) =>
+            Native.loomgui_stage_remove_touch_monitor((StageHandle*)_handle, nodeId);
     }
 }

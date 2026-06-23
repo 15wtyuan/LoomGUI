@@ -209,5 +209,76 @@ namespace LoomGUI.Tests
             //   Assert.AreEqual(1, hits, "remove 后不再收（仍 1）");
             Assert.Ignore("家里机：需 Stage handle + scene（root>parent>child）+ .dll，本机无 Unity 跳过");
         }
+
+        // ===== v1c.3-T4 capture / move / multitouch 测骨架（家里机补 handle + 跑）=====
+        // 下述测需 Stage handle + scene + .dll（Native.loomgui_stage_add_touch_monitor / _remove）。
+        // 本机写骨架 + Assert.Ignore（同 v1c.2 模式）；家里机按 BuildStage("root>parent>child") 风格补全。
+
+        /// CaptureTouch 设 _touchCapture；BubbleRoute 消费即清（cap/bub 各记录一节点）。
+        /// 验：root AddCapture(Down, CaptureTouch) + child AddListener(Down, CaptureTouch)
+        ///     → DispatchOne(Down on child) 后 _captureNodeCap=root, _captureNodeBub=child，
+        ///     核心收到两次 add_touch_monitor（同 touch_id）。
+        [Test]
+        public void CaptureTouch_SetsFlag_ConsumedOnCapAndBub()
+        {
+            // 家里机：
+            //   var stage = BuildStage("root>parent>child");
+            //   var h = new LoomEventHandler(); h.SetHandle((IntPtr)stage.NativeHandle);
+            //   h.AddCapture(0, EventType.Down, c => c.CaptureTouch());   // root capture 调 CaptureTouch
+            //   h.AddListener(2, EventType.Down, c => c.CaptureTouch());  // child bubble 调 CaptureTouch
+            //   // DispatchOne 后验核心收到 add_touch_monitor(touch_id=-1, node_id=0) 和 (-1, 2)
+            //   // （需核心侧观测 API 或 mock Native，或验 Move 事件派到 monitor 节点）
+            Assert.Ignore("家里机：CaptureTouch 标志消费需 BubbleRoute + handle + 核心观测");
+        }
+
+        /// Move 走 DirectDispatch（不再 BubbleRoute）：只命中节点收，不沿链。
+        /// 验：root>parent>child 场景，child Move → 只 child 收，parent/root 不收。
+        [Test]
+        public void Move_DirectDispatch_NoBubble()
+        {
+            // 家里机：
+            //   var stage = BuildStage("root>parent>child");
+            //   var h = new LoomEventHandler(); h.SetHandle((IntPtr)stage.NativeHandle);
+            //   int childHits = 0, parentHits = 0, rootHits = 0;
+            //   h.AddListener(2, EventType.Move, c => childHits++);
+            //   h.AddListener(1, EventType.Move, c => parentHits++);
+            //   h.AddListener(0, EventType.Move, c => rootHits++);
+            //   DispatchOne(h, new LoomEvent { nodeId = 2, type = EventType.Move, touch_id = -1, x = 5f, y = 5f });
+            //   Assert.AreEqual(1, childHits, "Move 直派：child 收");
+            //   Assert.AreEqual(0, parentHits, "Move 不沿链，parent 不收");
+            //   Assert.AreEqual(0, rootHits, "Move 不沿链，root 不收");
+            Assert.Ignore("家里机：需 Stage handle + scene（root>parent>child）+ .dll，本机无 Unity 跳过");
+        }
+
+        /// 两触摸（touch_id=0,1）Down 在两不同节点 → EventContext.touchId 各自正确 + 互不干扰。
+        /// 验：listener 收到的 ctx.touchId 与 EventRecord.touch_id 一致。
+        [Test]
+        public void MultiTouch_DistinctTouchId()
+        {
+            // 家里机：
+            //   var stage = BuildStage("root>a>b>leaf_a>leaf_b");   // 两叶子节点
+            //   var h = new LoomEventHandler(); h.SetHandle((IntPtr)stage.NativeHandle);
+            //   int recTouchId = -99;
+            //   h.AddListener(leaf_a_id, EventType.Down, c => recTouchId = c.touchId);
+            //   // 喂 touch_id=0 的 Down on leaf_a
+            //   DispatchOne(h, new LoomEvent { nodeId = leaf_a_id, type = EventType.Down, touch_id = 0, x = 0, y = 0 });
+            //   Assert.AreEqual(0, recTouchId, "touch_id=0 的 Down → ctx.touchId=0");
+            //   // 喂 touch_id=1 的 Down on leaf_a
+            //   DispatchOne(h, new LoomEvent { nodeId = leaf_a_id, type = EventType.Down, touch_id = 1, x = 0, y = 0 });
+            //   Assert.AreEqual(1, recTouchId, "touch_id=1 的 Down → ctx.touchId=1");
+            Assert.Ignore("家里机：需 handle + 两 touch_id EventRecord");
+        }
+
+        /// RemoveTouchMonitor(nodeId) 主动释放——转发核心 remove（业务拖拽结束调）。
+        /// 验：不抛（核心侧 remove 幂等）；后续 Move 不再派到该节点。
+        [Test]
+        public void RemoveTouchMonitor_NoThrow_FreesCapture()
+        {
+            // 家里机：
+            //   var stage = BuildStage("root>parent>child");
+            //   var h = new LoomEventHandler(); h.SetHandle((IntPtr)stage.NativeHandle);
+            //   Assert.DoesNotThrow(() => h.RemoveTouchMonitor(2), "remove 不存在的 monitor 应 no-op");
+            Assert.Ignore("家里机：需 Stage handle + .dll 验核心 remove 转发");
+        }
     }
 }
