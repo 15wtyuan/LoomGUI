@@ -8,7 +8,7 @@ use loomgui_core::input::{EventRecord, PointerEvent};
 use loomgui_core::scene::NodeId;
 use loomgui_core::stage::Stage;
 
-/// 版本字符串（C null-terminated `b"v1c.2\0"`）。Task 1 工具链 round-trip 用。
+/// 版本字符串（C null-terminated `b"v1c.3\0"`）。Task 1 工具链 round-trip 用。
 ///
 /// 返回 `*const u8`（csbindgen 映射为 C# `byte*`）；CString::as_ptr 给的是
 /// `*const c_char`（i8），这里 cast 对齐签名。OnceLock 缓存，避免每次分配+泄漏。
@@ -16,7 +16,7 @@ use loomgui_core::stage::Stage;
 pub extern "C" fn loomgui_version() -> *const u8 {
     static VERSION: std::sync::OnceLock<CString> = std::sync::OnceLock::new();
     VERSION
-        .get_or_init(|| CString::new("v1c.2").unwrap())
+        .get_or_init(|| CString::new("v1c.3").unwrap())
         .as_ptr() as *const u8
 }
 
@@ -295,6 +295,27 @@ pub extern "C" fn loomgui_node_parent(h: *const StageHandle, node_id: u32) -> u3
     }
 }
 
+/// 加 touch monitor（v1c.3：C# CaptureTouch 后调）。核心把 node 加进 touch_id 对应槽的 touch_monitors（去重）。
+/// touch_id=-1 → 鼠标主指槽；找不到槽 → no-op。null 句柄 → no-op。
+///
+/// **常驻（不 gate）：**runtime 稳定入口。
+#[no_mangle]
+pub extern "C" fn loomgui_stage_add_touch_monitor(h: *mut StageHandle, touch_id: i32, node_id: u32) {
+    if h.is_null() { return; }
+    let sh = unsafe { &mut *h };
+    sh.stage.add_touch_monitor(touch_id, NodeId(node_id as usize));
+}
+
+/// 移除 touch monitor（v1c.3：C# 主动释放调）。从所有槽移除该 node。null 句柄 → no-op。
+///
+/// **常驻（不 gate）。**
+#[no_mangle]
+pub extern "C" fn loomgui_stage_remove_touch_monitor(h: *mut StageHandle, node_id: u32) {
+    if h.is_null() { return; }
+    let sh = unsafe { &mut *h };
+    sh.stage.remove_touch_monitor(NodeId(node_id as usize));
+}
+
 /// 全局 shutdown（Domain reload hook）。C# `LoomStage.ResetStatics`（SubsystemRegistration）
 /// 调用本函数——即使当前核心无全局态，hook 必须存在：v1b 引入 global texture/font registry
 /// 时此处自动清，无需再改接线。
@@ -319,10 +340,10 @@ mod tests {
     use std::ffi::CStr;
 
     #[test]
-    fn version_returns_c_string_v1c2() {
+    fn version_returns_c_string_v1c3() {
         unsafe {
             let s = CStr::from_ptr(loomgui_version() as *const i8);
-            assert_eq!(s.to_str().unwrap(), "v1c.2");
+            assert_eq!(s.to_str().unwrap(), "v1c.3");
         }
     }
 }
@@ -470,7 +491,7 @@ mod abi_tests {
         let css = std::ffi::CString::new(r#".btn { width: 100px; height: 50px; }"#).unwrap();
         loomgui_stage_load_html(h, html.as_ptr() as *const u8, html.as_bytes().len(), css.as_ptr() as *const u8, css.as_bytes().len());
         // set_input：Move 到按钮 (50,25)
-        let ev = PointerEvent { kind: PointerKind::Move, x: 50.0, y: 25.0, button: 0 };
+        let ev = PointerEvent { kind: PointerKind::Move, x: 50.0, y: 25.0, button: 0, pad: [0, 0], touch_id: -1 };
         loomgui_stage_set_input(h, &ev, 1);
         loomgui_stage_tick(h, 0.0);
         let mut len = 0usize;
@@ -524,11 +545,93 @@ mod abi_tests {
         );
         loomgui_stage_load_package(h, pkg.as_ptr(), pkg.len());
         // 命中根 (100,50)——根不算 UI → is_pointer_on_ui=false
-        let ev = PointerEvent { kind: PointerKind::Move, x: 100.0, y: 50.0, button: 0 };
+        let ev = PointerEvent { kind: PointerKind::Move, x: 100.0, y: 50.0, button: 0, pad: [0, 0], touch_id: -1 };
         loomgui_stage_set_input(h, &ev, 1);
         loomgui_stage_tick(h, 0.0);
         // 单根节点：命中根 → is_pointer_on_ui=false（根不算）
         assert!(!loomgui_stage_is_pointer_on_ui(h), "命中根 → false");
+        loomgui_stage_free(h);
+    }
+
+    /// EventRecord/PointerEvent sizeof + touch_id 偏移（v1c.3 契约）。
+    /// PointerEvent=20B：PointerKind 是 repr(C) enum 无显式整型 → 默认 4B（非 1B），
+    /// 故 kind@0(4)+button@4(1)+pad@5(2)+pad→touch_id 1B 填充@7+touch_id@8(4)+x@12(4)+y@16(4)=20。
+    /// EventRecord=20B：node_id@0(4)+event_type@4(1)+pad@5(3)+touch_id@8(4)+x@12(4)+y@16(4)。
+    /// 两者均 20B、touch_id 同在 @8 偏移——C# 侧 P/Invoke 按 20 切片，ABI 稳定。
+    #[test]
+    fn pointer_event_event_record_sizeof() {
+        use loomgui_core::input::{PointerEvent, EventRecord};
+        assert_eq!(std::mem::size_of::<PointerEvent>(), 20, "PointerEvent 20B（PointerKind 4B enum）");
+        assert_eq!(std::mem::size_of::<EventRecord>(), 20, "EventRecord 20B（v1c.2 是 16，+touch_id@8）");
+    }
+
+    /// 借事件读 touch_id 字段（POD @8 偏移）。装载按钮 + 触摸 Down，验 touch_id 贯穿。
+    #[cfg(feature = "parse")]
+    #[test]
+    fn event_record_has_touch_id() {
+        use loomgui_core::input::{PointerEvent, PointerKind, EVT_DOWN};
+        let (fp, fplen) = font_path();
+        let h = loomgui_stage_new(fp.as_ptr() as *const u8, fplen, 200.0, 100.0);
+        let html = std::ffi::CString::new(r#"<div class="root"><button class="btn">OK</button></div>"#).unwrap();
+        let css = std::ffi::CString::new(r#".btn { width: 100px; height: 50px; }"#).unwrap();
+        loomgui_stage_load_html(h, html.as_ptr() as *const u8, html.as_bytes().len(), css.as_ptr() as *const u8, css.as_bytes().len());
+        // 触摸 touch_id=3 Down 在 btn (50,25)
+        let ev = PointerEvent { kind: PointerKind::Down, x: 50.0, y: 25.0, button: 0, pad: [0, 0], touch_id: 3 };
+        loomgui_stage_set_input(h, &ev, 1);
+        loomgui_stage_tick(h, 0.0);
+        let mut len = 0usize;
+        let ptr = loomgui_stage_borrow_events(h, &mut len);
+        assert!(!ptr.is_null() && len > 0);
+        let rec_size = std::mem::size_of::<loomgui_core::input::EventRecord>();
+        let bytes = unsafe { std::slice::from_raw_parts(ptr as *const u8, len * rec_size) };
+        // 找 Down 事件，验 touch_id @8 == 3（LE i32）
+        let mut found = false;
+        for i in 0..len {
+            let off = i * rec_size;
+            if bytes[off + 4] == EVT_DOWN {
+                let touch_id = i32::from_le_bytes([bytes[off + 8], bytes[off + 9], bytes[off + 10], bytes[off + 11]]);
+                assert_eq!(touch_id, 3, "Down 事件 touch_id=3");
+                found = true;
+                break;
+            }
+        }
+        assert!(found, "应有 Down 事件");
+        loomgui_stage_free(h);
+    }
+
+    /// add_touch_monitor round-trip：Down → add monitor → Move 移出 → 借事件验 monitor 收 Move。
+    #[cfg(feature = "parse")]
+    #[test]
+    fn add_touch_monitor_round_trip() {
+        use loomgui_core::input::{PointerEvent, PointerKind, EVT_MOVE};
+        let (fp, fplen) = font_path();
+        let h = loomgui_stage_new(fp.as_ptr() as *const u8, fplen, 200.0, 100.0);
+        let html = std::ffi::CString::new(r#"<div class="root"><button class="btn">OK</button></div>"#).unwrap();
+        let css = std::ffi::CString::new(r#".btn { width: 100px; height: 50px; }"#).unwrap();
+        loomgui_stage_load_html(h, html.as_ptr() as *const u8, html.as_bytes().len(), css.as_ptr() as *const u8, css.as_bytes().len());
+        // touch_id=1 Down 在 btn
+        let down = PointerEvent { kind: PointerKind::Down, x: 50.0, y: 25.0, button: 0, pad: [0, 0], touch_id: 1 };
+        loomgui_stage_set_input(h, &down, 1);
+        loomgui_stage_tick(h, 0.0);
+        // capture btn (node 1)——模拟 C# CaptureTouch 后调
+        loomgui_stage_add_touch_monitor(h, 1, 1);
+        // Move 移出 btn (150, 25 命中 root)——有 monitor 应产 Move@btn
+        let mv = PointerEvent { kind: PointerKind::Move, x: 150.0, y: 25.0, button: 0, pad: [0, 0], touch_id: 1 };
+        loomgui_stage_set_input(h, &mv, 1);
+        loomgui_stage_tick(h, 0.0);
+        let mut len = 0usize;
+        let ptr = loomgui_stage_borrow_events(h, &mut len);
+        assert!(!ptr.is_null() && len > 0);
+        let rec_size = std::mem::size_of::<loomgui_core::input::EventRecord>();
+        let bytes = unsafe { std::slice::from_raw_parts(ptr as *const u8, len * rec_size) };
+        let mut found_move_at_btn = false;
+        for i in 0..len {
+            let off = i * rec_size;
+            let event_type = bytes[off + 4];
+            let node_id = u32::from_le_bytes([bytes[off], bytes[off + 1], bytes[off + 2], bytes[off + 3]]);
+            if event_type == EVT_MOVE && node_id == 1 { found_move_at_btn = true; break; }
+        }
+        assert!(found_move_at_btn, "capture 后 Move 移出仍产 Move@btn(node 1)");
         loomgui_stage_free(h);
     }
 
