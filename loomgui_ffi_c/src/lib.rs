@@ -553,12 +553,9 @@ mod abi_tests {
         loomgui_stage_free(h);
     }
 
-    /// EventRecord/PointerEvent sizeof + touch_id 偏移（v1c.3 契约）。
-    /// PointerEvent=20B：PointerKind 是 repr(C) enum 无显式整型 → 默认 4B（非 1B），
-    /// 故 kind@0(4)+button@4(1)+pad@5(2)+pad→touch_id 1B 填充@7+touch_id@8(4)+x@12(4)+y@16(4)=20。
-    /// EventRecord=20B：node_id@0(4)+event_type@4(1)+pad@5(3)+touch_id@8(4)+x@12(4)+y@16(4)。
-    /// PointerEvent 16B（PointerKind repr(u8) 1B + button 1B + pad 2B + touch_id@4 + x@8 + y@12）；
-    /// EventRecord 20B（node_id@0 + event_type@4 + pad@5 + touch_id@8 + x@12 + y@16）。
+    /// EventRecord/PointerEvent sizeof（v1c.3 契约）。
+    /// PointerEvent 16B：PointerKind repr(u8) 1B + button 1B + pad 2B + touch_id@4 + x@8 + y@12。
+    /// EventRecord 20B：node_id@0(4) + event_type@4(1) + pad@5(3) + touch_id@8(4) + x@12(4) + y@16(4)。
     #[test]
     fn pointer_event_event_record_sizeof() {
         use loomgui_core::input::{PointerEvent, EventRecord};
