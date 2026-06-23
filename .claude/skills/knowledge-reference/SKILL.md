@@ -161,12 +161,13 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 - **hover_diff 祖先链 diff（点1，修坑 29 嵌套多发）**：v1c.1 单点 diff（旧 target RollOut+新 target RollOver）→ 两链 diff（`last_hovered_chain: Vec<NodeId>` + `ancestor_chain()` 沿 parent 至 root；旧链独有 RollOut、新链独有 RollOver、共同祖先段不产——鼠标从父进子父不 RollOut）。照 fgui `HandleRollOver`（Stage.cs:1315）。hovered 状态仍 `set_hovered_chain`（rematch 用）。
 - **C# 路由（照 fgui `EventDispatcher`）**：`BubbleRoute`（capture 根→target 反向**全跑不检查 stop**，照 BubbleEvent line302-311 + bubble target→root 正向 stop break line315-328）+ `DirectDispatch`（RollOver/Out 单节点 capture+bubble 不沿链，照 `InternalDispatchEvent`）+ `AncestorChain`（node_parent 缓存，sentinel 0xFFFFFFFF 止）+ `EventContext`（对象池 Stack + target/currentTarget/phase + StopPropagation/PreventDefault，Get 只重置 stop/prevent **不重置 payload**，照 fgui）+ `EventBridge`（多播 _bubble/_capture，Add 内 `-=cb;+=cb` 去重）+ 委托引用 remove（非 ListenerId）+ `SetHandle`（赋 _handle + 清 _parentCache，**每次 load 调**非只 Awake）。
 - **FFI 加**：`loomgui_node_parent(h: *const StageHandle, node_id: u32) -> u32`（根/越界/无 scene → 0xFFFFFFFF；常驻不 gate 坑21）。version v1c.2。
+- **node 查询 enabler（v1c review）**：`Scene::find_by_id_attr`+`Stage::find_node_by_id`+FFI `loomgui_stage_find_node_by_id(h, byte* id, nuint len) -> u32`（无匹配→0xFFFFFFFF）+ C# `LoomStage.FindNodeById/SetNodeDisabled`——业务用 CSS id 定位节点（注册 listener / 设 disabled），替代硬编码 build 序 id（auto Text 子偏移不可靠，LoomInteractDemo 推断序 smell）。用既有 `Node.id_attr`（v1c.1 T3 NodeBlock 段，parser `id` 属性→el.id→Node.id_attr 全链路）。
 - **两机约束（v1c.2 执行）**：core cargo test 本机 TDD 闭环；C# 代码本机写不编译（无 Unity），家里机 EditMode+PlayMode 验。改 Rust 后重编+commit .dll（坑10 两机变体）。subagent-driven 6 task 全 Approved。
 
 ### 2.17 多触摸 + CaptureTouch（v1c.3，§10.3）
 - **多槽状态机**：`PointerState` 单指针 → `slots: Vec<TouchSlot>` 固定 5 槽（slot0=鼠标 `touch_id=-1` 常驻，slot1-4=触摸 `touch_id=-1` 空闲 Down 分配 fingerId）。照 fgui `TouchInfo[5]`。**鼠标+触摸同帧共存**（偏离 fgui 互斥——fgui 因 touchId=0 给鼠标撞 fingerId 才互斥，LoomGUI 鼠标 -1 绕开）。
 - **EventRecord/PointerEvent 加 touch_id**（破 v1c.2 零改）：EventRecord 16→20B（+`touch_id:i32 @8`）；PointerEvent +`touch_id:i32 @4`（16B，**PointerKind 必须 `#[repr(u8)]`** 见坑 34）。touch_id 贯穿：PointerEvent@4 → EventRecord@8 → C# LoomEvent.touch_id → EventContext.touchId。
-- **active/hovered 全局 union recompute**（删 v1c.1 `set_hovered_chain`/`set_active_chain`）：process 末尾 `recompute_hovered`（清所有→活跃槽命中链 union，任一指命中元素或祖先→`:hover`）+ `recompute_active`（清所有→所有 `is_down` 槽 **down_node** 命中链 union，基于 Down 时命中非当前 hit）。修 v1c.2 单指 `set_active_chain(None)` 多指下互清 bug。RollOver/Out 仍 per-slot hover_diff（每槽独立链，EventRecord 带 touch_id）——**双语义**：RollOver/Out 描述「该指进出」，hovered 描述「任一指在其上」，可能不一致（A 移出 X 但 B 还在 X → X 收 RollOut 但 `:hover` 仍 true），各描述不同事实。
+- **active/hovered 全局 union recompute**（删 v1c.1 `set_hovered_chain`/`set_active_chain`）：process 末尾 `recompute_hovered`（清所有→活跃槽命中链 union，任一指命中元素或祖先→`:hover`）+ `recompute_active`（清所有→所有 `is_down` 槽 **down_node** 命中链 union，基于 Down 时命中非当前 hit；**链遍历逐节点查 disabled 遇则截断**——坑 37，v1c review 补；hit 落非 disabled Text 子时 down_node 非 disabled，须沿链查 disabled 祖先）。修 v1c.2 单指 `set_active_chain(None)` 多指下互清 bug。RollOver/Out 仍 per-slot hover_diff（每槽独立链，EventRecord 带 touch_id）——**双语义**：RollOver/Out 描述「该指进出」，hovered 描述「任一指在其上」，可能不一致（A 移出 X 但 B 还在 X → X 收 RollOut 但 `:hover` 仍 true），各描述不同事实。
 - **CaptureTouch/touch monitor（照 fgui）**：`EventContext.CaptureTouch()` 设 `_touchCapture` 标志，**消费即清零**（照 fgui EventDispatcher.cs:305-324）；C# `BubbleRoute` 的 capture 阶段 + bubble 阶段**各消费一次**记 `_captureNodeCap`/`_captureNodeBub`（cap/bub 各加一个 monitor，典型拖拽只 bubble 加 1）。Down 路由后 C# 调 `add_touch_monitor(touch_id, node)` FFI → 核心加进该槽 `touch_monitors`（去重，不实现 fgui -1 广播——fgui 自身不用）。Up 后核心清该槽 monitor。
 - **Move 语义对齐 fgui**（v1c.2 行为变化）：核心 process Move 分支——**有 monitor 产 `Move@monitor` 直派（每 monitor 一条）；无 monitor 不产 Move 事件**（仍更新 last_pos+hover_diff）。C# `DispatchPending` Move 改 `DirectDispatch`（v1c.2 是 BubbleRoute）。fgui 鼠标 Move 无 monitor 也只发 Stage 自身（业务不注册=无回调）。**v1c.2 鼠标 Move 产事件沿链 bubble 的行为废止**——无现存业务破坏（interact sample 无 Move listener），要跟鼠标 Move 须 capture。
 - **Up 去重**：核心产 monitor 的 Up 时若 `monitor==hit` 不重复产（避免同节点收两次 Up）。
@@ -486,6 +487,20 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 **解决**：`fixed (Bindings.PointerEvent* p = arr) { Native.loomgui_stage_set_input((StageHandle*)stage, p, (nuint)arr.Length); }`——`fixed` pin managed array 取 T*，调用期内钉住。空数组走 `null, 0`（Rust FFI guard）。
 **教训**：csbindgen FFI 的数组/缓冲参数都是 raw `T*` + `nuint len`，C# 侧必须 `fixed`-pin（值类型数组）或 `GCHandle.Alloc`（引用类型）取指针。别直接传 managed array。`set_input`/`borrow_events`/`borrow_frame` 全是这模式。
 
+### 坑 37：recompute 化重构漏条件门控——disabled 节点按住仍 :active（v1c review）
+
+**症状**：PlayMode 按住 disabled 按钮仍变红（:active 触发），违反 §4.4「disabled active/click 抑制」。
+**根因**：v1c.3 把 v1c.1 命令式 `set_active_chain(Some(n))`（含 `!disabled` 门控）改成全局 `recompute_active` 沿 `down_node` 链设 active，**漏复制 disabled 门控**（Down handler `down_node=hit` 无条件赋值，disabled 检查前）。更深：hit 落 disabled 节点的非 disabled Text 子（坑 29 同款挡命中）时 down_node=Text 子，原 fix 只查 down_node 漏判链上 disabled 祖先。
+**解决**：`recompute_active` 链遍历**逐节点查 disabled**（不只 down_node），遇 disabled **截断**（自身+祖先都不 active）。+ 回归测（直击 / Text 子击两条）。
+**教训**：命令式 set_X 重构为全局 recompute_X 时**逐条复刻原 set 的所有条件门控**（disabled/visible/touchable），重构最易丢门控。active/hover 链遍历须逐节点查状态（hit 可能落非 disabled 子，状态在祖先链）。Down+Up 同帧的测掩盖「按住 disabled」case（recompute 时 is_down 已 false）——禁用/按住类测须**分离帧**。
+
+### 坑 38：InputSystem 1.19 `TouchPhase` 在 `UnityEngine.InputSystem` 非 LowLevel；双 using 致歧义（v1c review）
+
+**症状**：`LoomInputCollector` 编译 CS0234（TouchPhase 不在 LowLevel）→ 改未限定后又 CS0104（ambiguous，UnityEngine.TouchPhase vs InputSystem.TouchPhase）。
+**根因**：1.19 包 `TouchPhase` enum 在 `UnityEngine.InputSystem` 命名空间（Touchscreen.cs:390），非草稿/记忆的 `LowLevel`；文件同时 `using UnityEngine;`+`using UnityEngine.InputSystem;` → 未限定 TouchPhase 两命名空间都有 → 歧义。
+**解决**：新/旧输入路径**全限定**——新 `UnityEngine.InputSystem.TouchPhase`，旧 `UnityEngine.TouchPhase`（不同枚举显式区分）。
+**教训**：Unity InputSystem API 路径随版本变，查包源定 namespace（`Library/PackageCache/com.unity.inputsystem@*/InputSystem/Devices/Touchscreen.cs`），别信草稿/记忆。**C# 本机不编译家里机才暴露**（坑 28/35 同源）——同 using 下两 namespace 同名类型须全限定。
+
 ## 6. 调试/验证技巧
 
 - **★ 实现 v1+ 后端/渲染/对象模型前，先参考 `temp/FairyGUI-unity/` 源码**（对照机制、避免走歪——本 session 因没先看 fgui 的 sortingOrder/rect-mask/MaterialManager，初版设计走了弯路：误用 z 排序、误以为 rect mask 要独立 GO、把绘制序想复杂）。
@@ -577,6 +592,8 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 **v1c.3 ✅ 完成（main @ 2beb6e7，待家里机验）**：多触摸 + CaptureTouch——核心 `PointerState` 单指针 → 5 槽 `TouchSlot`（slot0 鼠标 -1 + slot1-4 触摸，鼠标+触摸共存）+ EventRecord/PointerEvent 加 `touch_id`（EventRecord 20B/PointerEvent 16B，**PointerKind `repr(u8)`** 坑34）+ active/hovered 全局 union recompute（删 set_*_chain，修 v1c.2 多指互清 bug）+ CaptureTouch/touch monitor（照 fgui 消费即清，cap/bub 各加一，add/remove_touch_monitor FFI）+ Move 对齐 fgui（无 monitor 不产，v1c.2 鼠标 Move 沿链 bubble 行为废止）+ Up 去重 + Unity `LoomInputCollector` 多指采集（fixed-pin 坑36）。click 沿用 v1c.2。**frame blob/MirrorPool/.pkg.bin v3 零改**（EventRecord 不进 blob）。spec `docs/superpowers/specs/2026-06-23-v1c.3-multi-touch-design.md`、plan `docs/superpowers/plans/2026-06-23-v1c.3-multi-touch.md`、验收 `docs/v1c.3-home-verification.md`。**两机约束**：core+ffi `cargo test --workspace` 180 测全绿；C# 本机写未编译（无 Unity），家里机 EditMode（capture 测骨架补 handle）+ PlayMode（多指/capture/鼠标回归）。subagent-driven 6 task 全 Approved + final review Ready（opus）。踩坑：PointerKind repr(C) 4B（坑 34）、csbindgen 不生 use-imported struct stub 手补镜像漏（坑 35）、set_input PointerEvent* 须 fixed-pin（坑 36）。brainstorm 阶段 subagent 审核 + 二次 fgui 实证核实修正 4 个 Critical（touch_id 哨兵撤销/capture cap+bub/Up 去重/active 双写）。
 
 **v1c.3 defer（→ v1c.4 click 增强，正交）**：双击（350ms 窗口+位置+同键）、downTargets 链兜底（down 目标被移除沿祖先找，照 fgui ClickTest）、缩放容忍、Move 中超阈值取消 click、Canceled 跳过 click、Stationary hover 跟随（元素动后刷新，照 fgui 局限）。其余同 v1c.2 defer（stopImmediate/broadcast/键盘/transform 命中）。
+
+**v1c review ✅ 修复（main @ e262d26）**：review v1c.2/.3 发现并修 3 类——① disabled-active 回归（§4.4，recompute_active 漏 disabled 门控 + Text 子击中漏判祖先链，坑 37，链遍历逐节点查 disabled 截断）；② v1c.2/.3 C# 编译错（C# 本机不编译家里机暴露）：`TouchPhase` 1.19 命名空间+歧义（坑 38，双路径全限定）、`EventContext.Get/Return` internal→public（坑 33 同模式重现）；③ `find_node_by_id` enabler（`Scene::find_by_id_attr`+FFI+C# 包装，替代硬编码 build-id）+ interact 禁用按钮加 id + demo find+set_node_disabled（原仅 CSS opacity 视觉、Node.disabled 未设）。.dll 重编 + pkg 重打。**PlayMode 验**：按住禁用按钮不变红（含 Text 子击中）。core 150+ffi 25 测全绿。**C# 路由测仍多 Assert.Ignore 骨架**（家里机手验未回填真断言）——v1c.4 前可补 BuildStage helper un-ignore。
 
 **v1 其余 defer（v0 起，未动）**：
 - v1b 全收尾（A/B/C/mesh/CJK ✅）+ v1c.1 最小交互闭环 ✅ + v1c.2 路由完整化 ✅ + **v1c.3 多触摸+CaptureTouch ✅（待家里机验）**。
