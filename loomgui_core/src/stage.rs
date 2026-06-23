@@ -103,6 +103,15 @@ impl Stage {
         }
     }
 
+    /// 加 touch monitor（C# CaptureTouch 后经 FFI 调）。
+    pub fn add_touch_monitor(&mut self, touch_id: i32, node: NodeId) {
+        self.pointer_state.add_touch_monitor(touch_id, node);
+    }
+    /// 移除 touch monitor（C# 主动释放经 FFI 调）。
+    pub fn remove_touch_monitor(&mut self, node: NodeId) {
+        self.pointer_state.remove_touch_monitor(node);
+    }
+
     /// 本帧产出的事件（tick 后读；FFI borrow_events 用）。
     pub fn last_events(&self) -> &[EventRecord] {
         &self.last_events

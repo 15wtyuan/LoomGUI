@@ -139,6 +139,26 @@ impl PointerState {
         false
     }
 
+    /// 加 touch monitor（去重）。touch_id 找槽（鼠标=-1→slot0）；找不到槽→no-op（Down 前调无效）。
+    /// 照 fgui AddTouchMonitor：仅加指定槽，不做 -1 广播（fgui 自身不用）。
+    pub fn add_touch_monitor(&mut self, touch_id: i32, node: NodeId) {
+        let slot_idx = if touch_id == -1 { 0 } else {
+            match (1..self.slots.len()).find(|&i| self.slots[i].touch_id == touch_id) { Some(i) => i, None => return }
+        };
+        let slot = &mut self.slots[slot_idx];
+        if !slot.touch_monitors.contains(&node) {
+            slot.touch_monitors.push(node);
+        }
+    }
+
+    /// 移除 touch monitor（从所有槽）。照 fgui RemoveTouchMonitor：置 sentinel 而非 RemoveAt（避免遍历偏移）。
+    pub fn remove_touch_monitor(&mut self, node: NodeId) {
+        for slot in &mut self.slots {
+            // touch_monitors 是 Vec<NodeId>，用 retain 移除（Vec 无 sentinel 需求，retain 更简且无遍历期偏移）
+            slot.touch_monitors.retain(|n| *n != node);
+        }
+    }
+
     /// 找/分配槽。鼠标(touch_id=-1)恒 slots[0]；触摸按 touch_id 找，找不到→分配首个空闲。
     /// 返回 slot index；找不到（触摸槽满）→ None。
     /// 注：触摸槽在任意事件（Move/Down/Up）分配（fgui 触摸可 Move 先于 Down 合成），
@@ -770,5 +790,61 @@ mod tests {
             PointerEvent { kind: PointerKind::Move, x: 50.0, y: 50.0, button: 0, pad: [0, 0], touch_id: 1 },
         ]);
         assert!(ps.is_pointer_on_ui(&s), "触摸命中 btn → is_pointer_on_ui=true（任一指）");
+    }
+
+    // ===== v1c.3 T2: touch_monitors capture 测 =====
+
+    /// Down 后 add_touch_monitor → 后续 Move 产 Move@monitor。
+    #[test]
+    fn move_with_monitor_dispatches_to_monitor() {
+        let mut s = one_button_scene();
+        let mut ps = PointerState::new();
+        // touch1 Down 在 btn(1)
+        ps.process(&mut s, &[PointerEvent { kind: PointerKind::Down, x: 50.0, y: 50.0, button: 0, pad: [0, 0], touch_id: 1 }]);
+        // capture btn（模拟 C# CaptureTouch 后调 add_touch_monitor）
+        ps.add_touch_monitor(1, NodeId(1));
+        // Move 移出 btn 到 root 区 (150,150)——正常无 monitor 不产 Move，但有 monitor → Move@btn
+        let out = ps.process(&mut s, &[PointerEvent { kind: PointerKind::Move, x: 150.0, y: 150.0, button: 0, pad: [0, 0], touch_id: 1 }]);
+        assert!(out.iter().any(|e| e.event_type == EVT_MOVE && e.node_id == 1 && e.touch_id == 1),
+            "capture 后 Move（即使移出 btn）产 Move@btn");
+    }
+
+    /// Up 后 monitor 清空，后续 Move 不产。
+    #[test]
+    fn capture_clears_on_up() {
+        let mut s = one_button_scene();
+        let mut ps = PointerState::new();
+        ps.process(&mut s, &[PointerEvent { kind: PointerKind::Down, x: 50.0, y: 50.0, button: 0, pad: [0, 0], touch_id: 1 }]);
+        ps.add_touch_monitor(1, NodeId(1));
+        // Up（清 monitor）
+        ps.process(&mut s, &[PointerEvent { kind: PointerKind::Up, x: 50.0, y: 50.0, button: 0, pad: [0, 0], touch_id: 1 }]);
+        // 注意：Up 释放了 slot1（touch_id 重置 -1）。重新 Down 再 Move 验无 monitor
+        ps.process(&mut s, &[PointerEvent { kind: PointerKind::Down, x: 50.0, y: 50.0, button: 0, pad: [0, 0], touch_id: 2 }]);
+        let out = ps.process(&mut s, &[PointerEvent { kind: PointerKind::Move, x: 51.0, y: 51.0, button: 0, pad: [0, 0], touch_id: 2 }]);
+        assert!(!out.iter().any(|e| e.event_type == EVT_MOVE), "Up 清 monitor 后 Move 不产");
+    }
+
+    /// Up 时 monitor==hit 不重复产 Up。
+    #[test]
+    fn up_hit_equals_monitor_no_double() {
+        let mut s = one_button_scene();
+        let mut ps = PointerState::new();
+        ps.process(&mut s, &[PointerEvent { kind: PointerKind::Down, x: 50.0, y: 50.0, button: 0, pad: [0, 0], touch_id: 1 }]);
+        ps.add_touch_monitor(1, NodeId(1));   // monitor == btn(1)
+        let out = ps.process(&mut s, &[PointerEvent { kind: PointerKind::Up, x: 50.0, y: 50.0, button: 0, pad: [0, 0], touch_id: 1 }]);
+        let up_btn = out.iter().filter(|e| e.event_type == EVT_UP && e.node_id == 1).count();
+        assert_eq!(up_btn, 1, "monitor==hit → Up@btn 只产一次（去重）");
+    }
+
+    /// remove_touch_monitor：加后移除，Move 不再产给该 monitor。
+    #[test]
+    fn remove_touch_monitor_stops_dispatch() {
+        let mut s = one_button_scene();
+        let mut ps = PointerState::new();
+        ps.process(&mut s, &[PointerEvent { kind: PointerKind::Down, x: 50.0, y: 50.0, button: 0, pad: [0, 0], touch_id: 1 }]);
+        ps.add_touch_monitor(1, NodeId(1));
+        ps.remove_touch_monitor(NodeId(1));   // 主动释放
+        let out = ps.process(&mut s, &[PointerEvent { kind: PointerKind::Move, x: 150.0, y: 150.0, button: 0, pad: [0, 0], touch_id: 1 }]);
+        assert!(!out.iter().any(|e| e.event_type == EVT_MOVE), "remove 后 Move 不产给该 monitor");
     }
 }
