@@ -367,6 +367,13 @@ impl PointerState {
                     if id.0 >= scene.nodes.len() {
                         break;
                     }
+                    // §4.4：disabled 节点截断 active 链——自身不设 active，其祖先也不（按下 disabled
+                    // 子树不应让 disabled 节点或其上层变 active）。逐节点查（不只 down_node）：
+                    // hit 落 disabled 节点的非 disabled 子（如 Text 子，坑 29 同款挡命中）时，
+                    // 链上遇到 disabled 祖先须截断，而非只查 down_node（原 fix 漏判祖先）。
+                    if scene.nodes[id.0].disabled {
+                        break;
+                    }
                     scene.nodes[id.0].active = true;
                     cur = scene.nodes[id.0].parent;
                 }
@@ -508,6 +515,41 @@ mod tests {
         assert!(!has_click, "disabled 节点不产 Click");
         let has_down = out.iter().any(|e| e.event_type == EVT_DOWN);
         assert!(!has_down, "disabled 节点不产 Down");
+    }
+
+    #[test]
+    fn down_held_on_disabled_no_active() {
+        // §4.4 回归测：Down 命中 disabled 节点后【按住不松】（无同帧 Up）→
+        // disabled 节点及祖先都不应 active。v1c.3 recompute_active 曾漏 disabled 门控
+        // （down_node 在 Down handler 无条件赋值，recompute 沿链设 active 不查 disabled）。
+        // 注：现有 down_on_disabled_node_no_active_no_click 漏此 case（Down+Up 同 process 调用，
+        // recompute 时 is_down 已 false）。
+        let mut s = one_button_scene();
+        s.nodes[1].disabled = true;
+        let mut ps = PointerState::new();
+        ps.process(
+            &mut s,
+            &[PointerEvent { kind: PointerKind::Down, x: 50.0, y: 50.0, button: 0, pad: [0, 0], touch_id: -1 }],
+        );
+        assert!(!s.nodes[1].active, "按住 disabled btn 不应 active（§4.4 active 抑制）");
+        assert!(!s.nodes[0].active, "disabled 祖先 root 也不应 active");
+    }
+
+    #[test]
+    fn down_held_on_disabled_via_text_child_no_active() {
+        // §4.4 回归测（Text 子命中路径）：按下 disabled 按钮的 Text 子（命中 Text，非 btn）→
+        // disabled btn 仍不应 active。原 fix 只查 down_node（=Text 子，非 disabled）→ 漏判 disabled 祖先。
+        // 坑 29 同款（文字子挡命中）的 active 版：hit 落 disabled 节点的非 disabled 子时，
+        // active 链会带上 disabled 祖先——须沿链逐节点查 disabled，不只查 down_node。
+        let mut s = button_with_text_child_scene(); // root + btn(1) + Text(2)@(0,0,100,20) 挡 btn 上半
+        s.nodes[1].disabled = true;
+        let mut ps = PointerState::new();
+        ps.process(
+            &mut s,
+            &[PointerEvent { kind: PointerKind::Down, x: 10.0, y: 10.0, button: 0, pad: [0, 0], touch_id: -1 }],
+        );
+        // (10,10) 命中 Text 子(2)（Text @0,0,100,20 挡 btn 上半——hover_text_child_sets_ancestor_btn_hovered 已验）
+        assert!(!s.nodes[1].active, "按下 disabled btn 的 Text 子 → btn 不应 active（链遍历逐节点查 disabled）");
     }
 
     #[test]

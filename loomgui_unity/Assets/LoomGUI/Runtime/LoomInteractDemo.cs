@@ -38,6 +38,14 @@ namespace LoomGUI
         {
             var h = _stage.EventHandler;
 
+            // 禁用按钮：find by id → set Node.disabled（让「禁用按钮」真禁用——:disabled 伪类 + active/click 抑制）。
+            // 替代硬编码 build 序 id（auto Text 子会偏移序，不可靠）。pkg 须含 id_attr（page.html id="btn_disabled"）。
+            uint disabledId = _stage.FindNodeById("btn_disabled");
+            if (disabledId != uint.MaxValue)
+                _stage.SetNodeDisabled(disabledId, true);
+            else
+                Debug.LogWarning("[LoomInteractDemo] find btn_disabled 失败——pkg 未含 id？检查 page.html id + 重打 pkg.bin");
+
             // capture：outer 在 capture 阶段先收（root→target 反向，全跑，stop 不阻断 capture）
             h.AddCapture(OuterId, EventType.Click, ctx =>
                 Debug.Log($"[interact] outer capture click target={ctx.target} cur={ctx.currentTarget} phase={ctx.phase}"));

@@ -48,18 +48,18 @@ namespace LoomGUI
                 var d = ScreenToDesign(screen, screenSize, rootSize);
                 events.Add(new Bindings.PointerEvent { kind = kind, button = 0, pad0 = 0, pad1 = 0, touch_id = -1, x = d.x, y = d.y });
             }
-            // 触摸（多指）
+            // 触摸（多指）。TouchPhase 在 UnityEngine.InputSystem（非 LowLevel——坑：1.19 包 TouchPhase 不在 LowLevel）。
             if (Touchscreen.current != null)
             {
                 foreach (var touch in Touchscreen.current.touches)
                 {
                     if (touch == null) continue;
                     var phase = touch.phase.ReadValue();
-                    if (phase == UnityEngine.InputSystem.LowLevel.TouchPhase.Stationary) continue;
+                    if (phase == UnityEngine.InputSystem.TouchPhase.Stationary) continue;
                     byte kind = 2;
-                    if (phase == UnityEngine.InputSystem.LowLevel.TouchPhase.Began) kind = 0;
-                    else if (phase == UnityEngine.InputSystem.LowLevel.TouchPhase.Ended
-                          || phase == UnityEngine.InputSystem.LowLevel.TouchPhase.Canceled) kind = 1;
+                    if (phase == UnityEngine.InputSystem.TouchPhase.Began) kind = 0;
+                    else if (phase == UnityEngine.InputSystem.TouchPhase.Ended
+                          || phase == UnityEngine.InputSystem.TouchPhase.Canceled) kind = 1;
                     var screen = touch.position.ReadValue();
                     var d = ScreenToDesign(screen, screenSize, rootSize);
                     events.Add(new Bindings.PointerEvent { kind = kind, button = 0, pad0 = 0, pad1 = 0, touch_id = touch.touchId.ReadValue(), x = d.x, y = d.y });
@@ -75,10 +75,10 @@ namespace LoomGUI
             events.Add(new Bindings.PointerEvent { kind = mkind, button = 0, pad0 = 0, pad1 = 0, touch_id = -1, x = md.x, y = md.y });
             foreach (var t in Input.touches)
             {
-                if (t.phase == TouchPhase.Stationary) continue;
+                if (t.phase == UnityEngine.TouchPhase.Stationary) continue;
                 byte kind = 2;
-                if (t.phase == TouchPhase.Began) kind = 0;
-                else if (t.phase == TouchPhase.Ended || t.phase == TouchPhase.Canceled) kind = 1;
+                if (t.phase == UnityEngine.TouchPhase.Began) kind = 0;
+                else if (t.phase == UnityEngine.TouchPhase.Ended || t.phase == UnityEngine.TouchPhase.Canceled) kind = 1;
                 var d = ScreenToDesign(t.position, screenSize, rootSize);
                 events.Add(new Bindings.PointerEvent { kind = kind, button = 0, pad0 = 0, pad1 = 0, touch_id = t.fingerId, x = d.x, y = d.y });
             }

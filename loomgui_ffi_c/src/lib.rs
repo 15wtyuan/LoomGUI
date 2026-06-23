@@ -295,6 +295,32 @@ pub extern "C" fn loomgui_node_parent(h: *const StageHandle, node_id: u32) -> u3
     }
 }
 
+/// 按 CSS id 属性查节点（v1c.1+ enabler：业务用 id 定位节点替代硬编码 build 序 id）。
+/// id = UTF-8 字节（指针+len）。返 node_id；null 句柄/非 UTF-8/无匹配 → 0xFFFF_FFFF（sentinel，同 node_parent）。
+///
+/// **常驻（不 gate）：**runtime 稳定入口，`--no-default-features` 构建的 .dll 仍有本函数（坑 21）。
+#[no_mangle]
+pub extern "C" fn loomgui_stage_find_node_by_id(
+    h: *const StageHandle,
+    id: *const u8,
+    id_len: usize,
+) -> u32 {
+    const NOT_FOUND: u32 = 0xFFFF_FFFF;
+    if h.is_null() || id.is_null() {
+        return NOT_FOUND;
+    }
+    let sh = unsafe { &*h };
+    let bytes = unsafe { std::slice::from_raw_parts(id, id_len) };
+    let id_str = match std::str::from_utf8(bytes) {
+        Ok(s) => s,
+        Err(_) => return NOT_FOUND,
+    };
+    match sh.stage.find_node_by_id(id_str) {
+        Some(nid) => nid.0 as u32,
+        None => NOT_FOUND,
+    }
+}
+
 /// 加 touch monitor（v1c.3：C# CaptureTouch 后调）。核心把 node 加进 touch_id 对应槽的 touch_monitors（去重）。
 /// touch_id=-1 → 鼠标主指槽；找不到槽 → no-op。null 句柄 → no-op。
 ///
@@ -672,6 +698,38 @@ mod abi_tests {
         assert_eq!(loomgui_node_parent(h, 1), 0, "child(1).parent == root(0)");
         assert_eq!(loomgui_node_parent(h, 0), 0xFFFF_FFFF, "root(0).parent == sentinel");
         assert_eq!(loomgui_node_parent(h, 99), 0xFFFF_FFFF, "OOB == sentinel");
+        loomgui_stage_free(h);
+    }
+
+    /// find_node_by_id round-trip：手搓包（root + btn id="ok" + Text 子）→ find "ok" 返 btn(1)；
+    /// 无匹配 → sentinel。照 node_parent 测用包路径（不走 parse）。
+    #[test]
+    fn find_node_by_id_round_trip() {
+        use loomgui_core::asset::{write_package, AtlasSection};
+        use loomgui_core::scene::{NodeKind, Scene};
+        use loomgui_core::style::{resolved::ResolvedStyle, dynamic::DynamicRuleTable};
+        let (fp, fplen) = font_path();
+        let entries = vec![
+            (None, NodeKind::Container, ResolvedStyle::default(), Vec::new(), None),
+            (Some(0), NodeKind::Button, ResolvedStyle::default(), Vec::new(), Some("ok".to_string())),
+            (Some(1), NodeKind::Text { content: "OK".into() }, ResolvedStyle::default(), Vec::new(), None),
+        ];
+        let pkg = write_package(&Scene::build(&entries), (100.0, 50.0), &AtlasSection::default(), &DynamicRuleTable::default());
+        let h = loomgui_stage_new(fp.as_ptr() as *const u8, fplen, 100.0, 50.0);
+        assert!(!h.is_null());
+        assert_eq!(loomgui_stage_load_package(h, pkg.as_ptr(), pkg.len()), 0);
+        let id = std::ffi::CString::new("ok").unwrap();
+        assert_eq!(
+            loomgui_stage_find_node_by_id(h, id.as_ptr() as *const u8, id.as_bytes().len()),
+            1,
+            "find 'ok' → btn node 1"
+        );
+        let miss = std::ffi::CString::new("nope").unwrap();
+        assert_eq!(
+            loomgui_stage_find_node_by_id(h, miss.as_ptr() as *const u8, miss.as_bytes().len()),
+            0xFFFF_FFFF,
+            "无匹配 → sentinel"
+        );
         loomgui_stage_free(h);
     }
 }

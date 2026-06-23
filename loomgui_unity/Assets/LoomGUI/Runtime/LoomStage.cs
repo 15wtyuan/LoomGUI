@@ -82,6 +82,23 @@ namespace LoomGUI
             return Native.loomgui_stage_is_pointer_on_ui(_stage);
         }
 
+        /// v1c.1+ enabler：按 CSS id 属性查节点（替代硬编码 build 序 id——auto Text 子会偏移序，不可靠）。
+        /// 返 node_id；无匹配 / stage 未建 → uint.MaxValue（0xFFFF_FFFF）。
+        public uint FindNodeById(string id)
+        {
+            if (_stage == null) return uint.MaxValue;
+            byte[] bytes = Encoding.UTF8.GetBytes(id);
+            fixed (byte* p = bytes)
+                return Native.loomgui_stage_find_node_by_id(_stage, p, (nuint)bytes.Length);
+        }
+
+        /// 业务设节点 disabled（伪类源 + active/click 抑制，§4.4）。NodeId 越界 native 侧静默跳过。
+        public void SetNodeDisabled(uint nodeId, bool disabled)
+        {
+            if (_stage == null) return;
+            Native.loomgui_stage_set_node_disabled(_stage, nodeId, disabled);
+        }
+
         void Awake()
         {
             // ExecuteAlways：EditMode/Play 反复 Awake + domain reload 会让上一轮的 loom_node 镜像 GO

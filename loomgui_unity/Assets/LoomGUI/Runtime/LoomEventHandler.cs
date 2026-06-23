@@ -52,13 +52,13 @@ namespace LoomGUI
         public void CaptureTouch() => _touchCapture = true;
 
         static readonly System.Collections.Generic.Stack<EventContext> _pool = new();
-        internal static EventContext Get()
+        public static EventContext Get()
         {
             var ctx = _pool.Count > 0 ? _pool.Pop() : new EventContext();
             ctx._stopsPropagation = false; ctx._defaultPrevented = false; ctx._touchCapture = false;
             return ctx;
         }
-        internal static void Return(EventContext ctx) => _pool.Push(ctx);
+        public static void Return(EventContext ctx) => _pool.Push(ctx);
 
         [UnityEngine.RuntimeInitializeOnLoadMethod(UnityEngine.RuntimeInitializeLoadType.SubsystemRegistration)]
         static void ClearPool() => _pool.Clear();   // Domain reload 清池（照 fgui EventContext.cs:96-102）

@@ -143,6 +143,16 @@ impl Scene {
         }
         scene
     }
+
+    /// 按 CSS id 属性查节点（首个匹配）。无匹配 / 空 id → None。
+    /// 供 FFI find_node_by_id：业务用 id 注册 listener / 设 disabled，替代硬编码 build 序 id
+    /// （auto Text 子会偏移 build 序，硬编码不可靠——见 LoomInteractDemo nodeId 推断 smell）。
+    pub fn find_by_id_attr(&self, id: &str) -> Option<NodeId> {
+        self.nodes
+            .iter()
+            .find(|n| n.id_attr.as_deref() == Some(id))
+            .map(|n| n.id)
+    }
 }
 
 /// 从 ElementTree + ResolvedStyle 构建 Node 树（gather 后调 `Scene::build`）。
@@ -297,6 +307,22 @@ mod parse_tests {
         assert_eq!(root.id_attr.as_deref(), Some("x"));
         let span = &scene.nodes[root.children[0].0];
         assert_eq!(span.classes, vec!["c".to_string()]);
+    }
+
+    #[test]
+    fn find_by_id_attr_returns_node_and_none() {
+        // 手搓 Scene（不走 parse）：root(id="root") + btn(id="btn") + Text 子(无 id)。
+        // 验：精确匹配返 NodeId；无匹配/空 id → None。
+        let entries = vec![
+            (None, NodeKind::Container, ResolvedStyle::default(), vec![], Some("root".to_string())),
+            (Some(0), NodeKind::Button, ResolvedStyle::default(), vec![], Some("btn".to_string())),
+            (Some(1), NodeKind::Text { content: "x".into() }, ResolvedStyle::default(), vec![], None),
+        ];
+        let scene = Scene::build(&entries);
+        assert_eq!(scene.find_by_id_attr("btn"), Some(NodeId(1)), "find btn → node 1");
+        assert_eq!(scene.find_by_id_attr("root"), Some(NodeId(0)), "find root → node 0");
+        assert_eq!(scene.find_by_id_attr("missing"), None, "无匹配 → None");
+        assert_eq!(scene.find_by_id_attr(""), None, "空 id → None");
     }
 
     #[test]

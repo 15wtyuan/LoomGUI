@@ -95,6 +95,12 @@ impl Stage {
         }
     }
 
+    /// 按 CSS id 属性查节点（首个匹配）。无 scene / 无匹配 → None。
+    /// 供 FFI find_node_by_id：业务用 id 定位节点（注册 listener / 设 disabled）。
+    pub fn find_node_by_id(&self, id: &str) -> Option<NodeId> {
+        self.scene.as_ref().and_then(|s| s.find_by_id_attr(id))
+    }
+
     /// UI 挡住时游戏不响应点击（§10.6）。v1c.3：委托 PointerState（任一活跃槽命中非根）。
     pub fn is_pointer_on_ui(&self) -> bool {
         match &self.scene {
