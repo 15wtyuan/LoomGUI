@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
+using LoomGUI.Bindings;
 
 namespace LoomGUI
 {
@@ -71,40 +72,101 @@ namespace LoomGUI
         public void CallCapture(EventContext ctx) { if (_capture != null) _capture(ctx); }
     }
 
-    /// C# 侧 listener 表 + 派发（对齐 fgui listener 在 C# 域，核心只产事件）。
-    /// v1c.1 单 callback/type（AddListener 覆盖）；v1c.2 多 callback 用 List。
-    public class LoomEventHandler
+    /// C# 事件路由（v1c.2 方向 A，照 fgui EventDispatcher）。listener 表 + bubble/capture 路由。
+    /// unsafe：ParentOf 调 Native.loomgui_node_parent(StageHandle*, uint)，typed ptr 调用需 unsafe 域。
+    public unsafe class LoomEventHandler
     {
-        readonly Dictionary<uint, Dictionary<EventType, Action<LoomEvent>>> _listeners = new();
+        readonly System.Collections.Generic.Dictionary<uint, System.Collections.Generic.Dictionary<EventType, EventBridge>> _listeners = new();
+        readonly System.Collections.Generic.Dictionary<uint, uint> _parentCache = new();   // node_parent 缓存
+        IntPtr _handle;   // node_parent FFI 用（LoomStage 初始化/load 后 SetHandle）
 
-        public void AddListener(uint nodeId, EventType type, Action<LoomEvent> cb)
+        /// LoomStage 在 Awake/load 后调，传 (IntPtr)_stage。清 _parentCache（新 scene 的 parent 关系变了）。
+        public void SetHandle(IntPtr handle) { _handle = handle; _parentCache.Clear(); }
+
+        public void AddListener(uint nodeId, EventType type, EventCallback cb) => GetBridge(nodeId, type).Add(cb);
+        public void AddCapture(uint nodeId, EventType type, EventCallback cb) => GetBridge(nodeId, type).AddCapture(cb);
+        public void RemoveListener(uint nodeId, EventType type, EventCallback cb) => TryGetBridge(nodeId, type)?.Remove(cb);
+        public void RemoveCapture(uint nodeId, EventType type, EventCallback cb) => TryGetBridge(nodeId, type)?.RemoveCapture(cb);
+
+        EventBridge GetBridge(uint nodeId, EventType type)
         {
             if (!_listeners.TryGetValue(nodeId, out var byType))
-                _listeners[nodeId] = byType = new Dictionary<EventType, Action<LoomEvent>>();
-            byType[type] = cb;
+                _listeners[nodeId] = byType = new System.Collections.Generic.Dictionary<EventType, EventBridge>();
+            if (!byType.TryGetValue(type, out var bridge))
+                byType[type] = bridge = new EventBridge();
+            return bridge;
         }
+        EventBridge TryGetBridge(uint nodeId, EventType type)
+            => (_listeners.TryGetValue(nodeId, out var byType) && byType.TryGetValue(type, out var bridge)) ? bridge : null;
 
-        public void RemoveListener(uint nodeId, EventType type)
-        {
-            if (_listeners.TryGetValue(nodeId, out var byType))
-                byType.Remove(type);
-        }
-
-        /// 读 EventRecord[] buffer → 逐条查表派发。ptr = loomgui_stage_borrow_events 返回。
+        /// 读 EventRecord[] buffer → 按 type 分流：Down/Up/Move/Click → BubbleRoute；RollOver/Out → DirectDispatch。
+        /// ptr = loomgui_stage_borrow_events 返回（LoomStage 已 byte* → IntPtr 透传）。
         ///
-        /// **v1c.1 诚实简化**：用 Marshal.PtrToStructure 读 EventRecord。桌面 Mono backend OK；
-        /// IL2CPP 移动端有对齐坑（spec §14.3 禁用 Marshal.PtrToStructure），届时换
-        /// `Span&lt;byte&gt;` + BinaryPrimitives / Unsafe.ReadUnaligned 读。v1c.1 桌面优先。
+        /// **Marshal.PtrToStructure**：桌面 Mono OK；IL2CPP 移动端对齐坑（spec §14.3）届时换 Span+BinaryPrimitives。
         public void DispatchPending(IntPtr ptr, int count)
         {
             if (ptr == IntPtr.Zero || count <= 0) return;
-            int recSize = Marshal.SizeOf<LoomEvent>();
+            int recSize = System.Runtime.InteropServices.Marshal.SizeOf<LoomEvent>();
             for (int i = 0; i < count; i++)
             {
-                var evt = Marshal.PtrToStructure<LoomEvent>(ptr + i * recSize);
-                if (_listeners.TryGetValue(evt.nodeId, out var byType) && byType.TryGetValue(evt.type, out var cb))
-                    cb(evt);
+                var evt = System.Runtime.InteropServices.Marshal.PtrToStructure<LoomEvent>(ptr + i * recSize);
+                switch (evt.type)
+                {
+                    case EventType.Down: case EventType.Up:
+                    case EventType.Move: case EventType.Click: BubbleRoute(evt); break;
+                    case EventType.RollOver: case EventType.RollOut: DirectDispatch(evt); break;
+                }
             }
+        }
+
+        /// bubble 类事件：capture(根→target 反向，不检查 stop) + bubble(target→root 正向，stop break)。照 fgui BubbleEvent。
+        void BubbleRoute(LoomEvent evt)
+        {
+            var chain = AncestorChain(evt.nodeId);   // [target, ..., root]
+            var ctx = EventContext.Get();
+            ctx.target = evt.nodeId; ctx.type = evt.type; ctx.x = evt.x; ctx.y = evt.y;
+            // capture 阶段：根→target 反向，全跑（照 fgui line 302-311 不检查 stop）
+            for (int i = chain.Count - 1; i >= 0; i--)
+            {
+                ctx.currentTarget = chain[i]; ctx.phase = Phase.Capture;
+                TryGetBridge(chain[i], evt.type)?.CallCapture(ctx);
+            }
+            // bubble 阶段：target→root 正向，stop break（照 fgui line 315-328）
+            if (!ctx._stopsPropagation)
+                for (int i = 0; i < chain.Count; i++)
+                {
+                    ctx.currentTarget = chain[i];
+                    ctx.phase = (chain[i] == ctx.target) ? Phase.Target : Phase.Bubble;
+                    TryGetBridge(chain[i], evt.type)?.CallBubble(ctx);
+                    if (ctx._stopsPropagation) break;
+                }
+            EventContext.Return(ctx);
+        }
+
+        /// RollOver/Out 直派：核心已 diff 多目标，每条单节点跑 capture+bubble 回调（不沿链）。照 fgui DispatchEvent/InternalDispatchEvent。
+        void DirectDispatch(LoomEvent evt)
+        {
+            var ctx = EventContext.Get();
+            ctx.target = ctx.currentTarget = evt.nodeId; ctx.phase = Phase.Target;
+            ctx.type = evt.type; ctx.x = evt.x; ctx.y = evt.y;
+            var bridge = TryGetBridge(evt.nodeId, evt.type);
+            if (bridge != null) { bridge.CallCapture(ctx); bridge.CallBubble(ctx); }
+            EventContext.Return(ctx);
+        }
+
+        /// target 起沿 node_parent 至 root 收集 [target, ..., root]。sentinel 0xFFFF_FFFF 止。
+        System.Collections.Generic.List<uint> AncestorChain(uint target)
+        {
+            var chain = new System.Collections.Generic.List<uint>();
+            uint c = target;
+            while (c != 0xFFFF_FFFF) { chain.Add(c); c = ParentOf(c); }
+            return chain;
+        }
+        uint ParentOf(uint nodeId)
+        {
+            if (!_parentCache.TryGetValue(nodeId, out var p))
+                _parentCache[nodeId] = p = Native.loomgui_node_parent((StageHandle*)_handle, nodeId);   // csbindgen 绑定（Task 2 生成）
+            return p;
         }
     }
 }
