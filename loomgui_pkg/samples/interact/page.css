@@ -22,3 +22,12 @@
 .btn.disabled {
   opacity: 0.5;
 }
+.outer {
+  width: 200px;
+  height: 120px;
+  background-color: #444444;
+  padding: 20px;
+}
+.outer:hover {
+  background-color: #666666;
+}

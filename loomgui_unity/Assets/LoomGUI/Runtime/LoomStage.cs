@@ -109,6 +109,10 @@ namespace LoomGUI
                 return;
             }
 
+            // v1c.2-T5：_stage 创建后即 SetHandle（handler.node_parent FFI 需 StageHandle*）。
+            // 每次 load 成功后还会再调（清 _parentCache——新 scene 的 parent 关系变了）。
+            _eventHandler.SetHandle((System.IntPtr)_stage);
+
             // §4.5 stress fixture：勾选 → 程序生成 ~500 节点 html/css（mesh + text 双路径）。
             if (_stress500) BuildStress500Fixture();
 
@@ -178,6 +182,7 @@ namespace LoomGUI
 
         /// <summary>
         /// load_html：UTF8 字节 + fixed 钉住。返回 native 码（0=ok）。
+        /// v1c.2-T5：load 成功后 SetHandle 清 handler._parentCache（scene 重建，parent 关系变）。
         /// </summary>
         bool LoadHtml()
         {
@@ -188,13 +193,16 @@ namespace LoomGUI
             {
                 int r = Native.loomgui_stage_load_html(
                     _stage, hp, (nuint)hb.Length, cp, (nuint)cb.Length);
-                return r == 0;
+                if (r != 0) return false;
             }
+            _eventHandler.SetHandle((System.IntPtr)_stage);
+            return true;
         }
 
         /// <summary>
         /// §13 v1b.1：从 StreamingAssets/_pkgFile 读 .pkg.bin → loomgui_stage_load_package。
         /// 包是 Rust-internal，C# 只读文件透传 bytes（不解析）。editor/desktop 用 File.ReadAllBytes。
+        /// v1c.2-T5：load 成功后 SetHandle 清 handler._parentCache（scene 重建，parent 关系变）。
         /// </summary>
         bool LoadPackage()
         {
@@ -209,8 +217,10 @@ namespace LoomGUI
             fixed (byte* pp = pkg)
             {
                 int r = Native.loomgui_stage_load_package(_stage, pp, (nuint)pkg.Length);
-                return r == 0;
+                if (r != 0) return false;
             }
+            _eventHandler.SetHandle((System.IntPtr)_stage);
+            return true;
         }
 
         /// <summary>
