@@ -163,6 +163,19 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 - **FFI 加**：`loomgui_node_parent(h: *const StageHandle, node_id: u32) -> u32`（根/越界/无 scene → 0xFFFFFFFF；常驻不 gate 坑21）。version v1c.2。
 - **两机约束（v1c.2 执行）**：core cargo test 本机 TDD 闭环；C# 代码本机写不编译（无 Unity），家里机 EditMode+PlayMode 验。改 Rust 后重编+commit .dll（坑10 两机变体）。subagent-driven 6 task 全 Approved。
 
+### 2.17 多触摸 + CaptureTouch（v1c.3，§10.3）
+- **多槽状态机**：`PointerState` 单指针 → `slots: Vec<TouchSlot>` 固定 5 槽（slot0=鼠标 `touch_id=-1` 常驻，slot1-4=触摸 `touch_id=-1` 空闲 Down 分配 fingerId）。照 fgui `TouchInfo[5]`。**鼠标+触摸同帧共存**（偏离 fgui 互斥——fgui 因 touchId=0 给鼠标撞 fingerId 才互斥，LoomGUI 鼠标 -1 绕开）。
+- **EventRecord/PointerEvent 加 touch_id**（破 v1c.2 零改）：EventRecord 16→20B（+`touch_id:i32 @8`）；PointerEvent +`touch_id:i32 @4`（16B，**PointerKind 必须 `#[repr(u8)]`** 见坑 34）。touch_id 贯穿：PointerEvent@4 → EventRecord@8 → C# LoomEvent.touch_id → EventContext.touchId。
+- **active/hovered 全局 union recompute**（删 v1c.1 `set_hovered_chain`/`set_active_chain`）：process 末尾 `recompute_hovered`（清所有→活跃槽命中链 union，任一指命中元素或祖先→`:hover`）+ `recompute_active`（清所有→所有 `is_down` 槽 **down_node** 命中链 union，基于 Down 时命中非当前 hit）。修 v1c.2 单指 `set_active_chain(None)` 多指下互清 bug。RollOver/Out 仍 per-slot hover_diff（每槽独立链，EventRecord 带 touch_id）——**双语义**：RollOver/Out 描述「该指进出」，hovered 描述「任一指在其上」，可能不一致（A 移出 X 但 B 还在 X → X 收 RollOut 但 `:hover` 仍 true），各描述不同事实。
+- **CaptureTouch/touch monitor（照 fgui）**：`EventContext.CaptureTouch()` 设 `_touchCapture` 标志，**消费即清零**（照 fgui EventDispatcher.cs:305-324）；C# `BubbleRoute` 的 capture 阶段 + bubble 阶段**各消费一次**记 `_captureNodeCap`/`_captureNodeBub`（cap/bub 各加一个 monitor，典型拖拽只 bubble 加 1）。Down 路由后 C# 调 `add_touch_monitor(touch_id, node)` FFI → 核心加进该槽 `touch_monitors`（去重，不实现 fgui -1 广播——fgui 自身不用）。Up 后核心清该槽 monitor。
+- **Move 语义对齐 fgui**（v1c.2 行为变化）：核心 process Move 分支——**有 monitor 产 `Move@monitor` 直派（每 monitor 一条）；无 monitor 不产 Move 事件**（仍更新 last_pos+hover_diff）。C# `DispatchPending` Move 改 `DirectDispatch`（v1c.2 是 BubbleRoute）。fgui 鼠标 Move 无 monitor 也只发 Stage 自身（业务不注册=无回调）。**v1c.2 鼠标 Move 产事件沿链 bubble 的行为废止**——无现存业务破坏（interact sample 无 Move listener），要跟鼠标 Move 须 capture。
+- **Up 去重**：核心产 monitor 的 Up 时若 `monitor==hit` 不重复产（避免同节点收两次 Up）。
+- **FFI 加**（常驻不 gate）：`loomgui_stage_add_touch_monitor(h, touch_id:i32, node_id:u32)` + `loomgui_stage_remove_touch_monitor(h, node_id:u32)`（remove 用 `Vec::retain` 非 fgui null-sentinel，Rust 更干净）。version v1c.3。
+- **Unity 采集**（`LoomInputCollector.Collect`）：每帧鼠标（touch_id=-1）+ 所有活跃触摸（fingerId）批量 set_input。新输入系统 `Touchscreen.current.touches` + `Mouse.current`；旧 `Input.touches`。Stationary 跳过，Began→Down/Ended+Canceled→Up。**set_input FFI 是 `PointerEvent*` 非 managed array**（csbindgen），须 `fixed`-pin（坑 36）。
+- **click 沿用 v1c.2 简化**（`down_node==hit && <10px`）；双击/downTargets 兜底/缩放容忍/Move 超阈值取消 defer v1c.4。
+- **Stage tick 管线**：solve→process（多槽，各槽 last_hit）→rematch→render。`cur_hit` 单值字段删（is_pointer_on_ui 改读各槽 last_hit，任一活跃槽命中非根）。Stationary 不刷新 hover（照 fgui 局限，defer v1c.4）。
+- **两机约束（v1c.3 执行）**：core+ffi `cargo test --workspace` 180 测全绿；C# 本机写未编译（无 Unity），家里机 EditMode（capture 测骨架补 handle）+ PlayMode（多指/capture demo/鼠标回归）。subagent-driven 6 task 全 Approved + final review Ready（opus）。spec `docs/superpowers/specs/2026-06-23-v1c.3-multi-touch-design.md`、plan `docs/superpowers/plans/2026-06-23-v1c.3-multi-touch.md`、验收 `docs/v1c.3-home-verification.md`。踩坑：PointerKind repr(C) 4B 判别（坑 34）、csbindgen 不生 use-imported struct stub（坑 35）、set_input PointerEvent* 须 fixed-pin（坑 36）。
+
 ## 3. 依赖 API 适配踩坑（v0 最大教训）
 
 > **plan/brief 写的 API 草稿常与实际 crate 版本不符**。遇编译错按本节对照，**勿硬改依赖版本**，按 crate 实际源码（`~/.cargo/registry/src/<crate>-<ver>/src/`）调。
@@ -452,6 +465,27 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 **解决**：`EventBridge` internal → public（测访问 + 避 `InternalsVisibleTo` 配置；EventBridge public 无害，业务通过 AddListener 用不直接 new）。
 **教训**：C# 类型可见性要考虑测访问——单测直接构造的类型须 public 或加 `[InternalsVisibleTo("Tests")]`（项目已有此机制，坑 13 同源 csbindgen InternalsVisibleTo）。
 
+### 坑 34：`#[repr(C)]` enum 无显式整型 → 判别默认 isize=4B 非 1B（v1c.3）
+
+**症状**：v1c.3 PointerEvent 设计预期 16B（kind 1B + button 1B + pad 2B + touch_id 4B + x/y 8B），但 `cargo` 实测 20B——C# 若声明 PointerKind:byte 会 mis-slice 整个输入数组。
+**根因**：`PointerKind` 是 `#[repr(C)] pub enum { Down=0, Up=1, Move=2 }` 无 `repr(uN)` → Rust 用平台 isize（4B）作判别，非 1B。spec/plan 草稿想当然以为 C-like enum 1B。
+**解决**：`PointerKind` 加 `#[repr(u8)]` → 1B 判别，PointerEvent 回 16B。C# PointerEvent.kind 对齐 byte。
+**教训**：FFI 边界的 C-like enum **必须显式 `#[repr(uN)]`**（u8/u16/u32），否则判别 isize 跨平台不稳 + 撑大 struct。永远 `size_of::<T>()` 断言 ABI struct 尺寸，别信草稿。本坑由 T3 implementer 诚实上报（初版把 sizeof 断言改成实际 20，controller 决定修 core repr(u8) 回 16 而非接受 20）。
+
+### 坑 35：csbindgen 不为 use-imported 的 `#[repr(C)]` struct 生成 C# stub（v1c.3）
+
+**症状**：Rust `PointerEvent` 被 `loomgui_stage_set_input` 签名引用，但 csbindgen 只扫 `#[no_mangle] fn` 签名不追 `use` 路径 → C# `LoomGUIBindings.cs` 无 `PointerEvent` struct 定义，编译报找不到类型。
+**根因**：csbindgen 生成策略限制（只解析 fn 签名里的类型若已在同文件定义，不跨 use 追）。
+**解决**：手补 C# 镜像 `LoomGUIBindings.cs` 同目录 `LoomGUIPointerEvent.cs`（`[StructLayout(Sequential)]` 字段序对齐 Rust `#[repr(C)]`）。**每次 Rust struct 改字段须同步手补镜像**——v1c.3 PointerEvent 加 touch_id 就漏了（T5 brief 没提，controller 补 scope 修），不修则 set_input 写错布局坐标全乱。
+**教训**：csbindgen 项目里，FFI 跨语言 struct（PointerEvent/EventRecord/LoomEvent）是**手补 C# 镜像 + Rust 真相源**双份，改 Rust struct 必须同步 grep C# 镜像 + 更新。EventRecord 镜像是手写 `LoomEvent`（LoomEventHandler.cs），PointerEvent 镜像是 `LoomGUIPointerEvent.cs`。
+
+### 坑 36：csbindgen FFI 数组参数是 `T*` 非 managed array，须 fixed-pin（v1c.3）
+
+**症状**：brief/草稿写 `Native.loomgui_stage_set_input(stage, events.ToArray(), events.Count)`——C# 编译错，`set_input` 签名是 `PointerEvent* events`（raw 指针）非 `PointerEvent[]`。
+**根因**：csbindgen `csharp_use_function_pointer(false)`（Mono 模式）发 raw 指针参数，不自动 marshal managed array。
+**解决**：`fixed (Bindings.PointerEvent* p = arr) { Native.loomgui_stage_set_input((StageHandle*)stage, p, (nuint)arr.Length); }`——`fixed` pin managed array 取 T*，调用期内钉住。空数组走 `null, 0`（Rust FFI guard）。
+**教训**：csbindgen FFI 的数组/缓冲参数都是 raw `T*` + `nuint len`，C# 侧必须 `fixed`-pin（值类型数组）或 `GCHandle.Alloc`（引用类型）取指针。别直接传 managed array。`set_input`/`borrow_events`/`borrow_frame` 全是这模式。
+
 ## 6. 调试/验证技巧
 
 - **★ 实现 v1+ 后端/渲染/对象模型前，先参考 `temp/FairyGUI-unity/` 源码**（对照机制、避免走歪——本 session 因没先看 fgui 的 sortingOrder/rect-mask/MaterialManager，初版设计走了弯路：误用 z 排序、误以为 rect mask 要独立 GO、把绘制序想复杂）。
@@ -538,11 +572,15 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 
 **v1c.2 ✅ 完成（v1c.2 branch，待家里机验）**：事件路由完整化（方向 A）——核心 `hover_diff` 祖先链 diff（点1，修坑 29 嵌套多发，`last_hovered_chain`+`ancestor_chain`）+ FFI `node_parent`（C# 路由沿链，sentinel 0xFFFFFFFF）+ C# `LoomEventHandler` 重写（bubble/capture 两阶段照 fgui BubbleEvent + stop + EventContext 对象池 + 多 callback + 委托 remove + RollOver/Out 直派）+ 主设计 §10.2/§6.3/§15 修订（路由降级业务侧，删 `Node.listeners`）。**EventRecord/event blob/frame blob/.pkg.bin/MirrorPool/shader 零改**。spec `docs/superpowers/specs/2026-06-23-v1c.2-event-bubbling-design.md`、plan `docs/superpowers/plans/2026-06-23-v1c.2-event-bubbling.md`、验收文档 `docs/v1c.2-home-verification.md`。**两机约束**：core cargo test 本机 164 测全绿；C# 本机写未编译（无 Unity），家里机 EditMode（4 路由测骨架补 handle）+ PlayMode 5 条待验。subagent-driven 6 task 全 Approved + final review Ready。踩坑：brief 测断言过强（坑 31）、implementer 改实现适配测超 scope（坑 32）、EventBridge internal 测不可见（坑 33）。
 
-**v1c.2 defer**：CaptureTouch/多触摸槽（v1c.3）、click downTargets 链兜底+双击（v1c.3）、stopImmediatePropagation、broadcast 子树广播（v1.x）、onKeyDown/Up/onMouseWheel 路由（v1d+）、AncestorChain 池化（Move 热路径，fgui 池 callChain，v1c.2 YAGNI 未池）、transform world_to_local 命中（v1d）。
+**v1c.2 defer**：~~CaptureTouch/多触摸槽（v1c.3）~~（v1c.3 ✅）、click downTargets 链兜底+双击（v1c.4）、stopImmediatePropagation、broadcast 子树广播（v1.x）、onKeyDown/Up/onMouseWheel 路由（v1d+）、AncestorChain 池化（Move 热路径，fgui 池 callChain，v1c.2 YAGNI 未池）、transform world_to_local 命中（v1d）。
+
+**v1c.3 ✅ 完成（main @ 2beb6e7，待家里机验）**：多触摸 + CaptureTouch——核心 `PointerState` 单指针 → 5 槽 `TouchSlot`（slot0 鼠标 -1 + slot1-4 触摸，鼠标+触摸共存）+ EventRecord/PointerEvent 加 `touch_id`（EventRecord 20B/PointerEvent 16B，**PointerKind `repr(u8)`** 坑34）+ active/hovered 全局 union recompute（删 set_*_chain，修 v1c.2 多指互清 bug）+ CaptureTouch/touch monitor（照 fgui 消费即清，cap/bub 各加一，add/remove_touch_monitor FFI）+ Move 对齐 fgui（无 monitor 不产，v1c.2 鼠标 Move 沿链 bubble 行为废止）+ Up 去重 + Unity `LoomInputCollector` 多指采集（fixed-pin 坑36）。click 沿用 v1c.2。**frame blob/MirrorPool/.pkg.bin v3 零改**（EventRecord 不进 blob）。spec `docs/superpowers/specs/2026-06-23-v1c.3-multi-touch-design.md`、plan `docs/superpowers/plans/2026-06-23-v1c.3-multi-touch.md`、验收 `docs/v1c.3-home-verification.md`。**两机约束**：core+ffi `cargo test --workspace` 180 测全绿；C# 本机写未编译（无 Unity），家里机 EditMode（capture 测骨架补 handle）+ PlayMode（多指/capture/鼠标回归）。subagent-driven 6 task 全 Approved + final review Ready（opus）。踩坑：PointerKind repr(C) 4B（坑 34）、csbindgen 不生 use-imported struct stub 手补镜像漏（坑 35）、set_input PointerEvent* 须 fixed-pin（坑 36）。brainstorm 阶段 subagent 审核 + 二次 fgui 实证核实修正 4 个 Critical（touch_id 哨兵撤销/capture cap+bub/Up 去重/active 双写）。
+
+**v1c.3 defer（→ v1c.4 click 增强，正交）**：双击（350ms 窗口+位置+同键）、downTargets 链兜底（down 目标被移除沿祖先找，照 fgui ClickTest）、缩放容忍、Move 中超阈值取消 click、Canceled 跳过 click、Stationary hover 跟随（元素动后刷新，照 fgui 局限）。其余同 v1c.2 defer（stopImmediate/broadcast/键盘/transform 命中）。
 
 **v1 其余 defer（v0 起，未动）**：
-- v1b 全收尾（A/B/C/mesh/CJK ✅）+ v1c.1 最小交互闭环 ✅ + **v1c.2 路由完整化 ✅（待家里机验）**。
-- **下一个**：v1c.3 多触摸 capture / v1d 动画滚动拖拽焦点（§11/§12.7，#2 可滚动容器）/ v1e perf。
+- v1b 全收尾（A/B/C/mesh/CJK ✅）+ v1c.1 最小交互闭环 ✅ + v1c.2 路由完整化 ✅ + **v1c.3 多触摸+CaptureTouch ✅（待家里机验）**。
+- **下一个**：v1c.4 click 增强（双击/downTargets 兜底，v1c 收尾）/ v1d 动画滚动拖拽焦点（§11/§12.7，#2 可滚动容器，消费 v1c.3 capture 基座）/ v1e perf。
 - NativeHost/virtualization/shape mask：v1.x。
 
 完整 defer 表见各 spec §7；v1a Phase 1 实现 ledger 见 `.git/sdd/progress.md`。
