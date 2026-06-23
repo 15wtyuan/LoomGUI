@@ -155,6 +155,14 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 - **FFI**（pull 模式绕 §14.2 IL2CPP 回调坑）：`set_input`/`borrow_events`/`is_pointer_on_ui`/`set_node_disabled` 全常驻不 gate。listener 在 C# 侧（对齐 fgui），核心只算命中+产事件+伪类重匹配。
 - **Scene/Node 加**：`base_style`(不变)/`classes`/`id_attr`(CSS id，非 `Node.id: NodeId` 占用)/`touchable`/`hovered`/`active`/`disabled` + `dynamic_rules`。pkg.bin v2→v3 加 DynamicRuleSection（bincode DynamicRuleTable）+ NodeBlock classes/id_attr 段。
 
+### 2.16 事件路由层（v1c.2，§10.2 方向 A）
+- **方向 A（架构决策）**：bubble/capture 路由 + listener 表在 **C# 业务侧**（`LoomEventHandler`），非核心。核心只保留命中 hit_test + 命中 diff（hover/active 状态 + RollOver/Out 产出）+ 伪类 rematch。主设计 §10.2/§6.3 line251/§15 已修订（删 `Node.listeners`，路由降级业务侧）。判据：fgui 整个事件管线（命中+状态机+rollOver diff+bubble+click）全在 C# `Stage.cs` 业务侧（非核心）；`stop_propagation` 是回调副作用必须在 C#；核心最小改动。
+- **核心↔C# 边界**：核心产 target 事件（`EventRecord{node_id=target}`）+ RollOver/Out 多目标 diff；C# 沿 `node_parent` 链 bubble/capture。**EventRecord 零改**（node_id=target，C# 按 event_type 分流：Down/Up/Move/Click→BubbleRoute，RollOver/Out→DirectDispatch）。只新增 `node_parent` FFI。
+- **hover_diff 祖先链 diff（点1，修坑 29 嵌套多发）**：v1c.1 单点 diff（旧 target RollOut+新 target RollOver）→ 两链 diff（`last_hovered_chain: Vec<NodeId>` + `ancestor_chain()` 沿 parent 至 root；旧链独有 RollOut、新链独有 RollOver、共同祖先段不产——鼠标从父进子父不 RollOut）。照 fgui `HandleRollOver`（Stage.cs:1315）。hovered 状态仍 `set_hovered_chain`（rematch 用）。
+- **C# 路由（照 fgui `EventDispatcher`）**：`BubbleRoute`（capture 根→target 反向**全跑不检查 stop**，照 BubbleEvent line302-311 + bubble target→root 正向 stop break line315-328）+ `DirectDispatch`（RollOver/Out 单节点 capture+bubble 不沿链，照 `InternalDispatchEvent`）+ `AncestorChain`（node_parent 缓存，sentinel 0xFFFFFFFF 止）+ `EventContext`（对象池 Stack + target/currentTarget/phase + StopPropagation/PreventDefault，Get 只重置 stop/prevent **不重置 payload**，照 fgui）+ `EventBridge`（多播 _bubble/_capture，Add 内 `-=cb;+=cb` 去重）+ 委托引用 remove（非 ListenerId）+ `SetHandle`（赋 _handle + 清 _parentCache，**每次 load 调**非只 Awake）。
+- **FFI 加**：`loomgui_node_parent(h: *const StageHandle, node_id: u32) -> u32`（根/越界/无 scene → 0xFFFFFFFF；常驻不 gate 坑21）。version v1c.2。
+- **两机约束（v1c.2 执行）**：core cargo test 本机 TDD 闭环；C# 代码本机写不编译（无 Unity），家里机 EditMode+PlayMode 验。改 Rust 后重编+commit .dll（坑10 两机变体）。subagent-driven 6 task 全 Approved。
+
 ## 3. 依赖 API 适配踩坑（v0 最大教训）
 
 > **plan/brief 写的 API 草稿常与实际 crate 版本不符**。遇编译错按本节对照，**勿硬改依赖版本**，按 crate 实际源码（`~/.cargo/registry/src/<crate>-<ver>/src/`）调。
@@ -423,6 +431,27 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 **解决**（defer v1c.x）：修坑 29（hover 祖先链）后影响降级——文字挡命中但父也 hover，故不需 pointer-events 穿透。根治须 build_scene 后给自动 Text 子补 resolve（架构改），或框架默认 Text `touchable=false`。v1c.1 sample 用显式 `<span>` 绕（修坑 29 后已回归裸文本）。
 **教训**：自动建的节点（非 DOM 元素）不消费 StyleSheet——CSS 规则只作用于 parse 期 DOM 元素；给自动子样式化须显式标签或框架默认。
 
+### 坑 31：brief 测断言过强——`hover_chain_idempotent` assert `out.is_empty()` 但 Move 每次 emit（v1c.2）
+
+**症状**：v1c.2 hover_diff 祖先链 diff 的幂等测验 `out.is_empty()`（同点 Move 第二次），但 v1c.1 Move handler 命中即产 `EVT_MOVE`（§7.1「move 恒产」），故 out 非空，测 FAIL。
+**根因**：测的本意是「hover diff 幂等」（同点无 RollOver/Out），不是「无任何事件」。Move 事件每次 emit（指针移动事件，非 hover 变化），照 fgui `onTouchMove` 每次 dispatch。
+**解决**：测断言改为 `out.iter().all(|e| e.event_type != EVT_ROLL_OVER && e.event_type != EVT_ROLL_OUT)`（无 hover 事件，Move 允许）。
+**教训**：写测断言要精确反映验的语义——「幂等」≠「无事件」。Move/scroll 等每次产的事件不能和 hover/diff 状态变化混在 `is_empty` 断言里。
+
+### 坑 32：implementer 为让 brief 测通过改实现（超 scope 破坏语义）（v1c.2）
+
+**症状**：T1 implementer 为让坑 31 的 brief 测 `out.is_empty()` 通过，改 Move handler 加 `ancestor_chain 不变时抑制 EVT_MOVE`——超 brief scope + 破坏 §7.1 恒产 + 会破坏 v1d drag（onTouchMove 驱动，同节点内移动也要收）。
+**根因**：implementer 把 brief 测当权威，brief 测与既有语义冲突时**改实现适配测**（方向反了）。
+**解决**：fix 恢复 Move 无条件 emit + 改测断言（坑 31）。
+**教训**：brief 测 vs 既有语义冲突时，**改测不改实现**（除非 plan 明确要求改语义）。implementer 按 brief verbatim 转录遇测-实现冲突应 flag DONE_WITH_CONCERNS 让 controller adjudicate，而非自作主张改实现。controller review 要验「超 brief scope 的改动」。
+
+### 坑 33：C# EventBridge internal 测跨 namespace 不可见（v1c.2）
+
+**症状**：T3 `EventBridge`（internal）单测在 `LoomGUI.Tests` namespace 直接 `new EventBridge()`——跨 namespace 不可见，编译报 inaccessible。
+**根因**：v1c.1 测只碰 public 类型，无此需求；v1c.2 EventBridge internal + 测直接构造触发。
+**解决**：`EventBridge` internal → public（测访问 + 避 `InternalsVisibleTo` 配置；EventBridge public 无害，业务通过 AddListener 用不直接 new）。
+**教训**：C# 类型可见性要考虑测访问——单测直接构造的类型须 public 或加 `[InternalsVisibleTo("Tests")]`（项目已有此机制，坑 13 同源 csbindgen InternalsVisibleTo）。
+
 ## 6. 调试/验证技巧
 
 - **★ 实现 v1+ 后端/渲染/对象模型前，先参考 `temp/FairyGUI-unity/` 源码**（对照机制、避免走歪——本 session 因没先看 fgui 的 sortingOrder/rect-mask/MaterialManager，初版设计走了弯路：误用 z 排序、误以为 rect mask 要独立 GO、把绘制序想复杂）。
@@ -505,11 +534,15 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 
 **v1c.1 ✅ 完成（merged main @ 44e715c）**：事件/命中/输入最小交互闭环——`input.rs`（PointerEvent/EventRecord + PointerState 单指针状态机 + hover/active **祖先链**）+ `hit.rs`（逆等效绘制序命中，layout_rect AABB+clip+pointer-events+disabled 仍命中）+ `style/dynamic.rs`（伪类重匹配，全量重 cascade §5.3；selector 类型从 parse 迁此修 parse-gate）+ pkg.bin v2→v3（DynamicRuleSection bincode + NodeBlock classes/id_attr）+ FFI 4 函数（pull 模式绕 IL2CPP 回调）+ Unity `LoomInputCollector`/`LoomEventHandler`（listener 在 C#）。命中验收 #3（hover/active 反馈）/#5（is_pointer_on_ui）。spec `docs/superpowers/specs/2026-06-21-v1c.1-event-hit-input-design.md`、plan `docs/superpowers/plans/2026-06-21-v1c.1-event-hit-input.md`、progress `.superpowers/sdd/progress.md`。**PlayMode 验收修 3 真实坑**：Unity 新旧输入系统不匹配（坑 28，双路径 `#if ENABLE_INPUT_SYSTEM`）、hover/active 只设命中点无祖先链（坑 29，对齐 fgui rollOverChain 修）、自动 Text 子不消费 StyleSheet（坑 30，defer 根因 a）。subagent-driven 11 task 全 Approved，3 次 API 限流中断无质量损失（T3 半成品 discard 重派，T9/T11 产出完整只重派 review）。`id_attr` 偏离（`Node.id: NodeId` 占用，合理）。
 
-**v1c.1 defer**：根因 a（自动 Text 子消费 StyleSheet，架构改，修坑 29 后降级）、事件冒泡 BubbleEvent（v1c.2）、多触摸 capture（v1c.3）、invalidation set 伪类重匹配优化（v1e 撞墙）、transform world_to_local 命中（v1d）、滚轮/键盘/IME 输入（v1d+/G5）。
+**v1c.1 defer**：根因 a（自动 Text 子消费 StyleSheet，架构改，修坑 29 后降级）、~~事件冒泡 BubbleEvent（v1c.2）~~（v1c.2 ✅）、多触摸 capture（v1c.3）、invalidation set 伪类重匹配优化（v1e 撞墙）、transform world_to_local 命中（v1d）、滚轮/键盘/IME 输入（v1d+/G5）。
+
+**v1c.2 ✅ 完成（v1c.2 branch，待家里机验）**：事件路由完整化（方向 A）——核心 `hover_diff` 祖先链 diff（点1，修坑 29 嵌套多发，`last_hovered_chain`+`ancestor_chain`）+ FFI `node_parent`（C# 路由沿链，sentinel 0xFFFFFFFF）+ C# `LoomEventHandler` 重写（bubble/capture 两阶段照 fgui BubbleEvent + stop + EventContext 对象池 + 多 callback + 委托 remove + RollOver/Out 直派）+ 主设计 §10.2/§6.3/§15 修订（路由降级业务侧，删 `Node.listeners`）。**EventRecord/event blob/frame blob/.pkg.bin/MirrorPool/shader 零改**。spec `docs/superpowers/specs/2026-06-23-v1c.2-event-bubbling-design.md`、plan `docs/superpowers/plans/2026-06-23-v1c.2-event-bubbling.md`、验收文档 `docs/v1c.2-home-verification.md`。**两机约束**：core cargo test 本机 164 测全绿；C# 本机写未编译（无 Unity），家里机 EditMode（4 路由测骨架补 handle）+ PlayMode 5 条待验。subagent-driven 6 task 全 Approved + final review Ready。踩坑：brief 测断言过强（坑 31）、implementer 改实现适配测超 scope（坑 32）、EventBridge internal 测不可见（坑 33）。
+
+**v1c.2 defer**：CaptureTouch/多触摸槽（v1c.3）、click downTargets 链兜底+双击（v1c.3）、stopImmediatePropagation、broadcast 子树广播（v1.x）、onKeyDown/Up/onMouseWheel 路由（v1d+）、AncestorChain 池化（Move 热路径，fgui 池 callChain，v1c.2 YAGNI 未池）、transform world_to_local 命中（v1d）。
 
 **v1 其余 defer（v0 起，未动）**：
-- v1b 全收尾（A/B/C/mesh/CJK ✅）+ **v1c.1 最小交互闭环 ✅**。
-- **下一个**：v1c.2 路由完整化（DOM 三阶段冒泡+stop_propagation+EventBridge）/ v1c.3 多触摸 / v1d 动画滚动拖拽焦点（§11/§12.7，#2 可滚动容器）。
+- v1b 全收尾（A/B/C/mesh/CJK ✅）+ v1c.1 最小交互闭环 ✅ + **v1c.2 路由完整化 ✅（待家里机验）**。
+- **下一个**：v1c.3 多触摸 capture / v1d 动画滚动拖拽焦点（§11/§12.7，#2 可滚动容器）/ v1e perf。
 - NativeHost/virtualization/shape mask：v1.x。
 
 完整 defer 表见各 spec §7；v1a Phase 1 实现 ledger 见 `.git/sdd/progress.md`。
