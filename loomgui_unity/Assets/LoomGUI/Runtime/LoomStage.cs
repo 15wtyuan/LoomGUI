@@ -74,7 +74,7 @@ namespace LoomGUI
         /// stage.EventHandler.AddListener(nodeId, EventType.Click, OnBtnClick)。
         public LoomEventHandler EventHandler => _eventHandler;
 
-        /// v1c.1：UI 挡住时游戏不响应点击（§10.6）。= cur_hit 非空且非根。
+        /// v1c.3：UI 挡住时游戏不响应点击（§10.6）。= 任一活跃槽（鼠标 + 触摸）命中非根节点。
         /// 游戏侧每帧/点击时查此 bool 决定是否消费输入（true → 游戏不响应）。
         public bool IsPointerOnUI()
         {

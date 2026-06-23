@@ -242,7 +242,7 @@ pub extern "C" fn loomgui_stage_borrow_events(
     events.as_ptr() as *const u8
 }
 
-/// UI 挡住时游戏不响应点击（§10.6）。= cur_hit 非空且非根（根是背景，不算 UI 挡）。
+/// UI 挡住时游戏不响应点击（§10.6）。= 任一活跃槽 last_hit 非空且非根（v1c.3 多指：鼠标 slot0 + 已分配触摸槽）。
 /// null 句柄 → false。
 ///
 /// **常驻（不 gate）。**
