@@ -455,7 +455,7 @@ mod tests {
 
     #[test]
     fn hover_chain_idempotent() {
-        // 同点 Move 两次 → 第二次无事件（链不变）。
+        // 同点 Move 两次 → 第二次无 hover 事件（链不变；Move 仍产——§7.1 恒产，不抑制）。
         let mut s = nested_scene();
         let mut ps = PointerState::new();
         ps.process(&mut s, &[PointerEvent { kind: PointerKind::Move, x: 10.0, y: 10.0, button: 0 }]);
