@@ -8,7 +8,7 @@ use loomgui_core::input::{EventRecord, PointerEvent};
 use loomgui_core::scene::NodeId;
 use loomgui_core::stage::Stage;
 
-/// 版本字符串（C null-terminated `b"v1c.1\0"`）。Task 1 工具链 round-trip 用。
+/// 版本字符串（C null-terminated `b"v1c.2\0"`）。Task 1 工具链 round-trip 用。
 ///
 /// 返回 `*const u8`（csbindgen 映射为 C# `byte*`）；CString::as_ptr 给的是
 /// `*const c_char`（i8），这里 cast 对齐签名。OnceLock 缓存，避免每次分配+泄漏。
@@ -16,7 +16,7 @@ use loomgui_core::stage::Stage;
 pub extern "C" fn loomgui_version() -> *const u8 {
     static VERSION: std::sync::OnceLock<CString> = std::sync::OnceLock::new();
     VERSION
-        .get_or_init(|| CString::new("v1c.1").unwrap())
+        .get_or_init(|| CString::new("v1c.2").unwrap())
         .as_ptr() as *const u8
 }
 
@@ -272,6 +272,29 @@ pub extern "C" fn loomgui_stage_set_node_disabled(
     sh.stage.set_node_disabled(NodeId(node_id as usize), disabled);
 }
 
+/// 返 parent node_id（v1c.2：C# 事件路由沿链用，spec §4.2）。根/越界/无 scene → 0xFFFF_FFFF（sentinel）。
+///
+/// **常驻（不 gate）：**runtime 稳定入口，`--no-default-features` 构建的 .dll 仍有本函数（坑 21）。
+#[no_mangle]
+pub extern "C" fn loomgui_node_parent(h: *const StageHandle, node_id: u32) -> u32 {
+    const ROOT_SENTINEL: u32 = 0xFFFF_FFFF;
+    if h.is_null() {
+        return ROOT_SENTINEL;
+    }
+    let sh = unsafe { &*h };
+    match &sh.stage.scene {
+        Some(scene) => {
+            let idx = node_id as usize;
+            if idx < scene.nodes.len() {
+                scene.nodes[idx].parent.map(|p| p.0 as u32).unwrap_or(ROOT_SENTINEL)
+            } else {
+                ROOT_SENTINEL
+            }
+        }
+        None => ROOT_SENTINEL,
+    }
+}
+
 /// 全局 shutdown（Domain reload hook）。C# `LoomStage.ResetStatics`（SubsystemRegistration）
 /// 调用本函数——即使当前核心无全局态，hook 必须存在：v1b 引入 global texture/font registry
 /// 时此处自动清，无需再改接线。
@@ -296,10 +319,10 @@ mod tests {
     use std::ffi::CStr;
 
     #[test]
-    fn version_returns_c_string_v1c1() {
+    fn version_returns_c_string_v1c2() {
         unsafe {
             let s = CStr::from_ptr(loomgui_version() as *const i8);
-            assert_eq!(s.to_str().unwrap(), "v1c.1");
+            assert_eq!(s.to_str().unwrap(), "v1c.2");
         }
     }
 }
@@ -509,8 +532,8 @@ mod abi_tests {
         loomgui_stage_free(h);
     }
 
-    /// 4 函数常驻契约：无 parse feature 也能编译（§14.6 坑21）。
-    /// 此测在 normal build 跑，验证 4 函数 + PointerEvent/EventRecord 常驻可调。
+    /// 5 函数常驻契约：无 parse feature 也能编译（§14.6 坑21）。
+    /// 此测在 normal build 跑，验证 5 函数 + PointerEvent/EventRecord 常驻可调。
     /// 不 tick（tick_and_render 需先 load scene）——本测只验常驻编译/调用安全；
     /// 真正的 --no-default-features 验在 Step 5 `cargo build -p loomgui_ffi_c --no-default-features`。
     /// 行为验（含 set_input→tick→borrow_events/is_pointer_on_ui）在 parse-feature 测中覆盖。
@@ -526,6 +549,28 @@ mod abi_tests {
         let mut len = 1usize;
         let ptr = loomgui_stage_borrow_events(h, &mut len);
         assert!(ptr.is_null() && len == 0);
+        assert_eq!(loomgui_node_parent(h, 0), 0xFFFF_FFFF, "无 scene → sentinel，不 panic");
+        loomgui_stage_free(h);
+    }
+
+    /// node_parent 契约（v1c.2）：child.parent==root；root.parent==sentinel；OOB==sentinel。
+    #[test]
+    fn node_parent_returns_chain_and_sentinel() {
+        use loomgui_core::asset::{write_package, AtlasSection};
+        use loomgui_core::scene::{NodeKind, Scene};
+        use loomgui_core::style::{resolved::ResolvedStyle, dynamic::DynamicRuleTable};
+        let (fp, fplen) = font_path();
+        let entries = vec![
+            (None, NodeKind::Container, ResolvedStyle::default(), Vec::new(), None),
+            (Some(0), NodeKind::Container, ResolvedStyle::default(), Vec::new(), None),
+        ];
+        let pkg = write_package(&Scene::build(&entries), (100.0, 50.0), &AtlasSection::default(), &DynamicRuleTable::default());
+        let h = loomgui_stage_new(fp.as_ptr() as *const u8, fplen, 100.0, 50.0);
+        assert!(!h.is_null());
+        assert_eq!(loomgui_stage_load_package(h, pkg.as_ptr(), pkg.len()), 0);
+        assert_eq!(loomgui_node_parent(h, 1), 0, "child(1).parent == root(0)");
+        assert_eq!(loomgui_node_parent(h, 0), 0xFFFF_FFFF, "root(0).parent == sentinel");
+        assert_eq!(loomgui_node_parent(h, 99), 0xFFFF_FFFF, "OOB == sentinel");
         loomgui_stage_free(h);
     }
 }
