@@ -4,7 +4,6 @@
 //! solve + build_render_nodes。`render_json` serde 序列化产 spec §5 JSON。
 //! v0 无输入/动画/打包器，Stage 只是「装配 + 单帧」的薄壳。
 
-use crate::hit::hit_test;
 use crate::input::{EventRecord, PointerEvent, PointerState};
 use crate::layout::solve;
 #[cfg(feature = "parse")]
@@ -36,8 +35,6 @@ pub struct Stage {
     pub pending_input: Vec<PointerEvent>,
     /// v1c.1：本帧 tick 产出的事件序列（process 返回）；last_events/borrow_events 读。
     pub last_events: Vec<EventRecord>,
-    /// v1c.1：当前帧命中节点（is_pointer_on_ui 读；命中根不算 UI 挡）。
-    pub cur_hit: Option<NodeId>,
 }
 
 impl Stage {
@@ -53,7 +50,6 @@ impl Stage {
             pointer_state: PointerState::new(),
             pending_input: Vec::new(),
             last_events: Vec::new(),
-            cur_hit: None,
         })
     }
 
@@ -99,14 +95,11 @@ impl Stage {
         }
     }
 
-    /// UI 挡住时游戏不响应点击（§10.6）。= cur_hit 非空且非根（根是背景，不算 UI 挡）。
+    /// UI 挡住时游戏不响应点击（§10.6）。v1c.3：委托 PointerState（任一活跃槽命中非根）。
     pub fn is_pointer_on_ui(&self) -> bool {
-        match self.cur_hit {
+        match &self.scene {
             None => false,
-            Some(id) => {
-                let scene = self.scene.as_ref().expect("load first");
-                !scene.roots.contains(&id)
-            }
+            Some(scene) => self.pointer_state.is_pointer_on_ui(scene),
         }
     }
 
@@ -117,10 +110,9 @@ impl Stage {
 
     /// 每帧管线（§4.5 + 首帧修正）：
     /// ①solve（算 layout_rect——hit_test 必须用已解矩形，故 solve 在 process 前）
-    /// ②process（hit+状态 diff+产事件，存 last_events，更新 hovered/active）
-    /// ③cur_hit=hit_test(last_pos)（is_pointer_on_ui 读）
-    /// ④rematch_pseudo_classes（按新 hover/active 状态改 Node.style——本帧渲染吃到视觉变）
-    /// ⑤build_render_nodes
+    /// ②process（hit+状态 diff+产事件，存 last_events，更新各槽 last_hit + hovered/active）
+    /// ③rematch_pseudo_classes（按新 hover/active 状态改 Node.style——本帧渲染吃到视觉变）
+    /// ④build_render_nodes
     ///
     /// **与 spec §4.5 的差异**：spec 原「process→rematch→solve」在首帧 hit_test 读全零
     /// layout_rect（未 solve）→ 无命中 → 1 tick 出不来事件。本实现把 solve 前移到 process
@@ -136,8 +128,7 @@ impl Stage {
         // 都是 self 字段，同时借 self 冲突。先 take 出 input（离开 self 借用），process 返回后 drop。
         let input = std::mem::take(&mut self.pending_input);
         self.last_events = self.pointer_state.process(scene, &input);
-        // 3. 更新 cur_hit（is_pointer_on_ui 读）——用 pointer_state.last_pos
-        self.cur_hit = hit_test(scene, self.pointer_state.last_pos);
+        // 3. cur_hit 已在 process 内更新各槽 last_hit；is_pointer_on_ui 读各槽
         // 4. 伪类重匹配（按新 hover/active 改 Node.style——视觉变本帧 render 吃到）
         rematch_pseudo_classes(scene);
         // 5. 渲染
@@ -204,7 +195,7 @@ mod tests {
         let mut s2 = Stage::new(font_path, (200.0, 100.0)).unwrap();
         s2.load_package(&pkg).unwrap();
         // 输入：Move 到按钮 (50,25)（按钮在 (0,0,100,50)）
-        s2.set_input(&[crate::input::PointerEvent { kind: crate::input::PointerKind::Move, x: 50.0, y: 25.0, button: 0 }]);
+        s2.set_input(&[crate::input::PointerEvent { kind: crate::input::PointerKind::Move, x: 50.0, y: 25.0, button: 0, pad: [0, 0], touch_id: -1 }]);
         s2.tick_and_render();
         let events = s2.last_events();
         assert!(events.iter().any(|e| e.event_type == crate::input::EVT_ROLL_OVER), "Move 到按钮 → RollOver");
@@ -229,8 +220,8 @@ mod tests {
         s2.set_node_disabled(crate::scene::node::NodeId(1), true);
         // Down + Up 在按钮上——disabled 不产 Click
         s2.set_input(&[
-            crate::input::PointerEvent { kind: crate::input::PointerKind::Down, x: 50.0, y: 25.0, button: 0 },
-            crate::input::PointerEvent { kind: crate::input::PointerKind::Up, x: 50.0, y: 25.0, button: 0 },
+            crate::input::PointerEvent { kind: crate::input::PointerKind::Down, x: 50.0, y: 25.0, button: 0, pad: [0, 0], touch_id: -1 },
+            crate::input::PointerEvent { kind: crate::input::PointerKind::Up, x: 50.0, y: 25.0, button: 0, pad: [0, 0], touch_id: -1 },
         ]);
         s2.tick_and_render();
         let events = s2.last_events();
@@ -244,7 +235,7 @@ mod tests {
         let mut s = Stage::new(font_path, (200.0, 100.0)).unwrap();
         // 手搓空 scene
         s.scene = Some(crate::scene::node::Scene { roots: vec![], nodes: vec![], dynamic_rules: Default::default() });
-        s.set_input(&[crate::input::PointerEvent { kind: crate::input::PointerKind::Move, x: 50.0, y: 50.0, button: 0 }]);
+        s.set_input(&[crate::input::PointerEvent { kind: crate::input::PointerKind::Move, x: 50.0, y: 50.0, button: 0, pad: [0, 0], touch_id: -1 }]);
         s.tick_and_render();
         assert!(!s.is_pointer_on_ui(), "空 scene → false");
     }

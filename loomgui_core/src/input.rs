@@ -1,5 +1,6 @@
-//! 指针输入事件 + 单指针状态机（§10.3）。消费 PointerEvent[] + 命中 → 产 EventRecord[]。
-//! v1c.1 单指针。click 阈值 ~10px（§10.3 鼠标）。disabled 节点产 RollOver/Out 但不产 Down/Up/Click。
+//! 指针输入事件 + 多指针状态机（§10.3）。v1c.3：固定 5 槽（slot0=鼠标，slot1-4=触摸）。
+//! 消费 PointerEvent[] + 命中 → 产 EventRecord[]。click 阈值 ~10px（§10.3 鼠标）。
+//! disabled 节点产 RollOver/Out 但不产 Down/Up/Click。
 
 use crate::hit::hit_test;
 use crate::scene::node::{NodeId, Scene};
@@ -8,9 +9,11 @@ use crate::scene::node::{NodeId, Scene};
 #[derive(Debug, Clone, Copy)]
 pub struct PointerEvent {
     pub kind: PointerKind,
+    pub button: u8,
+    pub pad: [u8; 2],
+    pub touch_id: i32,   // v1c.3：-1=鼠标主指 slots[0]；>=0=触摸 fingerId
     pub x: f32,
     pub y: f32,
-    pub button: u8,
 }
 
 #[repr(C)]
@@ -22,11 +25,14 @@ pub enum PointerKind {
 }
 
 /// 事件输出（FFI 扁平 POD）。event_type: 0=Down,1=Up,2=Move,3=Click,4=RollOver,5=RollOut。
+/// v1c.3：+touch_id:i32 @8（破 v1c.2 零改，16→20 字节）。
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct EventRecord {
     pub node_id: u32,
     pub event_type: u8,
+    pub pad: [u8; 3],
+    pub touch_id: i32,
     pub x: f32,
     pub y: f32,
 }
@@ -40,51 +46,59 @@ pub const EVT_ROLL_OUT: u8 = 5;
 
 const CLICK_THRESHOLD_PX: f32 = 10.0;
 
+/// 单触摸槽状态（v1c.3）。slots[0]=鼠标主指（touch_id=-1 常驻），slots[1..4]=触摸。
 #[derive(Debug, Clone)]
-pub struct PointerState {
+pub struct TouchSlot {
+    pub touch_id: i32,                  // -1=鼠标主指/空闲触摸槽；>=0=触摸 fingerId
     pub last_pos: (f32, f32),
     pub is_down: bool,
     pub down_node: Option<NodeId>,
     pub down_pos: (f32, f32),
-    pub last_hovered_chain: Vec<NodeId>,   // v1c.2: 上帧 hovered 链（target→root），替代 last_hovered: Option<NodeId>
+    pub last_hit: Option<NodeId>,       // v1c.3：本帧命中（hover_diff + is_pointer_on_ui 用）
+    pub last_hovered_chain: Vec<NodeId>,
+    pub touch_monitors: Vec<NodeId>,    // v1c.3：capture 的节点（T2 填派发逻辑）
 }
 
-impl Default for PointerState {
-    fn default() -> Self {
+impl TouchSlot {
+    fn new_mouse() -> Self {
         Self {
+            touch_id: -1,
             last_pos: (0.0, 0.0),
             is_down: false,
             down_node: None,
             down_pos: (0.0, 0.0),
+            last_hit: None,
             last_hovered_chain: Vec::new(),
+            touch_monitors: Vec::new(),
+        }
+    }
+    fn new_free() -> Self {
+        Self {
+            touch_id: -1,
+            last_pos: (0.0, 0.0),
+            is_down: false,
+            down_node: None,
+            down_pos: (0.0, 0.0),
+            last_hit: None,
+            last_hovered_chain: Vec::new(),
+            touch_monitors: Vec::new(),
         }
     }
 }
 
-/// 清所有节点 hovered + 沿 target 祖先链置 true（对齐 fgui rollOverChain + CSS :hover 祖先语义）。
-/// target=None → 仅清所有（hover 离开 UI）。
-fn set_hovered_chain(scene: &mut Scene, target: Option<NodeId>) {
-    for n in scene.nodes.iter_mut() {
-        n.hovered = false;
-    }
-    let mut cur = target;
-    while let Some(id) = cur {
-        let next = scene.nodes[id.0].parent;
-        scene.nodes[id.0].hovered = true;
-        cur = next;
-    }
+/// 多指针状态机（v1c.3：固定 5 槽）。slots[0]=鼠标，slots[1..4]=触摸。
+pub struct PointerState {
+    pub slots: Vec<TouchSlot>,
 }
 
-/// 清所有节点 active + 沿 target 祖先链置 true。target=None → 仅清所有（up 松开）。
-fn set_active_chain(scene: &mut Scene, target: Option<NodeId>) {
-    for n in scene.nodes.iter_mut() {
-        n.active = false;
-    }
-    let mut cur = target;
-    while let Some(id) = cur {
-        let next = scene.nodes[id.0].parent;
-        scene.nodes[id.0].active = true;
-        cur = next;
+impl Default for PointerState {
+    fn default() -> Self {
+        let mut slots = Vec::with_capacity(5);
+        slots.push(TouchSlot::new_mouse());     // slot 0 = 鼠标主指
+        for _ in 0..4 {
+            slots.push(TouchSlot::new_free());  // slot 1..4 = 触摸
+        }
+        Self { slots }
     }
 }
 
@@ -93,7 +107,9 @@ fn ancestor_chain(scene: &Scene, target: Option<NodeId>) -> Vec<NodeId> {
     let mut chain = Vec::new();
     let mut cur = target;
     while let Some(id) = cur {
-        if id.0 >= scene.nodes.len() { break; }   // 防御（脏 scene）
+        if id.0 >= scene.nodes.len() {
+            break; // 防御（脏 scene）
+        }
         chain.push(id);
         cur = scene.nodes[id.0].parent;
     }
@@ -105,107 +121,236 @@ impl PointerState {
         Self::default()
     }
 
-    /// hover diff：比较 cur_hover 祖先链与 last_hovered_chain，产 RollOut(旧链独有)/RollOver(新链独有)。
-    /// 共同祖先段不产事件（鼠标从父进子 → 父不 RollOut，对齐 fgui HandleRollOver + CSS :hover 祖先语义）。
-    /// diff 无变化时幂等无输出（每帧可安全重复调）。
-    fn hover_diff(&mut self, scene: &mut Scene, out: &mut Vec<EventRecord>) {
-        let cur_hover = hit_test(scene, self.last_pos);
-        let new_chain = ancestor_chain(scene, cur_hover);
-        if new_chain == self.last_hovered_chain {
-            return;
-        }
-        for n in &self.last_hovered_chain {
-            if !new_chain.contains(n) {
-                out.push(EventRecord { node_id: n.0 as u32, event_type: EVT_ROLL_OUT, x: self.last_pos.0, y: self.last_pos.1 });
-            }
-        }
-        for n in &new_chain {
-            if !self.last_hovered_chain.contains(n) {
-                out.push(EventRecord { node_id: n.0 as u32, event_type: EVT_ROLL_OVER, x: self.last_pos.0, y: self.last_pos.1 });
-            }
-        }
-        // hovered 状态沿祖先链设（供伪类重匹配，.btn:hover 匹配 btn 即使命中其文字子）。
-        set_hovered_chain(scene, cur_hover);
-        self.last_hovered_chain = new_chain;
+    /// 鼠标主指 last_pos（stage.rs tick_and_render 的 hit_test 用，保持 v1c.2 接口）。
+    pub fn last_pos(&self) -> (f32, f32) {
+        self.slots[0].last_pos
     }
 
-    /// 消费本帧输入事件 + 命中 → 产 EventRecord 序列。
-    /// events 空时仍跑 hover diff（指针位置沿用 last_pos，§6.3）。
-    /// hover diff 每个事件后跑（保证同帧多事件的生成序：Move 的 RollOver 在 Down 前）。
+    /// 任一活跃槽命中非根节点 → UI 挡住（§10.6）。
+    pub fn is_pointer_on_ui(&self, scene: &Scene) -> bool {
+        let root_id = scene.roots.first().copied();
+        for slot in &self.slots {
+            if let Some(hit) = slot.last_hit {
+                if Some(hit) != root_id {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// 找/分配槽。鼠标(touch_id=-1)恒 slots[0]；触摸按 touch_id 找，找不到→分配首个空闲。
+    /// 返回 slot index；找不到（触摸槽满）→ None。
+    /// 注：触摸槽在任意事件（Move/Down/Up）分配（fgui 触摸可 Move 先于 Down 合成），
+    /// Up 后释放（slot_idx>0 置 touch_id=-1）。
+    fn find_or_alloc_slot(&mut self, ev: &PointerEvent) -> Option<usize> {
+        if ev.touch_id == -1 {
+            return Some(0); // 鼠标主指
+        }
+        // 找已占触摸槽
+        for i in 1..self.slots.len() {
+            if self.slots[i].touch_id == ev.touch_id {
+                return Some(i);
+            }
+        }
+        // 分配首个空闲触摸槽
+        for i in 1..self.slots.len() {
+            if self.slots[i].touch_id == -1 {
+                self.slots[i].touch_id = ev.touch_id;
+                return Some(i);
+            }
+        }
+        None // 触摸槽满 → 丢弃
+    }
+
+    /// 消费本帧输入 → 产 EventRecord 序列。
     pub fn process(&mut self, scene: &mut Scene, events: &[PointerEvent]) -> Vec<EventRecord> {
         let mut out: Vec<EventRecord> = Vec::new();
         if events.is_empty() {
-            // 空事件：指针位置沿用 last_pos，仍跑一次 hover diff（鼠标静止 hover 保持）
-            self.hover_diff(scene, &mut out);
+            for i in 0..self.slots.len() {
+                if i == 0 || self.slots[i].touch_id >= 0 {
+                    // 活跃槽
+                    Self::hover_diff_slot(&mut self.slots[i], scene, &mut out);
+                }
+            }
+            self.recompute_hovered(scene);
+            self.recompute_active(scene);
             return out;
         }
         for ev in events {
-            self.last_pos = (ev.x, ev.y);
-            let hit = hit_test(scene, self.last_pos);
+            let slot_idx = match self.find_or_alloc_slot(ev) {
+                Some(i) => i,
+                None => continue,
+            };
+            let slot = &mut self.slots[slot_idx];
+            slot.last_pos = (ev.x, ev.y);
+            let hit = hit_test(scene, slot.last_pos);
+            slot.last_hit = hit;
+            let touch_id = ev.touch_id;
             match ev.kind {
                 PointerKind::Move => {
-                    if let Some(n) = hit {
+                    Self::hover_diff_slot(slot, scene, &mut out);
+                    // Move 派发：有 monitor 产 Move@monitor（T2 实现），无 monitor 不产
+                    for m in &slot.touch_monitors {
                         out.push(EventRecord {
-                            node_id: n.0 as u32,
+                            node_id: m.0 as u32,
                             event_type: EVT_MOVE,
+                            pad: [0, 0, 0],
+                            touch_id,
                             x: ev.x,
                             y: ev.y,
                         });
                     }
                 }
                 PointerKind::Down => {
-                    self.is_down = true;
-                    self.down_pos = (ev.x, ev.y);
-                    self.down_node = hit;
+                    slot.is_down = true;
+                    slot.down_pos = (ev.x, ev.y);
+                    slot.down_node = hit;
                     if let Some(n) = hit {
                         if !scene.nodes[n.0].disabled {
-                            // 命中非 disabled → 设 active 祖先链 + 产 Down
-                            //（祖先链：按下按钮文字子 → 按钮也 active，.btn:active 匹配）
-                            set_active_chain(scene, Some(n));
                             out.push(EventRecord {
                                 node_id: n.0 as u32,
                                 event_type: EVT_DOWN,
+                                pad: [0, 0, 0],
+                                touch_id,
                                 x: ev.x,
                                 y: ev.y,
                             });
                         }
                     }
+                    Self::hover_diff_slot(slot, scene, &mut out);
                 }
                 PointerKind::Up => {
-                    self.is_down = false;
-                    // 清所有 active 祖先链（up 松开 → active 归零）
-                    set_active_chain(scene, None);
+                    slot.is_down = false;
                     if let Some(n) = hit {
                         if !scene.nodes[n.0].disabled {
                             out.push(EventRecord {
                                 node_id: n.0 as u32,
                                 event_type: EVT_UP,
+                                pad: [0, 0, 0],
+                                touch_id,
                                 x: ev.x,
                                 y: ev.y,
                             });
-                            // click 判定：down_node == hit 且位移 <= 阈值
-                            if self.down_node == Some(n) {
-                                let dx = ev.x - self.down_pos.0;
-                                let dy = ev.y - self.down_pos.1;
-                                if (dx * dx + dy * dy).sqrt() <= CLICK_THRESHOLD_PX {
-                                    out.push(EventRecord {
-                                        node_id: n.0 as u32,
-                                        event_type: EVT_CLICK,
-                                        x: ev.x,
-                                        y: ev.y,
-                                    });
-                                }
+                            if Self::slot_click_ok(slot, n) {
+                                out.push(EventRecord {
+                                    node_id: n.0 as u32,
+                                    event_type: EVT_CLICK,
+                                    pad: [0, 0, 0],
+                                    touch_id,
+                                    x: ev.x,
+                                    y: ev.y,
+                                });
                             }
                         }
                     }
-                    self.down_node = None;
+                    // monitor 的 Up 直派（去重：monitor != hit）
+                    for m in &slot.touch_monitors {
+                        if Some(*m) != hit {
+                            out.push(EventRecord {
+                                node_id: m.0 as u32,
+                                event_type: EVT_UP,
+                                pad: [0, 0, 0],
+                                touch_id,
+                                x: ev.x,
+                                y: ev.y,
+                            });
+                        }
+                    }
+                    slot.touch_monitors.clear();
+                    slot.down_node = None;
+                    Self::hover_diff_slot(slot, scene, &mut out);
+                    if slot_idx > 0 {
+                        slot.touch_id = -1; // 释放触摸槽（鼠标不释放）
+                    }
                 }
             }
-            // 每个事件后跑 hover diff（生成序：RollOver 在同帧后续事件前；
-            // 幂等——hover 不变时无输出）
-            self.hover_diff(scene, &mut out);
         }
+        self.recompute_hovered(scene);
+        self.recompute_active(scene);
         out
+    }
+
+    /// click 判定（沿用 v1c.2：down_node==hit && 位移<10px）。
+    fn slot_click_ok(slot: &TouchSlot, hit: NodeId) -> bool {
+        if slot.down_node != Some(hit) {
+            return false;
+        }
+        let dx = slot.last_pos.0 - slot.down_pos.0;
+        let dy = slot.last_pos.1 - slot.down_pos.1;
+        (dx * dx + dy * dy).sqrt() <= CLICK_THRESHOLD_PX
+    }
+
+    /// per-slot hover diff：产 RollOut(旧链独有)/RollOver(新链独有)。
+    /// 不调 set_hovered_chain（全局 union 在 recompute_hovered）。
+    fn hover_diff_slot(slot: &mut TouchSlot, scene: &mut Scene, out: &mut Vec<EventRecord>) {
+        let new_chain = ancestor_chain(scene, slot.last_hit);
+        if new_chain == slot.last_hovered_chain {
+            return;
+        }
+        for n in &slot.last_hovered_chain {
+            if !new_chain.contains(n) {
+                out.push(EventRecord {
+                    node_id: n.0 as u32,
+                    event_type: EVT_ROLL_OUT,
+                    pad: [0, 0, 0],
+                    touch_id: slot.touch_id,
+                    x: slot.last_pos.0,
+                    y: slot.last_pos.1,
+                });
+            }
+        }
+        for n in &new_chain {
+            if !slot.last_hovered_chain.contains(n) {
+                out.push(EventRecord {
+                    node_id: n.0 as u32,
+                    event_type: EVT_ROLL_OVER,
+                    pad: [0, 0, 0],
+                    touch_id: slot.touch_id,
+                    x: slot.last_pos.0,
+                    y: slot.last_pos.1,
+                });
+            }
+        }
+        slot.last_hovered_chain = new_chain;
+    }
+
+    /// 全局 hovered 合并：清所有 → 所有活跃槽命中链 union（任一指命中元素或祖先 → :hover）。
+    fn recompute_hovered(&self, scene: &mut Scene) {
+        for n in scene.nodes.iter_mut() {
+            n.hovered = false;
+        }
+        for i in 0..self.slots.len() {
+            if i == 0 || self.slots[i].touch_id >= 0 {
+                let mut cur = self.slots[i].last_hit;
+                while let Some(id) = cur {
+                    if id.0 >= scene.nodes.len() {
+                        break;
+                    }
+                    scene.nodes[id.0].hovered = true;
+                    cur = scene.nodes[id.0].parent;
+                }
+            }
+        }
+    }
+
+    /// 全局 active 合并：清所有 → 所有 is_down 槽的 down_node 命中链 union（基于 down_node，Down 时命中）。
+    fn recompute_active(&self, scene: &mut Scene) {
+        for n in scene.nodes.iter_mut() {
+            n.active = false;
+        }
+        for slot in &self.slots {
+            if slot.is_down {
+                let mut cur = slot.down_node;
+                while let Some(id) = cur {
+                    if id.0 >= scene.nodes.len() {
+                        break;
+                    }
+                    scene.nodes[id.0].active = true;
+                    cur = scene.nodes[id.0].parent;
+                }
+            }
+        }
     }
 }
 
@@ -267,7 +412,7 @@ mod tests {
         // Move 到 Text 区 (10,10)——命中 Text(NodeId 2)，不是 btn(NodeId 1)
         ps.process(
             &mut s,
-            &[PointerEvent { kind: PointerKind::Move, x: 10.0, y: 10.0, button: 0 }],
+            &[PointerEvent { kind: PointerKind::Move, x: 10.0, y: 10.0, button: 0, pad: [0, 0], touch_id: -1 }],
         );
         assert!(s.nodes[2].hovered, "Text 子（命中点）hovered");
         assert!(s.nodes[1].hovered, "btn（Text 的祖先）也 hovered——祖先链");
@@ -281,14 +426,14 @@ mod tests {
         let mut ps = PointerState::new();
         ps.process(
             &mut s,
-            &[PointerEvent { kind: PointerKind::Down, x: 10.0, y: 10.0, button: 0 }],
+            &[PointerEvent { kind: PointerKind::Down, x: 10.0, y: 10.0, button: 0, pad: [0, 0], touch_id: -1 }],
         );
         assert!(s.nodes[2].active, "Text 子（命中点）active");
         assert!(s.nodes[1].active, "btn（Text 祖先）也 active——祖先链");
         // up 后清所有 active
         ps.process(
             &mut s,
-            &[PointerEvent { kind: PointerKind::Up, x: 10.0, y: 10.0, button: 0 }],
+            &[PointerEvent { kind: PointerKind::Up, x: 10.0, y: 10.0, button: 0, pad: [0, 0], touch_id: -1 }],
         );
         assert!(!s.nodes[1].active, "up 后 btn active 清零");
         assert!(!s.nodes[2].active, "up 后 Text active 清零");
@@ -300,9 +445,9 @@ mod tests {
         let mut ps = PointerState::new();
         // Move 到按钮上（触发 RollOver）+ Down + Up（位移 < 10px）
         let evs = vec![
-            PointerEvent { kind: PointerKind::Move, x: 50.0, y: 50.0, button: 0 },
-            PointerEvent { kind: PointerKind::Down, x: 50.0, y: 50.0, button: 0 },
-            PointerEvent { kind: PointerKind::Up, x: 51.0, y: 51.0, button: 0 },
+            PointerEvent { kind: PointerKind::Move, x: 50.0, y: 50.0, button: 0, pad: [0, 0], touch_id: -1 },
+            PointerEvent { kind: PointerKind::Down, x: 50.0, y: 50.0, button: 0, pad: [0, 0], touch_id: -1 },
+            PointerEvent { kind: PointerKind::Up, x: 51.0, y: 51.0, button: 0, pad: [0, 0], touch_id: -1 },
         ];
         let out = ps.process(&mut s, &evs);
         let types: Vec<u8> = out.iter().map(|e| e.event_type).collect();
@@ -319,8 +464,8 @@ mod tests {
         let mut s = one_button_scene();
         let mut ps = PointerState::new();
         let evs = vec![
-            PointerEvent { kind: PointerKind::Down, x: 10.0, y: 10.0, button: 0 },
-            PointerEvent { kind: PointerKind::Up, x: 80.0, y: 80.0, button: 0 }, // 位移 ~99px
+            PointerEvent { kind: PointerKind::Down, x: 10.0, y: 10.0, button: 0, pad: [0, 0], touch_id: -1 },
+            PointerEvent { kind: PointerKind::Up, x: 80.0, y: 80.0, button: 0, pad: [0, 0], touch_id: -1 }, // 位移 ~99px
         ];
         let out = ps.process(&mut s, &evs);
         let has_click = out.iter().any(|e| e.event_type == EVT_CLICK);
@@ -333,8 +478,8 @@ mod tests {
         s.nodes[1].disabled = true;
         let mut ps = PointerState::new();
         let evs = vec![
-            PointerEvent { kind: PointerKind::Down, x: 50.0, y: 50.0, button: 0 },
-            PointerEvent { kind: PointerKind::Up, x: 50.0, y: 50.0, button: 0 },
+            PointerEvent { kind: PointerKind::Down, x: 50.0, y: 50.0, button: 0, pad: [0, 0], touch_id: -1 },
+            PointerEvent { kind: PointerKind::Up, x: 50.0, y: 50.0, button: 0, pad: [0, 0], touch_id: -1 },
         ];
         let out = ps.process(&mut s, &evs);
         assert!(!s.nodes[1].active, "disabled 节点 down 不设 active");
@@ -351,13 +496,13 @@ mod tests {
         // Move 到按钮 → RollOver
         let out1 = ps.process(
             &mut s,
-            &[PointerEvent { kind: PointerKind::Move, x: 50.0, y: 50.0, button: 0 }],
+            &[PointerEvent { kind: PointerKind::Move, x: 50.0, y: 50.0, button: 0, pad: [0, 0], touch_id: -1 }],
         );
         assert!(out1.iter().any(|e| e.event_type == EVT_ROLL_OVER && e.node_id == 1));
         // Move 移出按钮（150,150 在 root 非 button）→ RollOut(button) + RollOver(root)
         let out2 = ps.process(
             &mut s,
-            &[PointerEvent { kind: PointerKind::Move, x: 150.0, y: 150.0, button: 0 }],
+            &[PointerEvent { kind: PointerKind::Move, x: 150.0, y: 150.0, button: 0, pad: [0, 0], touch_id: -1 }],
         );
         assert!(
             out2.iter().any(|e| e.event_type == EVT_ROLL_OUT && e.node_id == 1),
@@ -372,7 +517,7 @@ mod tests {
         // 先 Move 到按钮
         ps.process(
             &mut s,
-            &[PointerEvent { kind: PointerKind::Move, x: 50.0, y: 50.0, button: 0 }],
+            &[PointerEvent { kind: PointerKind::Move, x: 50.0, y: 50.0, button: 0, pad: [0, 0], touch_id: -1 }],
         );
         assert!(s.nodes[1].hovered);
         // 空事件——hover 应保持（无 RollOut）
@@ -390,8 +535,8 @@ mod tests {
         let mut ps = PointerState::new();
         // Move + Down 同帧——Move 的 RollOver 应在 Down 前
         let evs = vec![
-            PointerEvent { kind: PointerKind::Move, x: 50.0, y: 50.0, button: 0 },
-            PointerEvent { kind: PointerKind::Down, x: 50.0, y: 50.0, button: 0 },
+            PointerEvent { kind: PointerKind::Move, x: 50.0, y: 50.0, button: 0, pad: [0, 0], touch_id: -1 },
+            PointerEvent { kind: PointerKind::Down, x: 50.0, y: 50.0, button: 0, pad: [0, 0], touch_id: -1 },
         ];
         let out = ps.process(&mut s, &evs);
         // 找 RollOver 和 Down 的 index
@@ -425,8 +570,8 @@ mod tests {
         // 共同 parent,root → 不产 RollOut(parent)；child 新 → RollOver(child)。
         let mut s = nested_scene();
         let mut ps = PointerState::new();
-        ps.process(&mut s, &[PointerEvent { kind: PointerKind::Move, x: 75.0, y: 75.0, button: 0 }]);
-        let out = ps.process(&mut s, &[PointerEvent { kind: PointerKind::Move, x: 10.0, y: 10.0, button: 0 }]);
+        ps.process(&mut s, &[PointerEvent { kind: PointerKind::Move, x: 75.0, y: 75.0, button: 0, pad: [0, 0], touch_id: -1 }]);
+        let out = ps.process(&mut s, &[PointerEvent { kind: PointerKind::Move, x: 10.0, y: 10.0, button: 0, pad: [0, 0], touch_id: -1 }]);
         assert!(!out.iter().any(|e| e.event_type == EVT_ROLL_OUT), "进子 → 不产任何 RollOut");
         assert!(out.iter().any(|e| e.event_type == EVT_ROLL_OVER && e.node_id == 2), "进子 → RollOver(child)");
     }
@@ -446,8 +591,8 @@ mod tests {
         root.children = vec![NodeId(1), NodeId(2)];
         let mut s = Scene { roots: vec![NodeId(0)], nodes: vec![root, a, b], dynamic_rules: Default::default() };
         let mut ps = PointerState::new();
-        ps.process(&mut s, &[PointerEvent { kind: PointerKind::Move, x: 25.0, y: 25.0, button: 0 }]);  // 命中 A
-        let out = ps.process(&mut s, &[PointerEvent { kind: PointerKind::Move, x: 125.0, y: 125.0, button: 0 }]);  // 命中 B
+        ps.process(&mut s, &[PointerEvent { kind: PointerKind::Move, x: 25.0, y: 25.0, button: 0, pad: [0, 0], touch_id: -1 }]);  // 命中 A
+        let out = ps.process(&mut s, &[PointerEvent { kind: PointerKind::Move, x: 125.0, y: 125.0, button: 0, pad: [0, 0], touch_id: -1 }]);  // 命中 B
         assert!(out.iter().any(|e| e.event_type == EVT_ROLL_OUT && e.node_id == 1), "移到 B → RollOut(A)");
         assert!(out.iter().any(|e| e.event_type == EVT_ROLL_OVER && e.node_id == 2), "移到 B → RollOver(B)");
         assert!(!out.iter().any(|e| e.node_id == 0), "root 共同祖先 → 不产事件");
@@ -458,8 +603,8 @@ mod tests {
         // 同点 Move 两次 → 第二次无 hover 事件（链不变；Move 仍产——§7.1 恒产，不抑制）。
         let mut s = nested_scene();
         let mut ps = PointerState::new();
-        ps.process(&mut s, &[PointerEvent { kind: PointerKind::Move, x: 10.0, y: 10.0, button: 0 }]);
-        let out = ps.process(&mut s, &[PointerEvent { kind: PointerKind::Move, x: 10.0, y: 10.0, button: 0 }]);
+        ps.process(&mut s, &[PointerEvent { kind: PointerKind::Move, x: 10.0, y: 10.0, button: 0, pad: [0, 0], touch_id: -1 }]);
+        let out = ps.process(&mut s, &[PointerEvent { kind: PointerKind::Move, x: 10.0, y: 10.0, button: 0, pad: [0, 0], touch_id: -1 }]);
         assert!(out.iter().all(|e| e.event_type != EVT_ROLL_OVER && e.event_type != EVT_ROLL_OUT),
             "同点 Move → 无 hover 事件（Move 允许，hover diff 幂等）");
     }
@@ -469,10 +614,161 @@ mod tests {
         // hover child → 链 [child,parent,root]；移出根外 → 空链 → 整链 RollOut。
         let mut s = nested_scene();
         let mut ps = PointerState::new();
-        ps.process(&mut s, &[PointerEvent { kind: PointerKind::Move, x: 10.0, y: 10.0, button: 0 }]);
-        let out = ps.process(&mut s, &[PointerEvent { kind: PointerKind::Move, x: 300.0, y: 300.0, button: 0 }]);  // 根外
+        ps.process(&mut s, &[PointerEvent { kind: PointerKind::Move, x: 10.0, y: 10.0, button: 0, pad: [0, 0], touch_id: -1 }]);
+        let out = ps.process(&mut s, &[PointerEvent { kind: PointerKind::Move, x: 300.0, y: 300.0, button: 0, pad: [0, 0], touch_id: -1 }]);  // 根外
         assert!(out.iter().any(|e| e.event_type == EVT_ROLL_OUT && e.node_id == 2), "移出 → RollOut(child)");
         assert!(out.iter().any(|e| e.event_type == EVT_ROLL_OUT && e.node_id == 1), "移出 → RollOut(parent)");
         assert!(!out.iter().any(|e| e.event_type == EVT_ROLL_OVER), "移出 → 无 RollOver");
+    }
+
+    // ===== v1c.3 多槽测试 =====
+
+    /// 鼠标 touch_id=-1 进 slots[0]，Down/Up/Click 等价 v1c.2 单指。
+    #[test]
+    fn mouse_uses_slot0_touch_id_neg1() {
+        let mut s = one_button_scene();
+        let mut ps = PointerState::new();
+        let out = ps.process(&mut s, &[
+            PointerEvent { kind: PointerKind::Down, x: 50.0, y: 50.0, button: 0, pad: [0, 0], touch_id: -1 },
+            PointerEvent { kind: PointerKind::Up, x: 50.0, y: 50.0, button: 0, pad: [0, 0], touch_id: -1 },
+        ]);
+        assert!(out.iter().any(|e| e.event_type == EVT_DOWN), "鼠标 Down 产");
+        assert!(out.iter().any(|e| e.event_type == EVT_CLICK), "鼠标 Click 产");
+        assert!(out.iter().all(|e| e.touch_id == -1), "鼠标事件 touch_id=-1");
+    }
+
+    /// 两触摸指各自 Down/Up，事件带正确 touch_id。
+    #[test]
+    fn two_touches_independent_down_up() {
+        let mut root = Node::default();
+        root.id = NodeId(0); root.layout_rect = Rect { x: 0.0, y: 0.0, w: 200.0, h: 200.0 };
+        let mut a = Node::default();
+        a.id = NodeId(1); a.parent = Some(NodeId(0)); a.layout_rect = Rect { x: 0.0, y: 0.0, w: 50.0, h: 50.0 };
+        let mut b = Node::default();
+        b.id = NodeId(2); b.parent = Some(NodeId(0)); b.layout_rect = Rect { x: 100.0, y: 0.0, w: 50.0, h: 50.0 };
+        root.children = vec![NodeId(1), NodeId(2)];
+        let mut s = Scene { roots: vec![NodeId(0)], nodes: vec![root, a, b], dynamic_rules: Default::default() };
+        let mut ps = PointerState::new();
+        // touch_id=1 Down 在 A，touch_id=2 Down 在 B（同帧）
+        let out = ps.process(&mut s, &[
+            PointerEvent { kind: PointerKind::Down, x: 25.0, y: 25.0, button: 0, pad: [0, 0], touch_id: 1 },
+            PointerEvent { kind: PointerKind::Down, x: 125.0, y: 25.0, button: 0, pad: [0, 0], touch_id: 2 },
+        ]);
+        assert!(out.iter().any(|e| e.event_type == EVT_DOWN && e.node_id == 1 && e.touch_id == 1), "touch1 Down@A");
+        assert!(out.iter().any(|e| e.event_type == EVT_DOWN && e.node_id == 2 && e.touch_id == 2), "touch2 Down@B");
+    }
+
+    /// 5 触摸 Down（slot1-4 满），第 5 指丢弃。
+    #[test]
+    fn touch_alloc_fourth_dropped() {
+        let mut root = Node::default();
+        root.id = NodeId(0); root.layout_rect = Rect { x: 0.0, y: 0.0, w: 200.0, h: 200.0 };
+        let mut s = Scene { roots: vec![NodeId(0)], nodes: vec![root], dynamic_rules: Default::default() };
+        let mut ps = PointerState::new();
+        // touch_id 1..5 全 Down（4 触摸槽 slot1-4，第 5 指应丢）
+        let mut evs = Vec::new();
+        for tid in 1..=5i32 {
+            evs.push(PointerEvent { kind: PointerKind::Down, x: 0.0, y: 0.0, button: 0, pad: [0, 0], touch_id: tid });
+        }
+        let out = ps.process(&mut s, &evs);
+        let down_count = out.iter().filter(|e| e.event_type == EVT_DOWN).count();
+        assert_eq!(down_count, 4, "仅 4 触摸槽，第 5 指 Down 丢弃");
+    }
+
+    /// 触摸无 capture Move 不产 Move 事件（hover_diff 仍跑）。
+    #[test]
+    fn touch_move_no_monitor_no_event() {
+        let mut s = one_button_scene();
+        let mut ps = PointerState::new();
+        ps.process(&mut s, &[PointerEvent { kind: PointerKind::Move, x: 50.0, y: 50.0, button: 0, pad: [0, 0], touch_id: 1 }]);
+        let out = ps.process(&mut s, &[PointerEvent { kind: PointerKind::Move, x: 51.0, y: 51.0, button: 0, pad: [0, 0], touch_id: 1 }]);
+        assert!(!out.iter().any(|e| e.event_type == EVT_MOVE), "无 monitor 触摸 Move 不产 Move 事件");
+        assert!(out.iter().all(|e| e.event_type != EVT_MOVE), "无 Move 事件");
+    }
+
+    /// 鼠标无 capture Move 不产（v1c.2 行为变化：v1c.2 鼠标 Move 产，v1c.3 不产）。
+    #[test]
+    fn mouse_move_no_capture_no_event() {
+        let mut s = one_button_scene();
+        let mut ps = PointerState::new();
+        ps.process(&mut s, &[PointerEvent { kind: PointerKind::Move, x: 50.0, y: 50.0, button: 0, pad: [0, 0], touch_id: -1 }]);
+        let out = ps.process(&mut s, &[PointerEvent { kind: PointerKind::Move, x: 51.0, y: 51.0, button: 0, pad: [0, 0], touch_id: -1 }]);
+        assert!(!out.iter().any(|e| e.event_type == EVT_MOVE), "v1c.3 鼠标无 capture Move 不产（对齐 fgui）");
+    }
+
+    /// hover 全局合并：两指命中不同元素 → 两元素都 hovered。
+    #[test]
+    fn hover_global_merge_two_fingers() {
+        let mut root = Node::default();
+        root.id = NodeId(0); root.layout_rect = Rect { x: 0.0, y: 0.0, w: 200.0, h: 200.0 };
+        let mut a = Node::default();
+        a.id = NodeId(1); a.parent = Some(NodeId(0)); a.layout_rect = Rect { x: 0.0, y: 0.0, w: 50.0, h: 50.0 };
+        let mut b = Node::default();
+        b.id = NodeId(2); b.parent = Some(NodeId(0)); b.layout_rect = Rect { x: 100.0, y: 0.0, w: 50.0, h: 50.0 };
+        root.children = vec![NodeId(1), NodeId(2)];
+        let mut s = Scene { roots: vec![NodeId(0)], nodes: vec![root, a, b], dynamic_rules: Default::default() };
+        let mut ps = PointerState::new();
+        ps.process(&mut s, &[
+            PointerEvent { kind: PointerKind::Move, x: 25.0, y: 25.0, button: 0, pad: [0, 0], touch_id: 1 },  // 命中 A
+            PointerEvent { kind: PointerKind::Move, x: 125.0, y: 25.0, button: 0, pad: [0, 0], touch_id: 2 }, // 命中 B
+        ]);
+        assert!(s.nodes[1].hovered, "A hovered（touch1 命中）");
+        assert!(s.nodes[2].hovered, "B hovered（touch2 命中）");
+    }
+
+    /// active 全局合并：两指按不同 btn → 都 active；松一指 → 剩余仍 active。
+    #[test]
+    fn active_global_merge_two_fingers() {
+        let mut root = Node::default();
+        root.id = NodeId(0); root.layout_rect = Rect { x: 0.0, y: 0.0, w: 200.0, h: 200.0 };
+        let mut a = Node::default();
+        a.id = NodeId(1); a.parent = Some(NodeId(0)); a.kind = NodeKind::Button; a.layout_rect = Rect { x: 0.0, y: 0.0, w: 50.0, h: 50.0 };
+        let mut b = Node::default();
+        b.id = NodeId(2); b.parent = Some(NodeId(0)); b.kind = NodeKind::Button; b.layout_rect = Rect { x: 100.0, y: 0.0, w: 50.0, h: 50.0 };
+        root.children = vec![NodeId(1), NodeId(2)];
+        let mut s = Scene { roots: vec![NodeId(0)], nodes: vec![root, a, b], dynamic_rules: Default::default() };
+        let mut ps = PointerState::new();
+        ps.process(&mut s, &[
+            PointerEvent { kind: PointerKind::Down, x: 25.0, y: 25.0, button: 0, pad: [0, 0], touch_id: 1 },
+            PointerEvent { kind: PointerKind::Down, x: 125.0, y: 25.0, button: 0, pad: [0, 0], touch_id: 2 },
+        ]);
+        assert!(s.nodes[1].active && s.nodes[2].active, "两指都按 → 两 btn active");
+        // 松 touch1
+        ps.process(&mut s, &[PointerEvent { kind: PointerKind::Up, x: 25.0, y: 25.0, button: 0, pad: [0, 0], touch_id: 1 }]);
+        assert!(!s.nodes[1].active, "松 touch1 → A active 清");
+        assert!(s.nodes[2].active, "touch2 仍按 → B 仍 active");
+    }
+
+    /// RollOver per-touch：touch1 进 A、touch2 进 B，各自 RollOver 带 touch_id。
+    #[test]
+    fn rollover_per_touch_independent() {
+        let mut root = Node::default();
+        root.id = NodeId(0); root.layout_rect = Rect { x: 0.0, y: 0.0, w: 200.0, h: 200.0 };
+        let mut a = Node::default();
+        a.id = NodeId(1); a.parent = Some(NodeId(0)); a.layout_rect = Rect { x: 0.0, y: 0.0, w: 50.0, h: 50.0 };
+        let mut b = Node::default();
+        b.id = NodeId(2); b.parent = Some(NodeId(0)); b.layout_rect = Rect { x: 100.0, y: 0.0, w: 50.0, h: 50.0 };
+        root.children = vec![NodeId(1), NodeId(2)];
+        let mut s = Scene { roots: vec![NodeId(0)], nodes: vec![root, a, b], dynamic_rules: Default::default() };
+        let mut ps = PointerState::new();
+        let out = ps.process(&mut s, &[
+            PointerEvent { kind: PointerKind::Move, x: 25.0, y: 25.0, button: 0, pad: [0, 0], touch_id: 1 },
+            PointerEvent { kind: PointerKind::Move, x: 125.0, y: 25.0, button: 0, pad: [0, 0], touch_id: 2 },
+        ]);
+        assert!(out.iter().any(|e| e.event_type == EVT_ROLL_OVER && e.node_id == 1 && e.touch_id == 1), "touch1 RollOver@A");
+        assert!(out.iter().any(|e| e.event_type == EVT_ROLL_OVER && e.node_id == 2 && e.touch_id == 2), "touch2 RollOver@B");
+    }
+
+    /// is_pointer_on_ui 任一指命中。
+    #[test]
+    fn is_pointer_on_ui_any_slot() {
+        let mut s = one_button_scene();
+        let mut ps = PointerState::new();
+        // 鼠标在 UI 外 (150,150 命中 root 非 btn)，触摸在 btn 内
+        ps.process(&mut s, &[
+            PointerEvent { kind: PointerKind::Move, x: 150.0, y: 150.0, button: 0, pad: [0, 0], touch_id: -1 },
+            PointerEvent { kind: PointerKind::Move, x: 50.0, y: 50.0, button: 0, pad: [0, 0], touch_id: 1 },
+        ]);
+        assert!(ps.is_pointer_on_ui(&s), "触摸命中 btn → is_pointer_on_ui=true（任一指）");
     }
 }
