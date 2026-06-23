@@ -145,16 +145,12 @@ impl PointerState {
             match ev.kind {
                 PointerKind::Move => {
                     if let Some(n) = hit {
-                        // 链未变时不产 EVT_MOVE（幂等：同点 Move → 无事件）。
-                        let new_chain = ancestor_chain(scene, hit);
-                        if new_chain != self.last_hovered_chain {
-                            out.push(EventRecord {
-                                node_id: n.0 as u32,
-                                event_type: EVT_MOVE,
-                                x: ev.x,
-                                y: ev.y,
-                            });
-                        }
+                        out.push(EventRecord {
+                            node_id: n.0 as u32,
+                            event_type: EVT_MOVE,
+                            x: ev.x,
+                            y: ev.y,
+                        });
                     }
                 }
                 PointerKind::Down => {
@@ -464,7 +460,8 @@ mod tests {
         let mut ps = PointerState::new();
         ps.process(&mut s, &[PointerEvent { kind: PointerKind::Move, x: 10.0, y: 10.0, button: 0 }]);
         let out = ps.process(&mut s, &[PointerEvent { kind: PointerKind::Move, x: 10.0, y: 10.0, button: 0 }]);
-        assert!(out.is_empty(), "同点 Move → 无事件（幂等）");
+        assert!(out.iter().all(|e| e.event_type != EVT_ROLL_OVER && e.event_type != EVT_ROLL_OUT),
+            "同点 Move → 无 hover 事件（Move 允许，hover diff 幂等）");
     }
 
     #[test]
