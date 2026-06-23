@@ -46,7 +46,7 @@ pub struct PointerState {
     pub is_down: bool,
     pub down_node: Option<NodeId>,
     pub down_pos: (f32, f32),
-    pub last_hovered: Option<NodeId>,
+    pub last_hovered_chain: Vec<NodeId>,   // v1c.2: 上帧 hovered 链（target→root），替代 last_hovered: Option<NodeId>
 }
 
 impl Default for PointerState {
@@ -56,7 +56,7 @@ impl Default for PointerState {
             is_down: false,
             down_node: None,
             down_pos: (0.0, 0.0),
-            last_hovered: None,
+            last_hovered_chain: Vec::new(),
         }
     }
 }
@@ -88,40 +88,45 @@ fn set_active_chain(scene: &mut Scene, target: Option<NodeId>) {
     }
 }
 
+/// target 起沿 Node.parent 至 root 收集 NodeId 链（含 target）；target=None → 空链。
+fn ancestor_chain(scene: &Scene, target: Option<NodeId>) -> Vec<NodeId> {
+    let mut chain = Vec::new();
+    let mut cur = target;
+    while let Some(id) = cur {
+        if id.0 >= scene.nodes.len() { break; }   // 防御（脏 scene）
+        chain.push(id);
+        cur = scene.nodes[id.0].parent;
+    }
+    chain
+}
+
 impl PointerState {
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// hover diff：比较 cur_hover 与 last_hovered，产 RollOut/RollOver 并更新 Node.hovered。
-    /// diff 无变化时什么都不做（幂等，每帧可安全重复调）。
-    /// v1c.1 hover 祖先链：命中 target → target + 所有祖先都 hovered（对齐 fgui rollOverChain
-    /// + CSS :hover「鼠标在元素或后代上」语义）。故 hover 按钮的文字子 → 按钮也 hovered。
+    /// hover diff：比较 cur_hover 祖先链与 last_hovered_chain，产 RollOut(旧链独有)/RollOver(新链独有)。
+    /// 共同祖先段不产事件（鼠标从父进子 → 父不 RollOut，对齐 fgui HandleRollOver + CSS :hover 祖先语义）。
+    /// diff 无变化时幂等无输出（每帧可安全重复调）。
     fn hover_diff(&mut self, scene: &mut Scene, out: &mut Vec<EventRecord>) {
         let cur_hover = hit_test(scene, self.last_pos);
-        if cur_hover == self.last_hovered {
+        let new_chain = ancestor_chain(scene, cur_hover);
+        if new_chain == self.last_hovered_chain {
             return;
         }
-        // 事件单点派发（v1c.1 无冒泡，v1c.2 路由完整化加 BubbleEvent）。
-        if let Some(old) = self.last_hovered {
-            out.push(EventRecord {
-                node_id: old.0 as u32,
-                event_type: EVT_ROLL_OUT,
-                x: self.last_pos.0,
-                y: self.last_pos.1,
-            });
+        for n in &self.last_hovered_chain {
+            if !new_chain.contains(n) {
+                out.push(EventRecord { node_id: n.0 as u32, event_type: EVT_ROLL_OUT, x: self.last_pos.0, y: self.last_pos.1 });
+            }
         }
-        if let Some(new) = cur_hover {
-            out.push(EventRecord {
-                node_id: new.0 as u32,
-                event_type: EVT_ROLL_OVER,
-                x: self.last_pos.0,
-                y: self.last_pos.1,
-            });
+        for n in &new_chain {
+            if !self.last_hovered_chain.contains(n) {
+                out.push(EventRecord { node_id: n.0 as u32, event_type: EVT_ROLL_OVER, x: self.last_pos.0, y: self.last_pos.1 });
+            }
         }
         // hovered 状态沿祖先链设（供伪类重匹配，.btn:hover 匹配 btn 即使命中其文字子）。
         set_hovered_chain(scene, cur_hover);
-        self.last_hovered = cur_hover;
+        self.last_hovered_chain = new_chain;
     }
 
     /// 消费本帧输入事件 + 命中 → 产 EventRecord 序列。
@@ -140,12 +145,16 @@ impl PointerState {
             match ev.kind {
                 PointerKind::Move => {
                     if let Some(n) = hit {
-                        out.push(EventRecord {
-                            node_id: n.0 as u32,
-                            event_type: EVT_MOVE,
-                            x: ev.x,
-                            y: ev.y,
-                        });
+                        // 链未变时不产 EVT_MOVE（幂等：同点 Move → 无事件）。
+                        let new_chain = ancestor_chain(scene, hit);
+                        if new_chain != self.last_hovered_chain {
+                            out.push(EventRecord {
+                                node_id: n.0 as u32,
+                                event_type: EVT_MOVE,
+                                x: ev.x,
+                                y: ev.y,
+                            });
+                        }
                     }
                 }
                 PointerKind::Down => {
@@ -394,5 +403,79 @@ mod tests {
         let down_idx = out.iter().position(|e| e.event_type == EVT_DOWN);
         assert!(ro_idx.is_some() && down_idx.is_some());
         assert!(ro_idx.unwrap() < down_idx.unwrap(), "RollOver 在 Down 前（生成序）");
+    }
+
+    /// v1c.2: root + parent(100x100) + child(50x50 in parent)。验 hover 祖先链 diff。
+    fn nested_scene() -> Scene {
+        let mut root = Node::default();
+        root.id = NodeId(0);
+        root.layout_rect = Rect { x: 0.0, y: 0.0, w: 200.0, h: 200.0 };
+        let mut parent = Node::default();
+        parent.id = NodeId(1);
+        parent.parent = Some(NodeId(0));
+        parent.layout_rect = Rect { x: 0.0, y: 0.0, w: 100.0, h: 100.0 };
+        let mut child = Node::default();
+        child.id = NodeId(2);
+        child.parent = Some(NodeId(1));
+        child.layout_rect = Rect { x: 0.0, y: 0.0, w: 50.0, h: 50.0 };
+        parent.children = vec![NodeId(2)];
+        root.children = vec![NodeId(1)];
+        Scene { roots: vec![NodeId(0)], nodes: vec![root, parent, child], dynamic_rules: Default::default() }
+    }
+
+    #[test]
+    fn hover_into_child_no_rollout_parent() {
+        // 点 1 回归：hover parent 区(75,75) → 链 [parent,root]；移进 child 区(10,10) → 链 [child,parent,root]。
+        // 共同 parent,root → 不产 RollOut(parent)；child 新 → RollOver(child)。
+        let mut s = nested_scene();
+        let mut ps = PointerState::new();
+        ps.process(&mut s, &[PointerEvent { kind: PointerKind::Move, x: 75.0, y: 75.0, button: 0 }]);
+        let out = ps.process(&mut s, &[PointerEvent { kind: PointerKind::Move, x: 10.0, y: 10.0, button: 0 }]);
+        assert!(!out.iter().any(|e| e.event_type == EVT_ROLL_OUT), "进子 → 不产任何 RollOut");
+        assert!(out.iter().any(|e| e.event_type == EVT_ROLL_OVER && e.node_id == 2), "进子 → RollOver(child)");
+    }
+
+    #[test]
+    fn hover_between_siblings_old_chain_rollout() {
+        // 兄弟 A/B：hover A → RollOver(A)+RollOver(root)；移到 B → RollOut(A)+RollOver(B)（root 共同不产）。
+        let mut root = Node::default();
+        root.id = NodeId(0);
+        root.layout_rect = Rect { x: 0.0, y: 0.0, w: 200.0, h: 200.0 };
+        let mut a = Node::default();
+        a.id = NodeId(1); a.parent = Some(NodeId(0));
+        a.layout_rect = Rect { x: 0.0, y: 0.0, w: 50.0, h: 50.0 };
+        let mut b = Node::default();
+        b.id = NodeId(2); b.parent = Some(NodeId(0));
+        b.layout_rect = Rect { x: 100.0, y: 100.0, w: 50.0, h: 50.0 };
+        root.children = vec![NodeId(1), NodeId(2)];
+        let mut s = Scene { roots: vec![NodeId(0)], nodes: vec![root, a, b], dynamic_rules: Default::default() };
+        let mut ps = PointerState::new();
+        ps.process(&mut s, &[PointerEvent { kind: PointerKind::Move, x: 25.0, y: 25.0, button: 0 }]);  // 命中 A
+        let out = ps.process(&mut s, &[PointerEvent { kind: PointerKind::Move, x: 125.0, y: 125.0, button: 0 }]);  // 命中 B
+        assert!(out.iter().any(|e| e.event_type == EVT_ROLL_OUT && e.node_id == 1), "移到 B → RollOut(A)");
+        assert!(out.iter().any(|e| e.event_type == EVT_ROLL_OVER && e.node_id == 2), "移到 B → RollOver(B)");
+        assert!(!out.iter().any(|e| e.node_id == 0), "root 共同祖先 → 不产事件");
+    }
+
+    #[test]
+    fn hover_chain_idempotent() {
+        // 同点 Move 两次 → 第二次无事件（链不变）。
+        let mut s = nested_scene();
+        let mut ps = PointerState::new();
+        ps.process(&mut s, &[PointerEvent { kind: PointerKind::Move, x: 10.0, y: 10.0, button: 0 }]);
+        let out = ps.process(&mut s, &[PointerEvent { kind: PointerKind::Move, x: 10.0, y: 10.0, button: 0 }]);
+        assert!(out.is_empty(), "同点 Move → 无事件（幂等）");
+    }
+
+    #[test]
+    fn hover_out_of_ui_rollout_whole_chain() {
+        // hover child → 链 [child,parent,root]；移出根外 → 空链 → 整链 RollOut。
+        let mut s = nested_scene();
+        let mut ps = PointerState::new();
+        ps.process(&mut s, &[PointerEvent { kind: PointerKind::Move, x: 10.0, y: 10.0, button: 0 }]);
+        let out = ps.process(&mut s, &[PointerEvent { kind: PointerKind::Move, x: 300.0, y: 300.0, button: 0 }]);  // 根外
+        assert!(out.iter().any(|e| e.event_type == EVT_ROLL_OUT && e.node_id == 2), "移出 → RollOut(child)");
+        assert!(out.iter().any(|e| e.event_type == EVT_ROLL_OUT && e.node_id == 1), "移出 → RollOut(parent)");
+        assert!(!out.iter().any(|e| e.event_type == EVT_ROLL_OVER), "移出 → 无 RollOver");
     }
 }
