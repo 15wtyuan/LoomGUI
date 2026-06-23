@@ -16,7 +16,8 @@ pub struct PointerEvent {
     pub y: f32,
 }
 
-#[repr(C)]
+/// 指针事件种类。repr(u8)：FFI 1 字节判别（PointerEvent 16B 紧凑布局，C# 对齐 byte）。
+#[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PointerKind {
     Down = 0,
