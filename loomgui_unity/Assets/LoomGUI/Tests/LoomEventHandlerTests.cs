@@ -119,9 +119,12 @@ namespace LoomGUI.Tests
             //   var h = new LoomEventHandler();
             //   h.SetHandle((IntPtr)stage.NativeHandle);
             //   var hits = new System.Collections.Generic.List<(uint node, Phase phase)>();
-            //   h.AddListener(2, EventType.Down, c => hits.Add((c.currentTarget, c.phase)));  // child
-            //   h.AddListener(1, EventType.Down, c => hits.Add((c.currentTarget, c.phase)));  // parent
-            //   h.AddListener(0, EventType.Down, c => hits.Add((c.currentTarget, c.phase)));  // root
+            //   h.AddCapture(0, EventType.Down, c => hits.Add((c.currentTarget, c.phase)));  // root capture（反向，根先）
+            //   h.AddCapture(1, EventType.Down, c => hits.Add((c.currentTarget, c.phase)));  // parent capture
+            //   h.AddCapture(2, EventType.Down, c => hits.Add((c.currentTarget, c.phase)));  // child capture
+            //   h.AddListener(2, EventType.Down, c => hits.Add((c.currentTarget, c.phase)));  // child target(bubble)
+            //   h.AddListener(1, EventType.Down, c => hits.Add((c.currentTarget, c.phase)));  // parent bubble
+            //   h.AddListener(0, EventType.Down, c => hits.Add((c.currentTarget, c.phase)));  // root bubble
             //   DispatchOne(h, new LoomEvent { nodeId = 2, type = EventType.Down, x = 0, y = 0 });
             //   // capture（反向）：root(0,Capture) → parent(1,Capture) → child(2,Capture)
             //   // bubble（正向）：child(2,Target) → parent(1,Bubble) → root(0,Bubble)
