@@ -27,6 +27,50 @@ namespace LoomGUI
         public float y;
     }
 
+    /// v1c.2 事件路由阶段（Capture/Target/Bubble），对齐 DOM/W3C 模型 + fgui capture/bubble 双组。
+    public enum Phase : byte { Capture = 0, Target = 1, Bubble = 2 }
+
+    /// 业务回调签名（listener 收 EventContext 读命中/坐标/止冒泡）。对齐 fgui EventCallback1。
+    public delegate void EventCallback(EventContext ctx);
+
+    /// EventContext（照 fgui EventContext.cs，对象池复用）。
+    public class EventContext
+    {
+        public uint target;            // 原始命中（EventRecord.node_id）
+        public uint currentTarget;     // 路由当前节点
+        public Phase phase;
+        public EventType type;
+        public float x, y;
+        internal bool _stopsPropagation, _defaultPrevented;
+        public void StopPropagation() => _stopsPropagation = true;
+        public void PreventDefault() => _defaultPrevented = true;
+
+        static readonly System.Collections.Generic.Stack<EventContext> _pool = new();
+        internal static EventContext Get()
+        {
+            var ctx = _pool.Count > 0 ? _pool.Pop() : new EventContext();
+            ctx._stopsPropagation = false; ctx._defaultPrevented = false;
+            return ctx;
+        }
+        internal static void Return(EventContext ctx) => _pool.Push(ctx);
+
+        [UnityEngine.RuntimeInitializeOnLoadMethod(UnityEngine.RuntimeInitializeLoadType.SubsystemRegistration)]
+        static void ClearPool() => _pool.Clear();   // Domain reload 清池（照 fgui EventContext.cs:96-102）
+    }
+
+    /// EventBridge（照 fgui EventBridge.cs）：capture + bubble 两组多播委托。
+    internal class EventBridge
+    {
+        EventCallback _bubble, _capture;
+        public void Add(EventCallback cb) { _bubble -= cb; _bubble += cb; }       // -= 去重
+        public void AddCapture(EventCallback cb) { _capture -= cb; _capture += cb; }
+        public void Remove(EventCallback cb) => _bubble -= cb;
+        public void RemoveCapture(EventCallback cb) => _capture -= cb;
+        public bool isEmpty => _bubble == null && _capture == null;
+        public void CallBubble(EventContext ctx) { if (_bubble != null) _bubble(ctx); }
+        public void CallCapture(EventContext ctx) { if (_capture != null) _capture(ctx); }
+    }
+
     /// C# 侧 listener 表 + 派发（对齐 fgui listener 在 C# 域，核心只产事件）。
     /// v1c.1 单 callback/type（AddListener 覆盖）；v1c.2 多 callback 用 List。
     public class LoomEventHandler

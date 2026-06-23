@@ -66,5 +66,35 @@ namespace LoomGUI.Tests
             }
             finally { Marshal.FreeHGlobal(ptr); }
         }
+
+        /// v1c.2-T3：对象池复用。Get → Return → Get 拿回同一实例；stop/prevent 在 Get 时重置。
+        [Test]
+        public void EventContext_Pool_ReusesInstances()
+        {
+            var a = LoomGUI.EventContext.Get();
+            a.target = 7;
+            LoomGUI.EventContext.Return(a);
+            var b = LoomGUI.EventContext.Get();
+            Assert.AreSame(a, b, "池复用同一实例");
+            Assert.AreEqual(0u, b.target, "Get 时重置标志（target 不重置，但 stop/prevent 重置）");
+            LoomGUI.EventContext.Return(b);
+        }
+
+        /// v1c.2-T3：EventBridge 多播 —— Add 两个 callback → CallBubble 都触发；
+        /// Remove 一个后只剩另一个。
+        [Test]
+        public void EventBridge_AddMultipleCallbacks_AllInvoked()
+        {
+            var bridge = new LoomGUI.EventBridge();
+            int hits = 0;
+            LoomGUI.EventCallback cb1 = _ => hits++;
+            LoomGUI.EventCallback cb2 = _ => hits++;
+            bridge.Add(cb1); bridge.Add(cb2);
+            bridge.CallBubble(null);
+            Assert.AreEqual(2, hits, "多播：两个 cb 都调");
+            bridge.Remove(cb1);
+            hits = 0; bridge.CallBubble(null);
+            Assert.AreEqual(1, hits, "Remove cb1 后只 cb2");
+        }
     }
 }
