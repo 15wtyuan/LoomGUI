@@ -99,4 +99,24 @@ mod tests {
         // #x 胜（id specificity 最高）
         assert_eq!(styles[id.0].color, [0.0, 1.0, 0.0, 1.0]);
     }
+
+    #[test]
+    fn pseudo_class_rules_excluded_from_base_cascade() {
+        // 回归 v1d：伪类规则（:hover/:active/:focus）不该进 base_style——运行时 rematch 按状态动态应用。
+        // compound_matches 须跳过含伪类的 compound，否则 .btn:focus 紫 / .btn:hover 蓝 / .btn:active 红
+        // 污染 .btn base（specificity 同级 (0,2,0)，源序最后者胜 → base 变最后一条伪类色）。
+        let html = r#"<div class="root"><button class="btn">OK</button></div>"#;
+        let css = r#".btn { background-color: #888888; } .btn:hover { background-color: #2266ff; } .btn:active { background-color: #ff4444; } .btn:focus { background-color: #cc44cc; }"#;
+        let tree = parse_html(html).unwrap();
+        let sheet = parse_css(css).unwrap();
+        let styles = resolve_styles(&tree, &sheet);
+        let btn_id = tree.nodes[tree.roots[0].0].children[0];
+        let bg = styles[btn_id.0].background_color.expect(".btn 有 bg");
+        // base 该是 .btn 灰 #888888，不是任一伪类色
+        assert_eq!(
+            bg,
+            [136.0 / 255.0, 136.0 / 255.0, 136.0 / 255.0, 1.0],
+            "base 该是 .btn 灰，不该被伪类规则污染（修复前会被 :focus 紫污染）"
+        );
+    }
 }

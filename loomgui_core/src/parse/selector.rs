@@ -157,6 +157,13 @@ pub fn parse_selector(raw: &str) -> Result<ParsedSelector, String> {
 }
 
 fn compound_matches(c: &Compound, el: &ElementData) -> bool {
+    // 伪类规则不参与 base cascade——运行时由 rematch_pseudo_classes + match_element_with_state
+    // 按节点 hovered/active/disabled/focused 状态动态应用。base 只烤静态规则（与
+    // extract_dynamic_rules 配套：伪类规则进 DynamicRuleSection）。
+    // 坑：漏检会让 .btn:focus 紫污染 .btn base（specificity 同级源序后胜 → 全 .btn 紫）。
+    if c.pseudo_hover || c.pseudo_active || c.pseudo_disabled || c.pseudo_focus {
+        return false;
+    }
     if let Some(t) = &c.tag {
         if el.tag != *t {
             return false;

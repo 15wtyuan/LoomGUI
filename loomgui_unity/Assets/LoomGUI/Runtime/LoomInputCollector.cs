@@ -114,27 +114,16 @@ namespace LoomGUI
         }
 
         /// v1d.2：采集本帧键盘 → set_key_input。KeyDown/Up 事件 + modifiers。
-        /// 兼容新旧输入系统（同 Collect）。本帧无键事件 → set_key_input(null,0)（core 无键盘输入）。
+        /// 用 Input.GetKeyDown/Up（KeyCode 直对 core key_code，零转换；工程 Both 模式可用）——不像 Collect 双路径，
+        /// 键盘无 InputSystem 特性需求。本帧无键事件 → set_key_input(null,0)（core 无键盘输入）。
         public void CollectKeys(System.IntPtr stage)
         {
             if (stage == System.IntPtr.Zero) return;
             var keys = new System.Collections.Generic.List<Bindings.KeyEvent>();
             byte mods = CurrentModifiers();
-#if ENABLE_INPUT_SYSTEM
-            var kb = UnityEngine.InputSystem.Keyboard.current;
-            if (kb != null)
-            {
-                // 遍历常见键——csbindgen KeyEvent.key_code = (uint)UnityEngine.KeyCode。
-                // ponytail: 白名单键按 wasPressedThisFrame/wasReleasedThisFrame 采 down/up。
-                foreach (UnityEngine.KeyCode kc in KeyList)
-                {
-                    bool down = kb[kc].wasPressedThisFrame;
-                    bool up = kb[kc].wasReleasedThisFrame;
-                    if (down || up)
-                        keys.Add(new Bindings.KeyEvent { key_code = (uint)kc, modifiers = mods, is_down = down, pad0 = 0, pad1 = 0 });
-                }
-            }
-#else
+            // 键盘 down/up 用 Input.GetKeyDown/Up（KeyCode）——KeyCode 直接对应 core key_code=(uint)KeyCode，零转换。
+            // 工程 Active Input Handling=Both（v1c.1 设），旧 Input API 可用；键盘无 InputSystem 特性需求，
+            // 不走 Keyboard[Key]（要 InputSystem.Key 映射，过度复杂）。
             foreach (UnityEngine.KeyCode kc in KeyList)
             {
                 bool down = UnityEngine.Input.GetKeyDown(kc);
@@ -142,7 +131,6 @@ namespace LoomGUI
                 if (down || up)
                     keys.Add(new Bindings.KeyEvent { key_code = (uint)kc, modifiers = mods, is_down = down, pad0 = 0, pad1 = 0 });
             }
-#endif
             if (keys.Count == 0)
             {
                 Native.loomgui_stage_set_key_input((Bindings.StageHandle*)stage, null, 0);

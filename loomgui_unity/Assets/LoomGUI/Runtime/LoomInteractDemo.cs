@@ -66,6 +66,8 @@ namespace LoomGUI
                 h.AddListener(dragId, EventType.DragEnd,   ctx => Debug.Log($"[v1d.1] drag End pos=({ctx.x},{ctx.y})"));
                 // longpress universal：drag 节点按住 1.5s 发一次（独立 click——松手仍 Click）
                 h.AddListener(dragId, EventType.LongPress, ctx => Debug.Log($"[v1d.1] longpress fired node={ctx.target}"));
+                // click 对照：阈值内点击 → 此行出现；拖动起 drag Start → 此行不出现（drag 取消 click）
+                h.AddListener(dragId, EventType.Click, ctx => Debug.Log($"[v1d.1] drag 按钮 Click count={ctx.clickCount}（阈值内点击才出现；拖动则无）"));
             }
 
             // ===== v1d.2 focus（tabindex opt-in）+ keydown：foc1/2/3 都注册 =====
