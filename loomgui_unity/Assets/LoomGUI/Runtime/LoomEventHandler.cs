@@ -17,14 +17,15 @@ namespace LoomGUI
     }
 
     /// C# 镜像 Rust loomgui_core::input::EventRecord（#[repr(C)]）。
-    /// 字段序：node_id:u32 @0 → event_type:u8 @4 → pad 3 → touch_id:i32 @8 → x:f32 @12 → y:f32 @16（sizeof=20）。
-    /// 与 Rust ABI 一致（StructLayout.Sequential 默认 pack=0；pad 在 C# 侧隐式——u32(4)+enum:byte(1)+[3 隐式对齐 int@8]+int(4)+float(4)+float(4)）。
+    /// 字段序：node_id:u32 @0 → event_type:u8 @4 → click_count:u8 @5 → pad 2 → touch_id:i32 @8 → x:f32 @12 → y:f32 @16（sizeof=20）。
+    /// 与 Rust ABI 一致（StructLayout.Sequential 默认 pack=0；pad 在 C# 侧隐式——u32(4)+enum:byte(1)+byte(1)+[2 隐式对齐 int@8]+int(4)+float(4)+float(4)）。
     /// touch_id 用 snake_case 匹配 csbindgen 生成的字段名（Rust EventRecord 字段 snake_case）。
     [StructLayout(LayoutKind.Sequential)]
     public struct LoomEvent
     {
         public uint nodeId;
         public EventType type;
+        public byte clickCount;   // v1c.4：1 或 2（仅 Click 有意义，其余=0；Rust EventRecord @5）
         public int touch_id;   // v1c.3：-1=鼠标，>=0=触摸（Rust EventRecord @8）
         public float x;
         public float y;
@@ -44,6 +45,8 @@ namespace LoomGUI
         public Phase phase;
         public EventType type;
         public int touchId;            // v1c.3：事件所属触摸（-1=鼠标）
+        public byte clickCount;          // v1c.4：照 fgui InputEvent.clickCount（1=单击/2=双击）
+        public bool isDoubleClick => clickCount > 1;   // v1c.4：消费侧便利（照 fgui）
         public float x, y;
         internal bool _stopsPropagation, _defaultPrevented, _touchCapture;
         public void StopPropagation() => _stopsPropagation = true;
@@ -145,7 +148,7 @@ namespace LoomGUI
         {
             var chain = AncestorChain(evt.nodeId);   // [target, ..., root]
             var ctx = EventContext.Get();
-            ctx.target = evt.nodeId; ctx.type = evt.type; ctx.touchId = evt.touch_id; ctx.x = evt.x; ctx.y = evt.y;
+            ctx.target = evt.nodeId; ctx.type = evt.type; ctx.touchId = evt.touch_id; ctx.clickCount = evt.clickCount; ctx.x = evt.x; ctx.y = evt.y;
             // capture 阶段：根→target 反向，全跑（照 fgui line 302-311 不检查 stop）。消费 _touchCapture 记 _captureNodeCap。
             for (int i = chain.Count - 1; i >= 0; i--)
             {
@@ -171,7 +174,7 @@ namespace LoomGUI
         {
             var ctx = EventContext.Get();
             ctx.target = ctx.currentTarget = evt.nodeId; ctx.phase = Phase.Target;
-            ctx.type = evt.type; ctx.touchId = evt.touch_id; ctx.x = evt.x; ctx.y = evt.y;
+            ctx.type = evt.type; ctx.touchId = evt.touch_id; ctx.clickCount = evt.clickCount; ctx.x = evt.x; ctx.y = evt.y;
             var bridge = TryGetBridge(evt.nodeId, evt.type);
             if (bridge != null) { bridge.CallCapture(ctx); bridge.CallBubble(ctx); }
             EventContext.Return(ctx);
@@ -195,5 +198,9 @@ namespace LoomGUI
         /// 主动释放某节点的 touch monitor（业务调，如拖拽结束）。转发核心 remove。
         public void RemoveTouchMonitor(uint nodeId) =>
             Native.loomgui_stage_remove_touch_monitor((StageHandle*)_handle, nodeId);
+
+        /// v1c.4：取消待 click（照 fgui CancelClick）。Down 后、Up 前调 → 该 touch 下个 Up 不发 Click。
+        public void CancelTouch(int touchId) =>
+            Native.loomgui_stage_cancel_click((StageHandle*)_handle, touchId);
     }
 }

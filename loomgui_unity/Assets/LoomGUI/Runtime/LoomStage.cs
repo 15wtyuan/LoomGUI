@@ -419,8 +419,9 @@ namespace LoomGUI
             if (_inputCollector != null)
                 _inputCollector.Collect((System.IntPtr)_stage, _designSize);
 
-            // tick → build_blob 写入 Rust 拥有缓存（dt v0 忽略）。
-            Native.loomgui_stage_tick(_stage, Time.deltaTime);
+            // tick → build_blob 写入 Rust 拥有缓存。v1c.4：dt 累积进 time_s（双击窗口）；用
+            // unscaledDeltaTime（照 fgui Time.unscaledTime，暂停不受影响）。
+            Native.loomgui_stage_tick(_stage, Time.unscaledDeltaTime);
 
             // borrow_frame：返回 byte*（缓存首），写 nuint 长度。
             // 局部变量已在栈上固定，直接 & 取址传入（fixed 反而报 CS0213 "already fixed"）。

@@ -58,8 +58,8 @@ namespace LoomGUI
                     if (phase == UnityEngine.InputSystem.TouchPhase.Stationary) continue;
                     byte kind = 2;
                     if (phase == UnityEngine.InputSystem.TouchPhase.Began) kind = 0;
-                    else if (phase == UnityEngine.InputSystem.TouchPhase.Ended
-                          || phase == UnityEngine.InputSystem.TouchPhase.Canceled) kind = 1;
+                    else if (phase == UnityEngine.InputSystem.TouchPhase.Ended) kind = 1;
+                    else if (phase == UnityEngine.InputSystem.TouchPhase.Canceled) kind = 3;   // v1c.4：Canceled
                     var screen = touch.position.ReadValue();
                     var d = ScreenToDesign(screen, screenSize, rootSize);
                     events.Add(new Bindings.PointerEvent { kind = kind, button = 0, pad0 = 0, pad1 = 0, touch_id = touch.touchId.ReadValue(), x = d.x, y = d.y });
@@ -78,7 +78,8 @@ namespace LoomGUI
                 if (t.phase == UnityEngine.TouchPhase.Stationary) continue;
                 byte kind = 2;
                 if (t.phase == UnityEngine.TouchPhase.Began) kind = 0;
-                else if (t.phase == UnityEngine.TouchPhase.Ended || t.phase == UnityEngine.TouchPhase.Canceled) kind = 1;
+                else if (t.phase == UnityEngine.TouchPhase.Ended) kind = 1;
+                else if (t.phase == UnityEngine.TouchPhase.Canceled) kind = 3;   // v1c.4：Canceled
                 var d = ScreenToDesign(t.position, screenSize, rootSize);
                 events.Add(new Bindings.PointerEvent { kind = kind, button = 0, pad0 = 0, pad1 = 0, touch_id = t.fingerId, x = d.x, y = d.y });
             }
