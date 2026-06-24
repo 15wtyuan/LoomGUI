@@ -63,6 +63,11 @@ pub struct Node {
     pub disabled: bool,
     /// v1d.1：opt-in 可拖拽（HTML `draggable="true"` 属性）。drag 状态机据此发起 drag。
     pub draggable: bool,
+    /// v1d.2：HTML tabindex 属性值。None=不可聚焦；Some(-1)=仅编程聚焦；
+    /// Some(0)=DOM 序可聚焦；Some(N>0)=显式序可聚焦。
+    pub tabindex: Option<i32>,
+    /// v1d.2：当前是否聚焦（运行时，:focus 伪类源）。仅 focused_node 链上节点 true。
+    pub focused: bool,
 }
 
 impl Default for Node {
@@ -89,6 +94,8 @@ impl Default for Node {
             active: false,
             disabled: false,
             draggable: false,
+            tabindex: None,
+            focused: false,
         }
     }
 }
@@ -99,6 +106,8 @@ pub struct Scene {
     pub nodes: Vec<Node>,
     /// 运行时伪类重匹配规则表（spec §5.5）。默认空；T7 包加载填，T8 inline 路径空。
     pub dynamic_rules: crate::style::dynamic::DynamicRuleTable,
+    /// v1d.2：当前焦点节点（单一全局，照 fgui Stage.focus）。None=无焦点。
+    pub focused_node: Option<NodeId>,
 }
 
 impl Scene {
@@ -106,13 +115,14 @@ impl Scene {
     /// `parent_idx` 指向 entries 下标，`None` = 根。
     /// clip_rect slot / dirty 标志按 style.overflow_hidden / kind 派生。
     /// parse 路径（build_scene）与包加载路径（read_package）共用——防建树逻辑分叉。
-    pub fn build(entries: &[(Option<usize>, NodeKind, ResolvedStyle, Vec<String>, Option<String>, bool)]) -> Scene {
+    pub fn build(entries: &[(Option<usize>, NodeKind, ResolvedStyle, Vec<String>, Option<String>, bool, Option<i32>)]) -> Scene {
         let mut scene = Scene {
             roots: Vec::new(),
             nodes: Vec::new(),
             dynamic_rules: crate::style::dynamic::DynamicRuleTable::default(),
+            focused_node: None,
         };
-        for (i, (parent_idx, kind, style, classes, id_attr, draggable)) in entries.iter().enumerate() {
+        for (i, (parent_idx, kind, style, classes, id_attr, draggable, tabindex)) in entries.iter().enumerate() {
             scene.nodes.push(Node {
                 id: NodeId(i),
                 parent: parent_idx.map(NodeId),
@@ -136,6 +146,8 @@ impl Scene {
                 active: false,
                 disabled: false,
                 draggable: *draggable,
+                tabindex: *tabindex,
+                focused: false,
             });
         }
         // 接 children + roots（entries 先序 → 按 parent 出现序填，与旧 build_rec 一致）
@@ -164,7 +176,7 @@ impl Scene {
 /// `styles` 必须与 `tree.nodes` 同长且同序（由 `style::cascade::resolve_styles` 保证）。
 #[cfg(feature = "parse")]
 pub fn build_scene(tree: &ElementTree, styles: &[ResolvedStyle]) -> Scene {
-    let mut entries: Vec<(Option<usize>, NodeKind, ResolvedStyle, Vec<String>, Option<String>, bool)> = Vec::new();
+    let mut entries: Vec<(Option<usize>, NodeKind, ResolvedStyle, Vec<String>, Option<String>, bool, Option<i32>)> = Vec::new();
     for root in &tree.roots {
         gather_rec(tree, styles, *root, None, &mut entries);
     }
@@ -177,7 +189,7 @@ fn gather_rec(
     styles: &[ResolvedStyle],
     el_id: ElementId,
     parent_idx: Option<usize>,
-    entries: &mut Vec<(Option<usize>, NodeKind, ResolvedStyle, Vec<String>, Option<String>, bool)>,
+    entries: &mut Vec<(Option<usize>, NodeKind, ResolvedStyle, Vec<String>, Option<String>, bool, Option<i32>)>,
 ) -> usize {
     let el = &tree.nodes[el_id.0];
     let style = &styles[el_id.0];
@@ -202,8 +214,11 @@ fn gather_rec(
     // v1d.1：draggable="true" → Node.draggable（HTML 原生属性，AI 熟悉）。
     // 非 "true" 一律 false（draggable="false"/缺省/任意值 → false，照 HTML truthy 语义简化）。
     let draggable = el.attrs.get("draggable").map(|v| v == "true").unwrap_or(false);
+    // v1d.2：tabindex 属性 → Option<i32>。非数字 → None（照 DOM 容错：无效值忽略）。
+    // 语义：None=不可聚焦；Some(-1)=仅编程；Some(0)=DOM 序；Some(N>0)=显式序。
+    let tabindex = el.attrs.get("tabindex").and_then(|v| v.parse::<i32>().ok());
     let my_idx = entries.len();
-    entries.push((parent_idx, kind.clone(), style.clone(), el.classes.clone(), el.id.clone(), draggable));
+    entries.push((parent_idx, kind.clone(), style.clone(), el.classes.clone(), el.id.clone(), draggable, tabindex));
 
     // §4.2：Container/Button 的裸文本 → Text 子节点。文本子像无 class 的 <span>：
     // taffy_style 取 DEFAULT（由测量定尺寸），视觉/字体字段继承父值。
@@ -220,7 +235,7 @@ fn gather_rec(
             ts.letter_spacing = style.letter_spacing;
             ts.text_align = style.text_align;
             ts.white_space_nowrap = style.white_space_nowrap;
-            entries.push((Some(my_idx), NodeKind::Text { content: text.clone() }, ts, Vec::new(), None, false));
+            entries.push((Some(my_idx), NodeKind::Text { content: text.clone() }, ts, Vec::new(), None, false, None));
         }
     }
 
@@ -257,9 +272,9 @@ mod tests {
 
     #[test]
     fn scene_build_6tuple_sets_draggable() {
-        let entries: Vec<(Option<usize>, NodeKind, ResolvedStyle, Vec<String>, Option<String>, bool)> = vec![
-            (None, NodeKind::Container, ResolvedStyle::default(), Vec::new(), None, false),
-            (Some(0), NodeKind::Button, ResolvedStyle::default(), Vec::new(), None, true),
+        let entries: Vec<(Option<usize>, NodeKind, ResolvedStyle, Vec<String>, Option<String>, bool, Option<i32>)> = vec![
+            (None, NodeKind::Container, ResolvedStyle::default(), Vec::new(), None, false, None),
+            (Some(0), NodeKind::Button, ResolvedStyle::default(), Vec::new(), None, true, None),
         ];
         let scene = Scene::build(&entries);
         assert!(!scene.nodes[0].draggable, "root draggable=false");
@@ -272,6 +287,7 @@ mod tests {
             roots: vec![],
             nodes: vec![],
             dynamic_rules: Default::default(),
+            focused_node: None,
         };
         assert!(
             s.dynamic_rules.rules.is_empty(),
@@ -280,14 +296,47 @@ mod tests {
     }
 
     #[test]
+    fn node_has_tabindex_focused_defaults() {
+        let n = Node::default();
+        assert_eq!(n.tabindex, None, "tabindex 默认 None（不可聚焦）");
+        assert!(!n.focused, "focused 默认 false");
+    }
+
+    #[test]
+    fn scene_default_focused_node_none() {
+        let s = Scene {
+            roots: vec![],
+            nodes: vec![],
+            dynamic_rules: Default::default(),
+            focused_node: None,
+        };
+        assert_eq!(s.focused_node, None, "Scene 默认 focused_node=None");
+    }
+
+    #[test]
+    fn scene_build_7tuple_sets_tabindex() {
+        let entries: Vec<(Option<usize>, NodeKind, ResolvedStyle, Vec<String>, Option<String>, bool, Option<i32>)> = vec![
+            (None, NodeKind::Container, ResolvedStyle::default(), Vec::new(), None, false, None),
+            (Some(0), NodeKind::Button, ResolvedStyle::default(), Vec::new(), None, false, Some(0)),
+            (Some(0), NodeKind::Button, ResolvedStyle::default(), Vec::new(), None, false, Some(3)),
+        ];
+        let scene = Scene::build(&entries);
+        assert_eq!(scene.nodes[0].tabindex, None, "root tabindex=None");
+        assert_eq!(scene.nodes[1].tabindex, Some(0), "btn1 tabindex=Some(0)");
+        assert_eq!(scene.nodes[2].tabindex, Some(3), "btn2 tabindex=Some(3)");
+        assert!(!scene.nodes[0].focused, "focused 默认 false");
+        assert_eq!(scene.focused_node, None, "build 后 focused_node=None");
+    }
+
+    #[test]
     fn scene_build_constructs_tree_without_parse() {
         // 手搓 entries：root Container + 一个 Text 子（parent=Some(0)）。
         // 不走 parse_html/build_scene——证明 Scene::build 独立于 parse（read_package 依赖此）。
         let root_style = ResolvedStyle::default();
         let text_style = ResolvedStyle::default();
-        let entries: Vec<(Option<usize>, NodeKind, ResolvedStyle, Vec<String>, Option<String>, bool)> = vec![
-            (None, NodeKind::Container, root_style, Vec::new(), None, false),
-            (Some(0), NodeKind::Text { content: "hi".into() }, text_style, Vec::new(), None, false),
+        let entries: Vec<(Option<usize>, NodeKind, ResolvedStyle, Vec<String>, Option<String>, bool, Option<i32>)> = vec![
+            (None, NodeKind::Container, root_style, Vec::new(), None, false, None),
+            (Some(0), NodeKind::Text { content: "hi".into() }, text_style, Vec::new(), None, false, None),
         ];
         let scene = Scene::build(&entries);
 
@@ -306,7 +355,7 @@ mod tests {
         // overflow_hidden → clip slot 派生
         let mut of = ResolvedStyle::default();
         of.overflow_hidden = true;
-        let scene2 = Scene::build(&[(None, NodeKind::Container, of, Vec::new(), None, false)]);
+        let scene2 = Scene::build(&[(None, NodeKind::Container, of, Vec::new(), None, false, None)]);
         assert!(scene2.nodes[0].clip_rect.is_some(), "overflow_hidden=true → clip slot");
     }
 }
@@ -338,9 +387,9 @@ mod parse_tests {
         // 手搓 Scene（不走 parse）：root(id="root") + btn(id="btn") + Text 子(无 id)。
         // 验：精确匹配返 NodeId；无匹配/空 id → None。
         let entries = vec![
-            (None, NodeKind::Container, ResolvedStyle::default(), vec![], Some("root".to_string()), false),
-            (Some(0), NodeKind::Button, ResolvedStyle::default(), vec![], Some("btn".to_string()), false),
-            (Some(1), NodeKind::Text { content: "x".into() }, ResolvedStyle::default(), vec![], None, false),
+            (None, NodeKind::Container, ResolvedStyle::default(), vec![], Some("root".to_string()), false, None),
+            (Some(0), NodeKind::Button, ResolvedStyle::default(), vec![], Some("btn".to_string()), false, None),
+            (Some(1), NodeKind::Text { content: "x".into() }, ResolvedStyle::default(), vec![], None, false, None),
         ];
         let scene = Scene::build(&entries);
         assert_eq!(scene.find_by_id_attr("btn"), Some(NodeId(1)), "find btn → node 1");
@@ -512,5 +561,22 @@ mod parse_tests {
         assert!(!root.draggable, "draggable=\"false\" → false");
         let btn = scene.nodes.iter().find(|n| matches!(n.kind, NodeKind::Button)).expect("btn");
         assert!(!btn.draggable, "draggable=\"yes\"（非 true）→ false（truthy 仅认 true）");
+    }
+
+    #[test]
+    fn tabindex_attr_parsed() {
+        let html = r#"<div><button tabindex="0">a</button><button tabindex="3">b</button><button tabindex="-1">c</button><button tabindex="abc">d</button><button>e</button></div>"#;
+        let css = "";
+        let tree = parse_html(html).unwrap();
+        let sheet = parse_css(css).unwrap();
+        let styles = resolve_styles(&tree, &sheet);
+        let scene = build_scene(&tree, &styles);
+        let btns: Vec<_> = scene.nodes.iter().filter(|n| matches!(n.kind, NodeKind::Button)).collect();
+        assert_eq!(btns.len(), 5);
+        assert_eq!(btns[0].tabindex, Some(0), "tabindex=\"0\" → Some(0)");
+        assert_eq!(btns[1].tabindex, Some(3), "tabindex=\"3\" → Some(3)");
+        assert_eq!(btns[2].tabindex, Some(-1), "tabindex=\"-1\" → Some(-1)");
+        assert_eq!(btns[3].tabindex, None, "tabindex=\"abc\"（非数字）→ None");
+        assert_eq!(btns[4].tabindex, None, "无 tabindex 属性 → None");
     }
 }
