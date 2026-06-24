@@ -198,6 +198,15 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 - **FFI/version**：version v1c.4→v1d.1；**无新 FFI 函数**（drag/longpress 走既有 borrow_events，csbindgen 不需 regen）。.dll 重编（1694208→1694720B）。
 - **两机约束（v1d.1 执行）**：core+ffi cargo test 全绿（core 185 + ffi 30 = 215）；C# 本机写未编译（无 Unity），家里机 EditMode（LoomEventHandlerTests 18 测含 T7 drag/longpress bubble + LoomInputCollectorTests 含 T8 `ScreenToDesign_NotchedSafeArea_RoundTrip` 6 点硬门，BuildStage helper 须填 font_path）+ PlayMode（drag opt-in/取消 click/阈值 + longpress 1.5s 一次/Move>50 取消/独立 click/disabled + safe-area Device Simulator 避刘海/触控↔渲染对齐/关 _safeArea 回归）。subagent-driven 8 task 全 Approved（T8 一轮 Critical fix）+ final review Ready（opus，8 跨 task 集成点全清）。spec `docs/superpowers/specs/2026-06-24-v1d.1-drag-longpress-safearea-design.md`、plan `docs/superpowers/plans/2026-06-24-v1d.1-drag-longpress-safearea.md`、验收 `docs/v1d.1-home-verification.md`。踩坑：跨 crate 签名变更漏改（坑 41）、safe-area forward/inverse 变换不一致（坑 42）。
 
+### 2.20 键盘 + 焦点 + Tab + `:focus`（v1d.2，§10.3）
+- **焦点状态（单一全局，照 fgui Stage.focus）**：`Scene.focused_node: Option<NodeId>` + `Node.focused: bool`（:focus 伪类源）+ `Node.tabindex: Option<i32>`（HTML `tabindex` 属性，`v.parse::<i32>().ok()` 非数字→None；None=不可聚焦/`Some(-1)`=仅编程/`Some(0)`=DOM序/`Some(N>0)`=显式序）。pkg v4→**v5** NodeBlock flags 后 +`tabindex:i32`（None→`i32::MIN` 哨兵 round-trip），formatVersion MIN=MAX=5（旧 v4 拒）。`Scene::build` 6→7-tuple。
+- **focus 通道（单源 `pub(crate) fn focus_node(scene,new,out)`，input.rs 模块级）**：设/清 `focused_node`+`node.focused` + 发 `FocusOut`@旧/`FocusIn`@新（同目标 no-op）。**3 处共用**：① Stage tick 最前消费 `pending_focus_request`（request_focus/blur 记，**不直写 last_events**——避免 tick 覆盖丢事件）；② process Down arm **click-to-focus**（沿 down_targets 找最近 `tabindex>=0` 非 disabled，`.copied()` 释放 slot 借用再 `focus_node(&mut scene)`）；③ `process_keys` Tab 导航。`request_focus` **强制**聚焦任意非 disabled 节点（含 tabindex=None/-1，照 fgui RequestFocus 不查 focusable；disabled 拒）。
+- **Tab 链 + 导航（core `build_tab_chain`/`next_focus`/`process_keys`）**：链 = 正整数 tabindex 升序（stable 同值保 DFS）后接 tabindex=0 组（DFS 序），-1/None/disabled 排除。Tab/Shift+Tab(`KEY_TAB=9`+`MOD_SHIFT`) 按 `next_focus` 移焦（链内 ±1 wrap，链外→首/尾）。**Tab 被导航消费不发 keydown**（照 DOM Tab 默认动作=移焦；业务拦 Tab 留 v1.x preventDefault）。空链 Tab no-op。
+- **keydown/up（core process_keys）**：新 `KeyEvent{key_code:u32,modifiers:u8,is_down:bool,pad:[u8;2]}` 8B 输入（C# `set_key_input`）→ 有焦点才发 keydown/up（无焦点丢弃），**复用 EventRecord 流**（`EVT_KEY_DOWN=12`/`UP=13`/`FOCUS_IN=14`/`FOCUS_OUT=15`，`node_id`=焦点节点、`touch_id`复用装 key_code、`pad[0]`=modifiers、x/y=0，**零新输出 ABI**）。modifiers 位掩码 bit0=shift/1=ctrl/2=alt（照 fgui InputEvent，砍 cmd）。不范围：IME/character、TextInput、`:focus-visible`（随 v1.x）。
+- **tick 管线（§15，v1d.2 增 ⓪+②）**：⓪消费 pending_focus_request(`focus_node`) → ①solve → process(含 click-to-focus) → ②`process_keys`(keydown/up+Tab) → last_events= → rematch → render。`:focus` 靠 `Compound.pseudo_focus`（dynamic.rs 单一定义，selector.rs `pub use` 重导出）+ `compound_matches_with_state` 门控 `node.focused` + `extract_dynamic_rules` 纳入 `:focus` 规则，rematch 每帧跑自动吃焦点变化。
+- **FFI/version**：version v1d.1→v1d.2；**3 新常驻 FFI**（`set_key_input`/`request_focus`/`focused_node`，csbindgen reimport regen）+ `KeyEvent` struct。.dll 重编（1694720→1709056B）。C# `EventType`+4(12-15)/`LoomEvent.modifiers`@6/`EventContext.keyCode`(uint touch_id)+`modifiers`/`DispatchPending`+4 BubbleRoute/`LoomInputCollector.CollectKeys`(新旧输入系统+KeyList 白名单+CurrentModifiers)/`LoomStage` LateUpdate 调 CollectKeys。
+- **两机约束（v1d.2 执行）**：core+ffi cargo test 全绿（core 206 + ffi 35 = 241）；C# 本机写未编译（无 Unity），家里机 EditMode（LoomEventHandlerTests 20 测含 T7 KeyDown/FocusIn bubble，BuildStage helper 须填 font_path）+ PlayMode（tabindex opt-in/click-to-focus/Tab 导航 wrap/keydown 需焦点+Tab 消费不发/:focus 伪类/request_focus 下 tick 生效）。subagent-driven 7 task 全 Approved + final review Ready（opus，C1 Critical 修：C# KeyEvent struct 漏手补，坑 35 复发）。spec `docs/superpowers/specs/2026-06-24-v1d.2-keyboard-focus-design.md`、plan `docs/superpowers/plans/2026-06-24-v1d.2-keyboard-focus.md`、验收 `docs/v1d.2-home-verification.md`。踩坑：csbindgen struct stub 复发（坑 35 强化）、Scene 加字段 plan 漏枚举构造点（坑 43）。
+
 ## 3. 依赖 API 适配踩坑（v0 最大教训）
 
 > **plan/brief 写的 API 草稿常与实际 crate 版本不符**。遇编译错按本节对照，**勿硬改依赖版本**，按 crate 实际源码（`~/.cargo/registry/src/<crate>-<ver>/src/`）调。
@@ -500,6 +509,7 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 **根因**：csbindgen 生成策略限制（只解析 fn 签名里的类型若已在同文件定义，不跨 use 追）。
 **解决**：手补 C# 镜像 `LoomGUIBindings.cs` 同目录 `LoomGUIPointerEvent.cs`（`[StructLayout(Sequential)]` 字段序对齐 Rust `#[repr(C)]`）。**每次 Rust struct 改字段须同步手补镜像**——v1c.3 PointerEvent 加 touch_id 就漏了（T5 brief 没提，controller 补 scope 修），不修则 set_input 写错布局坐标全乱。
 **教训**：csbindgen 项目里，FFI 跨语言 struct（PointerEvent/EventRecord/LoomEvent）是**手补 C# 镜像 + Rust 真相源**双份，改 Rust struct 必须同步 grep C# 镜像 + 更新。EventRecord 镜像是手写 `LoomEvent`（LoomEventHandler.cs），PointerEvent 镜像是 `LoomGUIPointerEvent.cs`。
+**v1d.2 复发（KeyEvent）**：新增 FFI 输入 struct `KeyEvent`（set_key_input 签名引用）同样无 C# stub → T6 写消费侧 `Bindings.KeyEvent` 但无人手补镜像，**final review C1 捕**（per-task review 各看一边漏）。修：新增 `LoomGUIKeyEvent.cs`（8B，字段 key_code/modifiers/is_down/pad0/pad1 对齐 Rust，字段名已被消费侧 pin）。**强化教训**：不只"改字段"要同步镜像，**新增 FFI struct** 更要立即补 C# 镜像——把"新增/改 #[repr(C)] struct → grep C# 镜像/补文件"列为 FFI task 的必检项。
 
 ### 坑 36：csbindgen FFI 数组参数是 `T*` 非 managed array，须 fixed-pin（v1c.3）
 
@@ -549,6 +559,13 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 **根因**：render（root transform uniform sf + 相机）和 input（ScreenToDesign）是**同一 design↔screen 映射的两面**，必须互为精确逆。初版两套独立公式且 offX 语义错（该"设计 span 居中 safe 区"却写成"屏幕中心偏移"）。v1c 本就 latent 不一致（render uniform sf / input per-axis stretch），safe==full 时碰巧都不出错所以没暴露。
 **解决**：统一为 uniform `sf=min(area.w/dw, area.h/dh)`；`offX=area.x+(area.w-dw*sf)/2`（设计 span dw*sf 居中 safe 区，留 intra-safe letterbox）；`ScreenToDesign` 用**逐项逆** `dx=(sx-offX)/sf, dy=(offYTop-sy)/sf`（offYTop=area.y+area.h）。符号恒等（forward 代入 inverse = identity）+ notched 6 点 round-trip 测锁。safe==full width-binding 零回归（offX=0, rootPos=(-sw/2,sh/2)）。
 **教训**：render↔input 是双向映射，**两侧公式必须同源互逆**——别各写一套。坐标系变换（design↔screen，含 y-flip/scale/offset/letterbox）最易错，须符号推导 + round-trip 测，不能只验 degenerate case（safe==full）。改动前先在纸上推出 forward 公式再写 inverse。
+
+### 坑 43：给广泛构造的 struct 加字段，plan 按文件派任务会漏枚举所有构造点（v1d.2-T1→T4）
+
+**症状**：T1 给 `Scene` 加 `focused_node` 字段。plan 把"修 Scene `{...}` 字面量"按文件派（T1 node.rs / T2 asset / T3 dynamic / T4 input / T5 stage），但**漏了 render/mod.rs、render/batch.rs、hit.rs、layout/mod.rs** 的 Scene 字面量/`Scene::build` 7-tuple 调用 → 这些模块测编译失败（`missing field focused_node`），T4 跑 `cargo test -p loomgui_core --lib input` 才暴露，临时补丁让 lib 编过。
+**根因**：广泛构造的 struct（`Scene` 被全 crate 测 helper 手搓）加字段是**全局 fallout**，但 plan 的 per-file 任务划分只枚举了"主路径"文件，没 grep 全仓所有构造点。与坑 41 同族（跨文件 fallout），但坑 41 是签名变更跨 crate，本坑是**字段加在同一 crate 内多模块的字面量**。
+**解决**：给 struct 加字段后，**全仓 grep 所有构造点**（`grep -rn "Scene {" loomgui_core/src/` + `Scene::build(` 调用）一次性枚举，不靠 per-file 任务记忆。T4 implementer 补了漏的 4 文件（render/mod.rs+batch.rs+hit.rs+layout，stage.rs 最小补丁留 T5 结构化重写）。
+**教训**：struct 字段/签名变更的 fallout 枚举要**全仓 grep 驱动**，不能依赖 plan 的文件清单（plan 写时未必枚举全）。controller pre-flight review 应 grep 一遍构造点写进 brief，而非让 implementer 边编译边发现。
 
 ## 6. 调试/验证技巧
 
@@ -654,9 +671,13 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 
 **v1d.1 defer（→ v1d.2+）**：drag 跟手（自动移动节点，→v1d.3 transform.translate 启用）、longpress onBegin/onAction 重复/onEnd（v1x 全套手势）、CSS env(safe-area-inset-*) per-element 内边距（v1x）、DragDropManager DnD（v1x）、swipe/pinch/pan 手势（v1x）、键盘/焦点/Tab/滚轮/IME（v1d.2/v1d.5）、I1 safeArea 变不重调（v1d.x，ConfigureTransforms 仅 Screen.width/height 变时重调）。
 
+**v1d.2 ✅ 完成（main @ 8f2629e，待家里机验）**：键盘 keydown/up + 焦点 + Tab 导航 + `:focus` 伪类 + FocusIn/Out，检测全 core（input.rs），机制镜像 fgui（已核实源码）。**焦点**（单一全局 `Scene.focused_node` + `Node.focused`/`Node.tabindex` HTML 属性 None/-1/0/N；pkg v4→**v5** NodeBlock +tabindex i32 i32::MIN 哨兵，MIN=MAX=5 拒 v4；`Scene::build` 6→7-tuple）+ **focus 通道单源** `focus_node`（3 处共用：Stage tick 消费 pending_focus_request / Down arm click-to-focus tabindex>=0 / process_keys Tab）+ **request_focus 强制**（任意非 disabled 节点，照 fgui RequestFocus 不查 focusable；不直写 last_events 记 pending 下 tick 消费）+ **Tab 链**（正整数升序 stable 后 0 组 DFS，-1/None/disabled 排除；Tab/Shift+Tab wrap；**Tab 消费不发 keydown**）+ **keydown/up**（新 `KeyEvent` 8B 输入，有焦点才发，复用 EventRecord 流 EVT 12-15 touch_id 装 key_code/pad[0]=modifiers，零新输出 ABI；无焦点丢弃）+ **`:focus`**（Compound.pseudo_focus dynamic.rs 单一定义 + 门控 node.focused + extract_dynamic 纳入，rematch 每帧吃）。tick 管线 +⓪pending_focus_request +②process_keys。version v1d.2；3 新常驻 FFI（set_key_input/request_focus/focused_node）+ KeyEvent struct；.dll 重编（1694720→1709056B）。spec `docs/superpowers/specs/2026-06-24-v1d.2-keyboard-focus-design.md`、plan `docs/superpowers/plans/2026-06-24-v1d.2-keyboard-focus.md`、验收 `docs/v1d.2-home-verification.md`。**两机约束**：core+ffi cargo test 全绿（core 206+ffi 35=241）；C# 本机写未编译，家里机 EditMode（LoomEventHandlerTests 20 含 T7 KeyDown/FocusIn bubble，BuildStage helper 须填 font_path）+ PlayMode（tabindex opt-in/click-to-focus/Tab wrap/keydown 需焦点+Tab 消费不发/:focus/request_focus 下 tick 生效）。subagent-driven 7 task 全 Approved + final review Ready（opus，11 跨 task seam 10 清 + C1 Critical 修）。踩坑：csbindgen struct stub 复发（坑 35 强化—新增 FFI struct 必补镜像）、Scene 加字段 plan 漏枚举构造点（坑 43）。
+
+**v1d.2 defer（→ v1d.3+ / v1.x）**：IME/character（随 TextInput v1.x）、TextInput 控件（v1.x）、`:focus-visible`（区分键盘/鼠标聚焦成因，v1.x）、Tab preventDefault（业务拦 Tab，v1.x）、Tab 链缓存（每 Tab O(N) 即时构造，UI 规模可接受，v1e perf）。
+
 **v1 其余 defer（v0 起，未动）**：
-- v1b 全收尾（A/B/C/mesh/CJK ✅）+ v1c.1 最小交互闭环 ✅ + v1c.2 路由完整化 ✅ + v1c.3 多触摸+CaptureTouch ✅ + v1c.4 click 增强 ✅ + **v1d.1 拖拽+长按+safe-area ✅（待家里机验）**。
-- **下一个**：v1d.2 键盘+焦点+Tab+:focus（v1d-plan §3，消费本轮 drag 基座无关，独立）/ v1d.3 transform 命中+渲染（drag 跟手落地）/ v1d.4 GTween / v1d.5 ScrollPane+滚轮+手势仲裁（关验收 #2，消费 v1d.1 drag）/ v1e perf。
+- v1b 全收尾（A/B/C/mesh/CJK ✅）+ v1c.1 最小交互闭环 ✅ + v1c.2 路由完整化 ✅ + v1c.3 多触摸+CaptureTouch ✅ + v1c.4 click 增强 ✅ + v1d.1 拖拽+长按+safe-area ✅（待家里机验）+ **v1d.2 键盘+焦点+Tab+:focus ✅（待家里机验）**。
+- **下一个**：v1d.3 transform（命中 world_to_local + drag 跟手落地 transform.translate）/ v1d.4 GTween / v1d.5 ScrollPane+滚轮+手势仲裁（关验收 #2，消费 v1d.1 drag）/ v1e perf。
 - NativeHost/virtualization/shape mask：v1.x。
 
 完整 defer 表见各 spec §7；v1a Phase 1 实现 ledger 见 `.git/sdd/progress.md`。
