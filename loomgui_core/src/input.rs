@@ -46,14 +46,26 @@ pub const EVT_MOVE: u8 = 2;
 pub const EVT_CLICK: u8 = 3;
 pub const EVT_ROLL_OVER: u8 = 4;
 pub const EVT_ROLL_OUT: u8 = 5;
+pub const EVT_DRAG_START: u8 = 6;
+pub const EVT_DRAG_MOVE: u8 = 7;
+pub const EVT_DRAG_END: u8 = 8;
+pub const EVT_LONG_PRESS: u8 = 9;
 
 const CLICK_THRESHOLD_MOUSE: f32 = 10.0;   // fgui _clickTestThreshold(mouse)，per-axis
 const CLICK_THRESHOLD_TOUCH: f32 = 50.0;   // fgui _clickTestThreshold(touch)
 const DOUBLE_CLICK_TIME: f32 = 0.35;   // fgui 0.35f 秒
 const MOVE_CANCEL_PX: f32 = 50.0;      // fgui Move 硬编码取消阈值（per-axis，mouse+touch 通用）
+const DRAG_THRESHOLD_MOUSE: f32 = 2.0;    // fgui UIConfig.clickDragSensitivity（mouse）
+const DRAG_THRESHOLD_TOUCH: f32 = 10.0;   // fgui UIConfig.touchDragSensitivity（touch）
+const LONGPRESS_TRIGGER: f32 = 1.5;       // fgui LongPressGesture.TRIGGER（秒）
+const LONGPRESS_RADIUS: f32 = 50.0;       // fgui holdRangeRadius（与 MOVE_CANCEL_PX 同值，独立常量明义）
 
 fn click_threshold(touch_id: i32) -> f32 {
     if touch_id == -1 { CLICK_THRESHOLD_MOUSE } else { CLICK_THRESHOLD_TOUCH }
+}
+
+fn drag_threshold(touch_id: i32) -> f32 {
+    if touch_id == -1 { DRAG_THRESHOLD_MOUSE } else { DRAG_THRESHOLD_TOUCH }
 }
 
 /// 单触摸槽状态（v1c.3）。slots[0]=鼠标主指（touch_id=-1 常驻），slots[1..4]=触摸。
@@ -73,6 +85,12 @@ pub struct TouchSlot {
     pub last_click_pos: (f32, f32),     // v1c.4：上次 Click 位置
     pub last_click_button: u8,          // v1c.4：上次 Click 键
     pub click_count: u8,                // v1c.4：1→2→1 循环
+    pub drag_testing: bool,            // v1d.1：Down 在 draggable 链上置 true
+    pub dragging: bool,                // v1d.1：DragStart 后置 true
+    pub drag_target: Option<NodeId>,   // v1d.1：down_targets 中最近 draggable（含 down_node）；None 无 drag
+    pub down_time: f32,                // v1d.1：Down 时=time_s（longpress 用）
+    pub longpress_fired: bool,         // v1d.1：触发后置 true（本 press 不再发）
+    pub longpress_cancelled: bool,     // v1d.1：位移>50px 置 true（本 press 不再发）
 }
 
 impl TouchSlot {
@@ -92,6 +110,12 @@ impl TouchSlot {
             last_click_pos: (0.0, 0.0),
             last_click_button: 0,
             click_count: 1,
+            drag_testing: false,
+            dragging: false,
+            drag_target: None,
+            down_time: 0.0,
+            longpress_fired: false,
+            longpress_cancelled: false,
         }
     }
     fn new_free() -> Self {
@@ -110,6 +134,12 @@ impl TouchSlot {
             last_click_pos: (0.0, 0.0),
             last_click_button: 0,
             click_count: 1,
+            drag_testing: false,
+            dragging: false,
+            drag_target: None,
+            down_time: 0.0,
+            longpress_fired: false,
+            longpress_cancelled: false,
         }
     }
 }
@@ -256,11 +286,47 @@ impl PointerState {
             match ev.kind {
                 PointerKind::Move => {
                     // v1c.4：按住中位移>50（per-axis，硬编码，mouse+touch 通用）→ 取消 click
+                    // v1d.1：同时取消 longpress（超半径）。
                     if slot.is_down {
                         let dx = slot.last_pos.0 - slot.down_pos.0;
                         let dy = slot.last_pos.1 - slot.down_pos.1;
                         if dx.abs() > MOVE_CANCEL_PX || dy.abs() > MOVE_CANCEL_PX {
                             slot.click_cancelled = true;
+                            slot.longpress_cancelled = true;
+                        }
+                    }
+                    // v1d.1：drag 检测（仅 draggable 链）
+                    if slot.is_down && slot.drag_testing && !slot.dragging {
+                        if let Some(tgt) = slot.drag_target {
+                            let dx = slot.last_pos.0 - slot.down_pos.0;
+                            let dy = slot.last_pos.1 - slot.down_pos.1;
+                            let t = drag_threshold(touch_id);
+                            if dx.abs() > t || dy.abs() > t {
+                                slot.dragging = true;
+                                slot.click_cancelled = true;   // drag 必取消 click
+                                out.push(EventRecord {
+                                    node_id: tgt.0 as u32,
+                                    event_type: EVT_DRAG_START,
+                                    click_count: 0,
+                                    pad: [0, 0],
+                                    touch_id,
+                                    x: ev.x,
+                                    y: ev.y,
+                                });
+                            }
+                        }
+                    }
+                    if slot.dragging {
+                        if let Some(tgt) = slot.drag_target {
+                            out.push(EventRecord {
+                                node_id: tgt.0 as u32,
+                                event_type: EVT_DRAG_MOVE,
+                                click_count: 0,
+                                pad: [0, 0],
+                                touch_id,
+                                x: ev.x,
+                                y: ev.y,
+                            });
                         }
                     }
                     Self::hover_diff_slot(slot, scene, &mut out);
@@ -283,6 +349,16 @@ impl PointerState {
                     slot.down_node = hit;
                     slot.down_targets = ancestor_chain(scene, hit);   // v1c.4：[leaf,…祖先]
                     slot.click_cancelled = false;                     // 新按下重置
+                    // v1d.1：drag/longpress 初始化
+                    slot.down_time = time_s;
+                    slot.longpress_fired = false;
+                    slot.longpress_cancelled = false;
+                    // drag_target = down_targets 中最近 draggable（叶子优先，含 down_node）；disabled 跳过。
+                    slot.drag_target = slot.down_targets.iter()
+                        .find(|&&n| n.0 < scene.nodes.len() && scene.nodes[n.0].draggable && !scene.nodes[n.0].disabled)
+                        .copied();
+                    slot.drag_testing = slot.drag_target.is_some();
+                    slot.dragging = false;
                     if let Some(n) = hit {
                         if !scene.nodes[n.0].disabled {
                             out.push(EventRecord {
@@ -301,6 +377,20 @@ impl PointerState {
                 PointerKind::Up | PointerKind::Canceled => {
                     if ev.kind == PointerKind::Canceled {
                         slot.click_cancelled = true;   // v1c.4：Canceled 隐式 CancelClick（不发 Click + reset）
+                    }
+                    // v1d.1：drag 中 Up/Canceled → DragEnd（照 fgui onTouchEnd）
+                    if slot.dragging {
+                        if let Some(tgt) = slot.drag_target {
+                            out.push(EventRecord {
+                                node_id: tgt.0 as u32,
+                                event_type: EVT_DRAG_END,
+                                click_count: 0,
+                                pad: [0, 0],
+                                touch_id,
+                                x: ev.x,
+                                y: ev.y,
+                            });
+                        }
                     }
                     slot.is_down = false;
                     if let Some(n) = hit {
@@ -351,6 +441,9 @@ impl PointerState {
                     slot.touch_monitors.clear();
                     slot.down_targets.clear();
                     slot.down_node = None;
+                    slot.drag_testing = false;
+                    slot.dragging = false;
+                    slot.drag_target = None;
                     Self::hover_diff_slot(slot, scene, &mut out);
                     if slot_idx > 0 {
                         slot.touch_id = -1; // 释放触摸槽（鼠标不释放）
@@ -1213,5 +1306,143 @@ mod tests {
             "btn 移走（静止光标）→ RollOut(btn)");
         assert!(!out.iter().any(|e| e.event_type == EVT_ROLL_OVER),
             "root 已 hovered → 无 RollOver");
+    }
+
+    // ===== v1d.1 T3: core drag 检测 =====
+
+    /// v1d.1：root(0,0,200,200) + draggable btn(0,0,100,100)。
+    fn one_draggable_button_scene() -> Scene {
+        let mut root = Node::default();
+        root.id = NodeId(0);
+        root.layout_rect = Rect { x: 0.0, y: 0.0, w: 200.0, h: 200.0 };
+        let mut btn = Node::default();
+        btn.id = NodeId(1);
+        btn.parent = Some(NodeId(0));
+        btn.kind = NodeKind::Button;
+        btn.draggable = true;
+        btn.layout_rect = Rect { x: 0.0, y: 0.0, w: 100.0, h: 100.0 };
+        root.children = vec![NodeId(1)];
+        Scene {
+            roots: vec![NodeId(0)],
+            nodes: vec![root, btn],
+            dynamic_rules: Default::default(),
+        }
+    }
+
+    #[test]
+    fn drag_start_emits_dragstart_and_cancels_click() {
+        // draggable btn：Down@(50,50) + Move@(55,50)（dx=5>mouse阈值2）→ DragStart@btn + click_cancelled。
+        let mut s = one_draggable_button_scene();
+        let mut ps = PointerState::new();
+        let out = ps.process(&mut s, &[
+            PointerEvent { kind: PointerKind::Down, x: 50.0, y: 50.0, button: 0, pad: [0, 0], touch_id: -1 },
+            PointerEvent { kind: PointerKind::Move, x: 55.0, y: 50.0, button: 0, pad: [0, 0], touch_id: -1 },
+        ]);
+        assert!(out.iter().any(|e| e.event_type == EVT_DRAG_START && e.node_id == 1),
+            "draggable btn Move>阈值 → DragStart@btn");
+        // 同帧 Up 应无 Click（drag-start 已置 click_cancelled）
+        let out2 = ps.process(&mut s, &[PointerEvent { kind: PointerKind::Up, x: 55.0, y: 50.0, button: 0, pad: [0, 0], touch_id: -1 }]);
+        assert!(!out2.iter().any(|e| e.event_type == EVT_CLICK), "drag-start 取消 click");
+        assert!(out2.iter().any(|e| e.event_type == EVT_DRAG_END && e.node_id == 1), "Up → DragEnd@btn");
+    }
+
+    #[test]
+    fn drag_move_emitted_after_start() {
+        let mut s = one_draggable_button_scene();
+        let mut ps = PointerState::new();
+        ps.process(&mut s, &[PointerEvent { kind: PointerKind::Down, x: 50.0, y: 50.0, button: 0, pad: [0, 0], touch_id: -1 }]);
+        ps.process(&mut s, &[PointerEvent { kind: PointerKind::Move, x: 55.0, y: 50.0, button: 0, pad: [0, 0], touch_id: -1 }]); // DragStart
+        let out = ps.process(&mut s, &[PointerEvent { kind: PointerKind::Move, x: 60.0, y: 50.0, button: 0, pad: [0, 0], touch_id: -1 }]);
+        assert!(out.iter().any(|e| e.event_type == EVT_DRAG_MOVE && e.node_id == 1), "drag 中 Move → DragMove@btn");
+    }
+
+    #[test]
+    fn non_draggable_no_drag_events() {
+        // 普通 btn（draggable=false）：Down+Move → 无 drag 事件（仅既有 MOVE/click 取消走原逻辑）
+        let mut s = one_button_scene();   // 既有 helper：btn 非 draggable
+        let mut ps = PointerState::new();
+        let out = ps.process(&mut s, &[
+            PointerEvent { kind: PointerKind::Down, x: 50.0, y: 50.0, button: 0, pad: [0, 0], touch_id: -1 },
+            PointerEvent { kind: PointerKind::Move, x: 55.0, y: 50.0, button: 0, pad: [0, 0], touch_id: -1 },
+        ]);
+        assert!(!out.iter().any(|e| e.event_type == EVT_DRAG_START || e.event_type == EVT_DRAG_MOVE),
+            "非 draggable → 无 drag 事件");
+    }
+
+    #[test]
+    fn drag_threshold_mouse_2_touch_10_per_axis() {
+        // mouse: Move dx=2（=阈值，per-axis |2|>2 false）→ 不发 DragStart；dx=3 → 发。
+        let mut s = one_draggable_button_scene();
+        let mut ps = PointerState::new();
+        ps.process(&mut s, &[PointerEvent { kind: PointerKind::Down, x: 50.0, y: 50.0, button: 0, pad: [0, 0], touch_id: -1 }]);
+        let out1 = ps.process(&mut s, &[PointerEvent { kind: PointerKind::Move, x: 52.0, y: 50.0, button: 0, pad: [0, 0], touch_id: -1 }]);
+        assert!(!out1.iter().any(|e| e.event_type == EVT_DRAG_START), "mouse dx=2（=阈值，per-axis 不超）→ 不发 DragStart");
+        // 重置场景验 dx=3
+        let mut s2 = one_draggable_button_scene();
+        let mut ps2 = PointerState::new();
+        ps2.process(&mut s2, &[PointerEvent { kind: PointerKind::Down, x: 50.0, y: 50.0, button: 0, pad: [0, 0], touch_id: -1 }]);
+        let out2 = ps2.process(&mut s2, &[PointerEvent { kind: PointerKind::Move, x: 53.0, y: 50.0, button: 0, pad: [0, 0], touch_id: -1 }]);
+        assert!(out2.iter().any(|e| e.event_type == EVT_DRAG_START), "mouse dx=3>2 → 发 DragStart");
+        // touch: dx=10（=阈值不超）不发；dx=11 发
+        let mut s3 = one_draggable_button_scene();
+        let mut ps3 = PointerState::new();
+        ps3.process(&mut s3, &[PointerEvent { kind: PointerKind::Down, x: 50.0, y: 50.0, button: 0, pad: [0, 0], touch_id: 1 }]);
+        let out3 = ps3.process(&mut s3, &[PointerEvent { kind: PointerKind::Move, x: 60.0, y: 50.0, button: 0, pad: [0, 0], touch_id: 1 }]);
+        assert!(!out3.iter().any(|e| e.event_type == EVT_DRAG_START), "touch dx=10（=阈值不超）→ 不发");
+        let mut s4 = one_draggable_button_scene();
+        let mut ps4 = PointerState::new();
+        ps4.process(&mut s4, &[PointerEvent { kind: PointerKind::Down, x: 50.0, y: 50.0, button: 0, pad: [0, 0], touch_id: 1 }]);
+        let out4 = ps4.process(&mut s4, &[PointerEvent { kind: PointerKind::Move, x: 61.0, y: 50.0, button: 0, pad: [0, 0], touch_id: 1 }]);
+        assert!(out4.iter().any(|e| e.event_type == EVT_DRAG_START), "touch dx=11>10 → 发");
+    }
+
+    #[test]
+    fn drag_target_is_nearest_draggable_ancestor() {
+        // root draggable，btn 非 draggable：Down@btn → drag_target=root（祖先），DragStart@root。
+        let mut s = one_button_scene();   // root(0)+btn(1)，均非 draggable
+        s.nodes[0].draggable = true;       // 仅 root draggable
+        let mut ps = PointerState::new();
+        let out = ps.process(&mut s, &[
+            PointerEvent { kind: PointerKind::Down, x: 50.0, y: 50.0, button: 0, pad: [0, 0], touch_id: -1 },  // 命中 btn
+            PointerEvent { kind: PointerKind::Move, x: 55.0, y: 50.0, button: 0, pad: [0, 0], touch_id: -1 },
+        ]);
+        assert!(out.iter().any(|e| e.event_type == EVT_DRAG_START && e.node_id == 0),
+            "down 叶 btn 非 draggable 但祖先 root draggable → DragStart@root");
+    }
+
+    #[test]
+    fn drag_disabled_node_no_drag() {
+        let mut s = one_draggable_button_scene();
+        s.nodes[1].disabled = true;   // draggable 但 disabled
+        let mut ps = PointerState::new();
+        let out = ps.process(&mut s, &[
+            PointerEvent { kind: PointerKind::Down, x: 50.0, y: 50.0, button: 0, pad: [0, 0], touch_id: -1 },
+            PointerEvent { kind: PointerKind::Move, x: 55.0, y: 50.0, button: 0, pad: [0, 0], touch_id: -1 },
+        ]);
+        assert!(!out.iter().any(|e| e.event_type == EVT_DRAG_START), "disabled draggable → 不发 drag");
+    }
+
+    #[test]
+    fn drag_below_threshold_still_clicks() {
+        // draggable btn：Down+Move dx=1（<阈值2）+Up → 不发 drag，正常 Click（drag 不破坏 click 容忍）
+        let mut s = one_draggable_button_scene();
+        let mut ps = PointerState::new();
+        let out = ps.process(&mut s, &[
+            PointerEvent { kind: PointerKind::Down, x: 50.0, y: 50.0, button: 0, pad: [0, 0], touch_id: -1 },
+            PointerEvent { kind: PointerKind::Move, x: 51.0, y: 50.0, button: 0, pad: [0, 0], touch_id: -1 },  // dx=1<2
+            PointerEvent { kind: PointerKind::Up, x: 51.0, y: 50.0, button: 0, pad: [0, 0], touch_id: -1 },
+        ]);
+        assert!(!out.iter().any(|e| e.event_type == EVT_DRAG_START), "dx=1<阈值 → 不发 drag");
+        assert!(out.iter().any(|e| e.event_type == EVT_CLICK), "阈值内 → 正常 Click");
+    }
+
+    #[test]
+    fn canceled_emits_dragend() {
+        let mut s = one_draggable_button_scene();
+        let mut ps = PointerState::new();
+        ps.process(&mut s, &[PointerEvent { kind: PointerKind::Down, x: 50.0, y: 50.0, button: 0, pad: [0, 0], touch_id: -1 }]);
+        ps.process(&mut s, &[PointerEvent { kind: PointerKind::Move, x: 55.0, y: 50.0, button: 0, pad: [0, 0], touch_id: -1 }]); // DragStart
+        let out = ps.process(&mut s, &[PointerEvent { kind: PointerKind::Canceled, x: 55.0, y: 50.0, button: 0, pad: [0, 0], touch_id: -1 }]);
+        assert!(out.iter().any(|e| e.event_type == EVT_DRAG_END && e.node_id == 1), "Canceled → DragEnd@btn");
     }
 }
