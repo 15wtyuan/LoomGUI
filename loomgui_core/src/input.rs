@@ -26,13 +26,14 @@ pub enum PointerKind {
 }
 
 /// 事件输出（FFI 扁平 POD）。event_type: 0=Down,1=Up,2=Move,3=Click,4=RollOver,5=RollOut。
-/// v1c.3：+touch_id:i32 @8（破 v1c.2 零改，16→20 字节）。
+/// v1c.3：+touch_id:i32 @8（破 v1c.2 零改，16→20 字节）。v1c.4：pad[0]→click_count（20B 不变）。
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct EventRecord {
     pub node_id: u32,
     pub event_type: u8,
-    pub pad: [u8; 3],
+    pub click_count: u8,    // v1c.4：1 或 2（仅 Click 有意义，其余=0）
+    pub pad: [u8; 2],
     pub touch_id: i32,
     pub x: f32,
     pub y: f32,
@@ -47,6 +48,8 @@ pub const EVT_ROLL_OUT: u8 = 5;
 
 const CLICK_THRESHOLD_MOUSE: f32 = 10.0;   // fgui _clickTestThreshold(mouse)，per-axis
 const CLICK_THRESHOLD_TOUCH: f32 = 50.0;   // fgui _clickTestThreshold(touch)
+const DOUBLE_CLICK_TIME: f32 = 0.35;   // fgui 0.35f 秒
+const MOVE_CANCEL_PX: f32 = 50.0;      // fgui Move 硬编码取消阈值（per-axis，mouse+touch 通用）
 
 fn click_threshold(touch_id: i32) -> f32 {
     if touch_id == -1 { CLICK_THRESHOLD_MOUSE } else { CLICK_THRESHOLD_TOUCH }
@@ -64,7 +67,11 @@ pub struct TouchSlot {
     pub last_hovered_chain: Vec<NodeId>,
     pub touch_monitors: Vec<NodeId>,    // v1c.3：capture 的节点（T2 填派发逻辑）
     pub down_targets: Vec<NodeId>,      // v1c.4：Down 时填 [leaf, …祖先]（照 fgui downTargets）
-    pub click_cancelled: bool,          // v1c.4：Move>50 / CancelClick / Canceled 置（本 task 恒 false）
+    pub click_cancelled: bool,          // v1c.4：Move>50 / CancelClick / Canceled 置
+    pub last_click_time: f32,           // v1c.4：time_s（双击窗口）
+    pub last_click_pos: (f32, f32),     // v1c.4：上次 Click 位置
+    pub last_click_button: u8,          // v1c.4：上次 Click 键
+    pub click_count: u8,                // v1c.4：1→2→1 循环
 }
 
 impl TouchSlot {
@@ -80,6 +87,10 @@ impl TouchSlot {
             touch_monitors: Vec::new(),
             down_targets: Vec::new(),
             click_cancelled: false,
+            last_click_time: 0.0,
+            last_click_pos: (0.0, 0.0),
+            last_click_button: 0,
+            click_count: 1,
         }
     }
     fn new_free() -> Self {
@@ -94,6 +105,10 @@ impl TouchSlot {
             touch_monitors: Vec::new(),
             down_targets: Vec::new(),
             click_cancelled: false,
+            last_click_time: 0.0,
+            last_click_pos: (0.0, 0.0),
+            last_click_button: 0,
+            click_count: 1,
         }
     }
 }
@@ -101,6 +116,7 @@ impl TouchSlot {
 /// 多指针状态机（v1c.3：固定 5 槽）。slots[0]=鼠标，slots[1..4]=触摸。
 pub struct PointerState {
     pub slots: Vec<TouchSlot>,
+    pub time_s: f32,   // v1c.4：累积时间（Stage::advance_time 累加；双击窗口用）
 }
 
 impl Default for PointerState {
@@ -110,7 +126,7 @@ impl Default for PointerState {
         for _ in 0..4 {
             slots.push(TouchSlot::new_free());  // slot 1..4 = 触摸
         }
-        Self { slots }
+        Self { slots, time_s: 0.0 }
     }
 }
 
@@ -198,6 +214,7 @@ impl PointerState {
     /// 消费本帧输入 → 产 EventRecord 序列。
     pub fn process(&mut self, scene: &mut Scene, events: &[PointerEvent]) -> Vec<EventRecord> {
         let mut out: Vec<EventRecord> = Vec::new();
+        let time_s = self.time_s;   // 本地副本：避免事件循环内 &mut slot 与 &self.time_s 借用冲突（Up 臂用）
         if events.is_empty() {
             for i in 0..self.slots.len() {
                 if i == 0 || self.slots[i].touch_id >= 0 {
@@ -221,13 +238,22 @@ impl PointerState {
             let touch_id = ev.touch_id;
             match ev.kind {
                 PointerKind::Move => {
+                    // v1c.4：按住中位移>50（per-axis，硬编码，mouse+touch 通用）→ 取消 click
+                    if slot.is_down {
+                        let dx = slot.last_pos.0 - slot.down_pos.0;
+                        let dy = slot.last_pos.1 - slot.down_pos.1;
+                        if dx.abs() > MOVE_CANCEL_PX || dy.abs() > MOVE_CANCEL_PX {
+                            slot.click_cancelled = true;
+                        }
+                    }
                     Self::hover_diff_slot(slot, scene, &mut out);
                     // Move 派发：有 monitor 产 Move@monitor（T2 实现），无 monitor 不产
                     for m in &slot.touch_monitors {
                         out.push(EventRecord {
                             node_id: m.0 as u32,
                             event_type: EVT_MOVE,
-                            pad: [0, 0, 0],
+                            click_count: 0,
+                            pad: [0, 0],
                             touch_id,
                             x: ev.x,
                             y: ev.y,
@@ -245,7 +271,8 @@ impl PointerState {
                             out.push(EventRecord {
                                 node_id: n.0 as u32,
                                 event_type: EVT_DOWN,
-                                pad: [0, 0, 0],
+                                click_count: 0,
+                                pad: [0, 0],
                                 touch_id,
                                 x: ev.x,
                                 y: ev.y,
@@ -261,22 +288,29 @@ impl PointerState {
                             out.push(EventRecord {
                                 node_id: n.0 as u32,
                                 event_type: EVT_UP,
-                                pad: [0, 0, 0],
+                                click_count: 0,
+                                pad: [0, 0],
                                 touch_id,
                                 x: ev.x,
                                 y: ev.y,
                             });
                             if let Some(target) = Self::click_test(slot, scene, hit) {
                                 if !scene.nodes[target.0].disabled {
+                                    let count = Self::bump_click_count(slot, ev.button, time_s);
                                     out.push(EventRecord {
                                         node_id: target.0 as u32,
                                         event_type: EVT_CLICK,
-                                        pad: [0, 0, 0],
+                                        click_count: count,
+                                        pad: [0, 0],
                                         touch_id,
                                         x: ev.x,
                                         y: ev.y,
                                     });
                                 }
+                            } else {
+                                // click_test 返 None（位移超阈值/cancelled）→ 重置双击窗口（照 fgui End cancel 分支）
+                                slot.last_click_time = 0.0;
+                                slot.click_count = 1;
                             }
                         }
                     }
@@ -286,7 +320,8 @@ impl PointerState {
                             out.push(EventRecord {
                                 node_id: m.0 as u32,
                                 event_type: EVT_UP,
-                                pad: [0, 0, 0],
+                                click_count: 0,
+                                pad: [0, 0],
                                 touch_id,
                                 x: ev.x,
                                 y: ev.y,
@@ -339,6 +374,27 @@ impl PointerState {
         None
     }
 
+    /// 双击 clickCount 累进（照 fgui End：350ms + per-axis 位置 + 同键 → 1→2→1 循环）。
+    /// 返回本次 click_count 并更新 slot 的 last_click_* 状态。
+    /// time_s 作参数传（非读 self.time_s），避免 &mut self 与 &mut slot 借用冲突。
+    fn bump_click_count(slot: &mut TouchSlot, button: u8, time_s: f32) -> u8 {
+        let t = click_threshold(slot.touch_id);
+        let within_time = time_s - slot.last_click_time < DOUBLE_CLICK_TIME;
+        let within_pos = (slot.last_pos.0 - slot.last_click_pos.0).abs() < t
+            && (slot.last_pos.1 - slot.last_click_pos.1).abs() < t;
+        let same_button = slot.last_click_button == button;
+        let count = if within_time && within_pos && same_button {
+            if slot.click_count == 2 { 1 } else { slot.click_count + 1 }   // 1→2→1 循环
+        } else {
+            1
+        };
+        slot.click_count = count;
+        slot.last_click_time = time_s;
+        slot.last_click_pos = slot.last_pos;
+        slot.last_click_button = button;
+        count
+    }
+
     /// per-slot hover diff：产 RollOut(旧链独有)/RollOver(新链独有)。
     /// 不调 set_hovered_chain（全局 union 在 recompute_hovered）。
     fn hover_diff_slot(slot: &mut TouchSlot, scene: &mut Scene, out: &mut Vec<EventRecord>) {
@@ -351,7 +407,8 @@ impl PointerState {
                 out.push(EventRecord {
                     node_id: n.0 as u32,
                     event_type: EVT_ROLL_OUT,
-                    pad: [0, 0, 0],
+                    click_count: 0,
+                    pad: [0, 0],
                     touch_id: slot.touch_id,
                     x: slot.last_pos.0,
                     y: slot.last_pos.1,
@@ -363,7 +420,8 @@ impl PointerState {
                 out.push(EventRecord {
                     node_id: n.0 as u32,
                     event_type: EVT_ROLL_OVER,
-                    pad: [0, 0, 0],
+                    click_count: 0,
+                    pad: [0, 0],
                     touch_id: slot.touch_id,
                     x: slot.last_pos.0,
                     y: slot.last_pos.1,
@@ -1005,5 +1063,66 @@ mod tests {
         // click_test：down_targets[0]=NodeId(1) 越界→走祖先；current_hit=root(0) in down_targets → Click@root
         assert!(out.iter().any(|e| e.event_type == EVT_CLICK && e.node_id == 0),
             "down_leaf 销毁 → Click@root（祖先兜底）");
+    }
+
+    // ===== v1c.4 T2: 双击 + Move 取消 =====
+
+    /// 双击：两次 Click（time_s 间隔 0.2、同位置、同键）→ 第二次 click_count=2。
+    #[test]
+    fn double_click_within_window_clickcount_2() {
+        let mut s = one_button_scene();
+        let mut ps = PointerState::new();
+        ps.time_s = 0.0;
+        ps.process(&mut s, &[PointerEvent { kind: PointerKind::Down, x: 50.0, y: 50.0, button: 0, pad: [0, 0], touch_id: -1 }]);
+        let c1 = ps.process(&mut s, &[PointerEvent { kind: PointerKind::Up, x: 50.0, y: 50.0, button: 0, pad: [0, 0], touch_id: -1 }]);
+        let count1 = c1.iter().find(|e| e.event_type == EVT_CLICK).map(|e| e.click_count).unwrap();
+        assert_eq!(count1, 1, "首次 Click count=1");
+        ps.time_s = 0.2;
+        ps.process(&mut s, &[PointerEvent { kind: PointerKind::Down, x: 50.0, y: 50.0, button: 0, pad: [0, 0], touch_id: -1 }]);
+        let c2 = ps.process(&mut s, &[PointerEvent { kind: PointerKind::Up, x: 50.0, y: 50.0, button: 0, pad: [0, 0], touch_id: -1 }]);
+        let count2 = c2.iter().find(|e| e.event_type == EVT_CLICK).map(|e| e.click_count).unwrap();
+        assert_eq!(count2, 2, "350ms 内同位同键 → count=2");
+    }
+
+    /// 超 350ms → count 重置 1。
+    #[test]
+    fn double_click_resets_after_window() {
+        let mut s = one_button_scene();
+        let mut ps = PointerState::new();
+        ps.time_s = 0.0;
+        ps.process(&mut s, &[PointerEvent { kind: PointerKind::Down, x: 50.0, y: 50.0, button: 0, pad: [0, 0], touch_id: -1 }]);
+        ps.process(&mut s, &[PointerEvent { kind: PointerKind::Up, x: 50.0, y: 50.0, button: 0, pad: [0, 0], touch_id: -1 }]);
+        ps.time_s = 0.4;   // >0.35
+        ps.process(&mut s, &[PointerEvent { kind: PointerKind::Down, x: 50.0, y: 50.0, button: 0, pad: [0, 0], touch_id: -1 }]);
+        let c = ps.process(&mut s, &[PointerEvent { kind: PointerKind::Up, x: 50.0, y: 50.0, button: 0, pad: [0, 0], touch_id: -1 }]);
+        let count = c.iter().find(|e| e.event_type == EVT_CLICK).map(|e| e.click_count).unwrap();
+        assert_eq!(count, 1, "超 350ms → count=1");
+    }
+
+    /// 三击循环 1→2→1。
+    #[test]
+    fn clickcount_cycle_1_2_1() {
+        let mut s = one_button_scene();
+        let mut ps = PointerState::new();
+        let mut counts = Vec::new();
+        for i in 0..3 {
+            ps.time_s = i as f32 * 0.2;
+            ps.process(&mut s, &[PointerEvent { kind: PointerKind::Down, x: 50.0, y: 50.0, button: 0, pad: [0, 0], touch_id: -1 }]);
+            let c = ps.process(&mut s, &[PointerEvent { kind: PointerKind::Up, x: 50.0, y: 50.0, button: 0, pad: [0, 0], touch_id: -1 }]);
+            counts.push(c.iter().find(|e| e.event_type == EVT_CLICK).map(|e| e.click_count).unwrap());
+        }
+        assert_eq!(counts, vec![1, 2, 1], "1→2→1 循环");
+    }
+
+    /// Move 位移>50 取消 click：Down→Move 60px→Up → 无 Click。
+    #[test]
+    fn move_exceeds_50_cancels_click() {
+        let mut s = one_button_scene();
+        let mut ps = PointerState::new();
+        ps.process(&mut s, &[PointerEvent { kind: PointerKind::Down, x: 10.0, y: 50.0, button: 0, pad: [0, 0], touch_id: -1 }]);
+        ps.process(&mut s, &[PointerEvent { kind: PointerKind::Move, x: 70.0, y: 50.0, button: 0, pad: [0, 0], touch_id: -1 }]); // dx=60>50
+        let out = ps.process(&mut s, &[PointerEvent { kind: PointerKind::Up, x: 70.0, y: 50.0, button: 0, pad: [0, 0], touch_id: -1 }]);
+        assert!(!out.iter().any(|e| e.event_type == EVT_CLICK), "Move>50 → 取消 click");
+        assert!(out.iter().any(|e| e.event_type == EVT_UP), "Up 仍发");
     }
 }
