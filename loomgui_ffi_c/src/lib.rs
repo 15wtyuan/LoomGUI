@@ -8,7 +8,7 @@ use loomgui_core::input::{EventRecord, PointerEvent};
 use loomgui_core::scene::NodeId;
 use loomgui_core::stage::Stage;
 
-/// 版本字符串（C null-terminated `b"v1c.3\0"`）。Task 1 工具链 round-trip 用。
+/// 版本字符串（C null-terminated `b"v1c.4\0"`）。Task 1 工具链 round-trip 用。
 ///
 /// 返回 `*const u8`（csbindgen 映射为 C# `byte*`）；CString::as_ptr 给的是
 /// `*const c_char`（i8），这里 cast 对齐签名。OnceLock 缓存，避免每次分配+泄漏。
@@ -16,7 +16,7 @@ use loomgui_core::stage::Stage;
 pub extern "C" fn loomgui_version() -> *const u8 {
     static VERSION: std::sync::OnceLock<CString> = std::sync::OnceLock::new();
     VERSION
-        .get_or_init(|| CString::new("v1c.3").unwrap())
+        .get_or_init(|| CString::new("v1c.4").unwrap())
         .as_ptr() as *const u8
 }
 
@@ -151,13 +151,14 @@ pub extern "C" fn loomgui_stage_atlas_info(
     a.filename.as_ptr()
 }
 
-/// 跑一帧 tick_and_render → build_blob 写入缓存。v0 无 dt 语义（忽略）。
+/// 跑一帧 tick_and_render → build_blob 写入缓存。v1c.4：dt 累积进 time_s（双击窗口，C# 传 unscaledDeltaTime）。
 #[no_mangle]
-pub extern "C" fn loomgui_stage_tick(h: *mut StageHandle, _dt: f32) {
+pub extern "C" fn loomgui_stage_tick(h: *mut StageHandle, dt: f32) {
     if h.is_null() {
         return;
     }
     let sh = unsafe { &mut *h };
+    sh.stage.advance_time(dt);
     let frame = sh.stage.tick_and_render();
     sh.frame_blob = blob::build_blob(&frame);
 }
@@ -342,6 +343,17 @@ pub extern "C" fn loomgui_stage_remove_touch_monitor(h: *mut StageHandle, node_i
     sh.stage.remove_touch_monitor(NodeId(node_id as usize));
 }
 
+/// v1c.4：外部取消待 click（照 fgui Stage.CancelClick(touchId)）。置对应槽 click_cancelled。
+/// null 句柄 → no-op。
+#[no_mangle]
+pub extern "C" fn loomgui_stage_cancel_click(h: *mut StageHandle, touch_id: i32) {
+    if h.is_null() {
+        return;
+    }
+    let sh = unsafe { &mut *h };
+    sh.stage.cancel_click(touch_id);
+}
+
 /// 全局 shutdown（Domain reload hook）。C# `LoomStage.ResetStatics`（SubsystemRegistration）
 /// 调用本函数——即使当前核心无全局态，hook 必须存在：v1b 引入 global texture/font registry
 /// 时此处自动清，无需再改接线。
@@ -366,10 +378,10 @@ mod tests {
     use std::ffi::CStr;
 
     #[test]
-    fn version_returns_c_string_v1c3() {
+    fn version_returns_c_string_v1c4() {
         unsafe {
             let s = CStr::from_ptr(loomgui_version() as *const i8);
-            assert_eq!(s.to_str().unwrap(), "v1c.3");
+            assert_eq!(s.to_str().unwrap(), "v1c.4");
         }
     }
 }
@@ -730,6 +742,53 @@ mod abi_tests {
             0xFFFF_FFFF,
             "无匹配 → sentinel"
         );
+        loomgui_stage_free(h);
+    }
+
+    /// v1c.4：version 字符串 == "v1c.4"（raw pointer 扫到 NUL 读 C 串）。
+    #[test]
+    fn version_is_v1c_4() {
+        let p = loomgui_version();
+        let len = (0..).take_while(|&i| unsafe { *p.add(i) != 0 }).count();
+        let s = std::str::from_utf8(unsafe { std::slice::from_raw_parts(p, len) }).unwrap();
+        assert_eq!(s, "v1c.4");
+    }
+
+    /// v1c.4：EventRecord 仍 20B（click_count 复用 pad[0]）、PointerEvent 16B 不变、Canceled=3。
+    #[test]
+    fn event_record_and_pointer_event_sizes_unchanged() {
+        use loomgui_core::input::{EventRecord, PointerEvent, PointerKind};
+        use std::mem::size_of;
+        assert_eq!(size_of::<EventRecord>(), 20, "EventRecord 20B（click_count 复用 pad）");
+        assert_eq!(size_of::<PointerEvent>(), 16, "PointerEvent 16B 不变");
+        assert_eq!(PointerKind::Canceled as u8, 3, "Canceled=3");
+    }
+
+    /// v1c.4：cancel_click FFI——Down → cancel_click → Up → 无 Click，Up 仍发。
+    /// 2-frame flow：frame1 Down@btn + tick，cancel_click(-1)，frame2 Up@btn + tick，borrow_events 验。
+    #[cfg(feature = "parse")]
+    #[test]
+    fn cancel_click_skips_click_event() {
+        use loomgui_core::input::{PointerEvent, PointerKind, EVT_CLICK, EVT_UP};
+        let (fp, fplen) = font_path();
+        let h = loomgui_stage_new(fp.as_ptr() as *const u8, fplen, 200.0, 100.0);
+        let html = b"<button class=\"btn\">OK</button>";
+        let css = b".btn{width:100px;height:50px;}";
+        loomgui_stage_load_html(h, html.as_ptr() as *const u8, html.len(), css.as_ptr() as *const u8, css.len());
+        // frame1: Down@btn
+        loomgui_stage_set_input(h, [PointerEvent { kind: PointerKind::Down, x: 50.0, y: 25.0, button: 0, pad: [0, 0], touch_id: -1 }].as_ptr(), 1);
+        loomgui_stage_tick(h, 0.0);
+        // 取消（Down 后、Up 前）
+        loomgui_stage_cancel_click(h, -1);
+        // frame2: Up@btn → click_cancelled → 无 Click
+        loomgui_stage_set_input(h, [PointerEvent { kind: PointerKind::Up, x: 50.0, y: 25.0, button: 0, pad: [0, 0], touch_id: -1 }].as_ptr(), 1);
+        loomgui_stage_tick(h, 0.0);
+        let mut len = 0usize;
+        let p = loomgui_stage_borrow_events(h, &mut len);
+        // borrow_events 的 out_len 是记录数（非字节；照 set_input_borrow_events_round_trip 契约 + FFI doc）
+        let recs = unsafe { std::slice::from_raw_parts(p as *const loomgui_core::input::EventRecord, len) };
+        assert!(!recs.iter().any(|e| e.event_type == EVT_CLICK), "cancel_click → 无 Click");
+        assert!(recs.iter().any(|e| e.event_type == EVT_UP), "Up 仍发");
         loomgui_stage_free(h);
     }
 }

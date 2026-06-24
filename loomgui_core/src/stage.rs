@@ -118,6 +118,16 @@ impl Stage {
         self.pointer_state.remove_touch_monitor(node);
     }
 
+    /// v1c.4：累积时间（C# 传 Time.unscaledDeltaTime；双击窗口用）。
+    pub fn advance_time(&mut self, dt: f32) {
+        self.pointer_state.time_s += dt;
+    }
+
+    /// v1c.4：外部取消待 click（照 fgui CancelClick）。FFI cancel_click 转发。
+    pub fn cancel_click(&mut self, touch_id: i32) {
+        self.pointer_state.cancel_click(touch_id);
+    }
+
     /// 本帧产出的事件（tick 后读；FFI borrow_events 用）。
     pub fn last_events(&self) -> &[EventRecord] {
         &self.last_events
