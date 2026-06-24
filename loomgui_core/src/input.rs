@@ -45,7 +45,12 @@ pub const EVT_CLICK: u8 = 3;
 pub const EVT_ROLL_OVER: u8 = 4;
 pub const EVT_ROLL_OUT: u8 = 5;
 
-const CLICK_THRESHOLD_PX: f32 = 10.0;
+const CLICK_THRESHOLD_MOUSE: f32 = 10.0;   // fgui _clickTestThreshold(mouse)，per-axis
+const CLICK_THRESHOLD_TOUCH: f32 = 50.0;   // fgui _clickTestThreshold(touch)
+
+fn click_threshold(touch_id: i32) -> f32 {
+    if touch_id == -1 { CLICK_THRESHOLD_MOUSE } else { CLICK_THRESHOLD_TOUCH }
+}
 
 /// 单触摸槽状态（v1c.3）。slots[0]=鼠标主指（touch_id=-1 常驻），slots[1..4]=触摸。
 #[derive(Debug, Clone)]
@@ -58,6 +63,8 @@ pub struct TouchSlot {
     pub last_hit: Option<NodeId>,       // v1c.3：本帧命中（hover_diff + is_pointer_on_ui 用）
     pub last_hovered_chain: Vec<NodeId>,
     pub touch_monitors: Vec<NodeId>,    // v1c.3：capture 的节点（T2 填派发逻辑）
+    pub down_targets: Vec<NodeId>,      // v1c.4：Down 时填 [leaf, …祖先]（照 fgui downTargets）
+    pub click_cancelled: bool,          // v1c.4：Move>50 / CancelClick / Canceled 置（本 task 恒 false）
 }
 
 impl TouchSlot {
@@ -71,6 +78,8 @@ impl TouchSlot {
             last_hit: None,
             last_hovered_chain: Vec::new(),
             touch_monitors: Vec::new(),
+            down_targets: Vec::new(),
+            click_cancelled: false,
         }
     }
     fn new_free() -> Self {
@@ -83,6 +92,8 @@ impl TouchSlot {
             last_hit: None,
             last_hovered_chain: Vec::new(),
             touch_monitors: Vec::new(),
+            down_targets: Vec::new(),
+            click_cancelled: false,
         }
     }
 }
@@ -227,6 +238,8 @@ impl PointerState {
                     slot.is_down = true;
                     slot.down_pos = (ev.x, ev.y);
                     slot.down_node = hit;
+                    slot.down_targets = ancestor_chain(scene, hit);   // v1c.4：[leaf,…祖先]
+                    slot.click_cancelled = false;                     // 新按下重置
                     if let Some(n) = hit {
                         if !scene.nodes[n.0].disabled {
                             out.push(EventRecord {
@@ -253,15 +266,17 @@ impl PointerState {
                                 x: ev.x,
                                 y: ev.y,
                             });
-                            if Self::slot_click_ok(slot, n) {
-                                out.push(EventRecord {
-                                    node_id: n.0 as u32,
-                                    event_type: EVT_CLICK,
-                                    pad: [0, 0, 0],
-                                    touch_id,
-                                    x: ev.x,
-                                    y: ev.y,
-                                });
+                            if let Some(target) = Self::click_test(slot, scene, hit) {
+                                if !scene.nodes[target.0].disabled {
+                                    out.push(EventRecord {
+                                        node_id: target.0 as u32,
+                                        event_type: EVT_CLICK,
+                                        pad: [0, 0, 0],
+                                        touch_id,
+                                        x: ev.x,
+                                        y: ev.y,
+                                    });
+                                }
                             }
                         }
                     }
@@ -279,6 +294,7 @@ impl PointerState {
                         }
                     }
                     slot.touch_monitors.clear();
+                    slot.down_targets.clear();
                     slot.down_node = None;
                     Self::hover_diff_slot(slot, scene, &mut out);
                     if slot_idx > 0 {
@@ -292,14 +308,35 @@ impl PointerState {
         out
     }
 
-    /// click 判定（沿用 v1c.2：down_node==hit && 位移<10px）。
-    fn slot_click_ok(slot: &TouchSlot, hit: NodeId) -> bool {
-        if slot.down_node != Some(hit) {
-            return false;
+    /// click 目标判定（照 fgui ClickTest）。返 Click 应派发的节点；None=不产 Click。
+    /// cancelled（Move>50/CancelClick/Canceled）→ None。位移 per-axis 超阈值 → None。
+    /// 否则优先 down_targets[0]（按下叶，"still on stage"≈索引有效）；叶失效则沿当前 hit 祖先兜底。
+    fn click_test(slot: &TouchSlot, scene: &Scene, current_hit: Option<NodeId>) -> Option<NodeId> {
+        if slot.click_cancelled {
+            return None;
         }
+        let t = click_threshold(slot.touch_id);
         let dx = slot.last_pos.0 - slot.down_pos.0;
         let dy = slot.last_pos.1 - slot.down_pos.1;
-        (dx * dx + dy * dy).sqrt() <= CLICK_THRESHOLD_PX
+        if dx.abs() > t || dy.abs() > t {
+            return None;
+        }
+        if let Some(&leaf) = slot.down_targets.first() {
+            if leaf.0 < scene.nodes.len() {
+                return Some(leaf);
+            }
+        }
+        let mut cur = current_hit;
+        while let Some(id) = cur {
+            if id.0 >= scene.nodes.len() {
+                break;
+            }
+            if slot.down_targets.contains(&id) {
+                return Some(id);
+            }
+            cur = scene.nodes[id.0].parent;
+        }
+        None
     }
 
     /// per-slot hover diff：产 RollOut(旧链独有)/RollOver(新链独有)。
@@ -889,5 +926,84 @@ mod tests {
         ps.remove_touch_monitor(NodeId(1));   // 主动释放
         let out = ps.process(&mut s, &[PointerEvent { kind: PointerKind::Move, x: 150.0, y: 150.0, button: 0, pad: [0, 0], touch_id: 1 }]);
         assert!(!out.iter().any(|e| e.event_type == EVT_MOVE), "remove 后 Move 不产给该 monitor");
+    }
+
+    // ===== v1c.4 T1: click_test + per-axis 阈值 + down_targets =====
+
+    /// Click 目标 = down_leaf（非当前 hit）。Down@btn 边缘，漂出 btn 到 root（位移≤10），
+    /// Up → Click@btn（按下叶），Up 事件@root（当前 hit）。照 fgui ClickTest downTargets[0] 优先。
+    #[test]
+    fn click_target_is_down_leaf_not_current_hit() {
+        let mut s = one_button_scene();   // root(0,0,200,200) + btn(0,0,100,100)
+        let mut ps = PointerState::new();
+        // Down@(95,50)→btn；Up@(105,50)→root（105>100）。dx=10（mouse 阈值，|10|>10 false→不超）
+        let out = ps.process(&mut s, &[
+            PointerEvent { kind: PointerKind::Down, x: 95.0, y: 50.0, button: 0, pad: [0, 0], touch_id: -1 },
+            PointerEvent { kind: PointerKind::Up, x: 105.0, y: 50.0, button: 0, pad: [0, 0], touch_id: -1 },
+        ]);
+        assert!(out.iter().any(|e| e.event_type == EVT_CLICK && e.node_id == 1),
+            "Click@btn（down_leaf），即使 Up 时命中已漂移到 root");
+        assert!(out.iter().any(|e| e.event_type == EVT_UP && e.node_id == 0),
+            "Up@root（当前 hit）");
+        assert!(!out.iter().any(|e| e.event_type == EVT_CLICK && e.node_id == 0),
+            "不产 Click@root");
+    }
+
+    /// per-axis 阈值（非 euclidean）：mouse 对角 (8,8)（euclidean 11.3>10 但 per-axis 8≤10）→ 仍 Click。
+    #[test]
+    fn per_axis_threshold_mouse_diagonal_clicks() {
+        let mut s = one_button_scene();
+        let mut ps = PointerState::new();
+        let out = ps.process(&mut s, &[
+            PointerEvent { kind: PointerKind::Down, x: 50.0, y: 50.0, button: 0, pad: [0, 0], touch_id: -1 },
+            PointerEvent { kind: PointerKind::Up, x: 58.0, y: 58.0, button: 0, pad: [0, 0], touch_id: -1 },
+        ]);
+        assert!(out.iter().any(|e| e.event_type == EVT_CLICK),
+            "per-axis (8,8) ≤10 → Click（旧 euclidean 11.3>10 会拒）");
+    }
+
+    /// mouse 30px 漂移 → 无 Click（30>10）；touch 30px 漂移 → Click（30<50）。
+    #[test]
+    fn threshold_mouse_10_rejects_touch_50_allows_30px() {
+        // mouse
+        let mut s = one_button_scene();
+        let mut ps = PointerState::new();
+        let out_m = ps.process(&mut s, &[
+            PointerEvent { kind: PointerKind::Down, x: 10.0, y: 50.0, button: 0, pad: [0, 0], touch_id: -1 },
+            PointerEvent { kind: PointerKind::Up, x: 40.0, y: 50.0, button: 0, pad: [0, 0], touch_id: -1 },
+        ]);
+        assert!(!out_m.iter().any(|e| e.event_type == EVT_CLICK), "mouse 30px >10 → 无 Click");
+        // touch
+        let mut s2 = one_button_scene();
+        let mut ps2 = PointerState::new();
+        let out_t = ps2.process(&mut s2, &[
+            PointerEvent { kind: PointerKind::Down, x: 10.0, y: 50.0, button: 0, pad: [0, 0], touch_id: 1 },
+            PointerEvent { kind: PointerKind::Up, x: 40.0, y: 50.0, button: 0, pad: [0, 0], touch_id: 1 },
+        ]);
+        assert!(out_t.iter().any(|e| e.event_type == EVT_CLICK), "touch 30px <50 → Click");
+    }
+
+    /// down_leaf 销毁 → 沿当前 hit 祖先兜底。Down@child（scene1），scene2 移除 child，Up@root 区 → Click@root。
+    #[test]
+    fn down_leaf_destroyed_fallback_to_ancestor() {
+        // scene1: root(0,0,200,200) + child(0,0,50,50)
+        let mut root = Node::default();
+        root.id = NodeId(0); root.layout_rect = Rect { x: 0.0, y: 0.0, w: 200.0, h: 200.0 };
+        let mut child = Node::default();
+        child.id = NodeId(1); child.parent = Some(NodeId(0));
+        child.layout_rect = Rect { x: 0.0, y: 0.0, w: 50.0, h: 50.0 };
+        root.children = vec![NodeId(1)];
+        let mut s1 = Scene { roots: vec![NodeId(0)], nodes: vec![root, child], dynamic_rules: Default::default() };
+        let mut ps = PointerState::new();
+        // Down@(25,25)→child；down_targets=[child(1),root(0)]
+        ps.process(&mut s1, &[PointerEvent { kind: PointerKind::Down, x: 25.0, y: 25.0, button: 0, pad: [0, 0], touch_id: -1 }]);
+        // scene2: 仅 root（child 移除）——NodeId(1) 越界
+        let mut root2 = Node::default();
+        root2.id = NodeId(0); root2.layout_rect = Rect { x: 0.0, y: 0.0, w: 200.0, h: 200.0 };
+        let mut s2 = Scene { roots: vec![NodeId(0)], nodes: vec![root2], dynamic_rules: Default::default() };
+        let out = ps.process(&mut s2, &[PointerEvent { kind: PointerKind::Up, x: 25.0, y: 25.0, button: 0, pad: [0, 0], touch_id: -1 }]);
+        // click_test：down_targets[0]=NodeId(1) 越界→走祖先；current_hit=root(0) in down_targets → Click@root
+        assert!(out.iter().any(|e| e.event_type == EVT_CLICK && e.node_id == 0),
+            "down_leaf 销毁 → Click@root（祖先兜底）");
     }
 }
