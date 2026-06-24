@@ -112,5 +112,80 @@ namespace LoomGUI
                 Native.loomgui_stage_set_input((Bindings.StageHandle*)stage, p, (nuint)arr.Length);
             }
         }
+
+        /// v1d.2：采集本帧键盘 → set_key_input。KeyDown/Up 事件 + modifiers。
+        /// 兼容新旧输入系统（同 Collect）。本帧无键事件 → set_key_input(null,0)（core 无键盘输入）。
+        public void CollectKeys(System.IntPtr stage)
+        {
+            if (stage == System.IntPtr.Zero) return;
+            var keys = new System.Collections.Generic.List<Bindings.KeyEvent>();
+            byte mods = CurrentModifiers();
+#if ENABLE_INPUT_SYSTEM
+            var kb = UnityEngine.InputSystem.Keyboard.current;
+            if (kb != null)
+            {
+                // 遍历常见键——csbindgen KeyEvent.key_code = (uint)UnityEngine.KeyCode。
+                // ponytail: 白名单键按 wasPressedThisFrame/wasReleasedThisFrame 采 down/up。
+                foreach (UnityEngine.KeyCode kc in KeyList)
+                {
+                    bool down = kb[kc].wasPressedThisFrame;
+                    bool up = kb[kc].wasReleasedThisFrame;
+                    if (down || up)
+                        keys.Add(new Bindings.KeyEvent { key_code = (uint)kc, modifiers = mods, is_down = down, pad0 = 0, pad1 = 0 });
+                }
+            }
+#else
+            foreach (UnityEngine.KeyCode kc in KeyList)
+            {
+                bool down = UnityEngine.Input.GetKeyDown(kc);
+                bool up = UnityEngine.Input.GetKeyUp(kc);
+                if (down || up)
+                    keys.Add(new Bindings.KeyEvent { key_code = (uint)kc, modifiers = mods, is_down = down, pad0 = 0, pad1 = 0 });
+            }
+#endif
+            if (keys.Count == 0)
+            {
+                Native.loomgui_stage_set_key_input((Bindings.StageHandle*)stage, null, 0);
+                return;
+            }
+            var arr = keys.ToArray();
+            fixed (Bindings.KeyEvent* p = arr)
+            {
+                Native.loomgui_stage_set_key_input((Bindings.StageHandle*)stage, p, (nuint)arr.Length);
+            }
+        }
+
+        /// 当前 modifiers 位掩码（bit0=shift/bit1=ctrl/bit2=alt）。core MOD_SHIFT/CTRL/ALT 同值。
+        static byte CurrentModifiers()
+        {
+            byte m = 0;
+#if ENABLE_INPUT_SYSTEM
+            var kb = UnityEngine.InputSystem.Keyboard.current;
+            if (kb == null) return 0;
+            if (kb.leftShiftKey.isPressed || kb.rightShiftKey.isPressed) m |= 0x01;
+            if (kb.leftCtrlKey.isPressed || kb.rightCtrlKey.isPressed) m |= 0x02;
+            if (kb.leftAltKey.isPressed || kb.rightAltKey.isPressed) m |= 0x04;
+#else
+            if (UnityEngine.Input.GetKey(UnityEngine.KeyCode.LeftShift) || UnityEngine.Input.GetKey(UnityEngine.KeyCode.RightShift)) m |= 0x01;
+            if (UnityEngine.Input.GetKey(UnityEngine.KeyCode.LeftControl) || UnityEngine.Input.GetKey(UnityEngine.KeyCode.RightControl)) m |= 0x02;
+            if (UnityEngine.Input.GetKey(UnityEngine.KeyCode.LeftAlt) || UnityEngine.Input.GetKey(UnityEngine.KeyCode.RightAlt)) m |= 0x04;
+#endif
+            return m;
+        }
+
+        /// 采集的键白名单（Tab + 字母 + Enter/Space/Esc/方向 + 数字）。避免全 KeyCode 枚举遍历（数百个）开销。
+        /// ponytail: 显式白名单而非全枚举——绝大多数键业务不关心，白名单够用且省 CPU。
+        static readonly UnityEngine.KeyCode[] KeyList = {
+            UnityEngine.KeyCode.Tab,
+            UnityEngine.KeyCode.Return, UnityEngine.KeyCode.Space, UnityEngine.KeyCode.Escape,
+            UnityEngine.KeyCode.LeftArrow, UnityEngine.KeyCode.RightArrow, UnityEngine.KeyCode.UpArrow, UnityEngine.KeyCode.DownArrow,
+            UnityEngine.KeyCode.A, UnityEngine.KeyCode.B, UnityEngine.KeyCode.C, UnityEngine.KeyCode.D, UnityEngine.KeyCode.E,
+            UnityEngine.KeyCode.F, UnityEngine.KeyCode.G, UnityEngine.KeyCode.H, UnityEngine.KeyCode.I, UnityEngine.KeyCode.J,
+            UnityEngine.KeyCode.K, UnityEngine.KeyCode.L, UnityEngine.KeyCode.M, UnityEngine.KeyCode.N, UnityEngine.KeyCode.O,
+            UnityEngine.KeyCode.P, UnityEngine.KeyCode.Q, UnityEngine.KeyCode.R, UnityEngine.KeyCode.S, UnityEngine.KeyCode.T,
+            UnityEngine.KeyCode.U, UnityEngine.KeyCode.V, UnityEngine.KeyCode.W, UnityEngine.KeyCode.X, UnityEngine.KeyCode.Y, UnityEngine.KeyCode.Z,
+            UnityEngine.KeyCode.Alpha0, UnityEngine.KeyCode.Alpha1, UnityEngine.KeyCode.Alpha2, UnityEngine.KeyCode.Alpha3, UnityEngine.KeyCode.Alpha4,
+            UnityEngine.KeyCode.Alpha5, UnityEngine.KeyCode.Alpha6, UnityEngine.KeyCode.Alpha7, UnityEngine.KeyCode.Alpha8, UnityEngine.KeyCode.Alpha9,
+        };
     }
 }

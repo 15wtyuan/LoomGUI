@@ -19,19 +19,27 @@ namespace LoomGUI
         DragMove = 7,
         DragEnd = 8,
         LongPress = 9,
+        // v1d.2：键盘 + 焦点（core 检测，C# 路由）。
+        KeyDown = 12,
+        KeyUp = 13,
+        FocusIn = 14,
+        FocusOut = 15,
     }
 
     /// C# 镜像 Rust loomgui_core::input::EventRecord（#[repr(C)]）。
     /// 字段序：node_id:u32 @0 → event_type:u8 @4 → click_count:u8 @5 → pad 2 → touch_id:i32 @8 → x:f32 @12 → y:f32 @16（sizeof=20）。
     /// 与 Rust ABI 一致（StructLayout.Sequential 默认 pack=0；pad 在 C# 侧隐式——u32(4)+enum:byte(1)+byte(1)+[2 隐式对齐 int@8]+int(4)+float(4)+float(4)）。
     /// touch_id 用 snake_case 匹配 csbindgen 生成的字段名（Rust EventRecord 字段 snake_case）。
+    /// v1d.2：modifiers 读 Rust EventRecord pad[0] @6（key 事件 modifiers；其余=0）。
     [StructLayout(LayoutKind.Sequential)]
     public struct LoomEvent
     {
         public uint nodeId;
         public EventType type;
         public byte clickCount;   // v1c.4：1 或 2（仅 Click 有意义，其余=0；Rust EventRecord @5）
-        public int touch_id;   // v1c.3：-1=鼠标，>=0=触摸（Rust EventRecord @8）
+        public byte modifiers;    // v1d.2：Rust EventRecord pad[0] @6（key 事件 modifiers；其余=0）
+        // @7 隐式 padding 对齐 touch_id @8
+        public int touch_id;      // v1c.3：-1=鼠标，>=0=触摸（Rust EventRecord @8；key 事件复用装 key_code）
         public float x;
         public float y;
     }
@@ -51,6 +59,8 @@ namespace LoomGUI
         public EventType type;
         public int touchId;            // v1c.3：事件所属触摸（-1=鼠标）
         public byte clickCount;          // v1c.4：照 fgui InputEvent.clickCount（1=单击/2=双击）
+        public uint keyCode;          // v1d.2：key 事件的 KeyCode（EventRecord.touch_id 复用）
+        public byte modifiers;         // v1d.2：key 事件 modifiers（EventRecord.pad[0]）
         public bool isDoubleClick => clickCount > 1;   // v1c.4：消费侧便利（照 fgui）
         public float x, y;
         internal bool _stopsPropagation, _defaultPrevented, _touchCapture, _stopsImmediatePropagation;
@@ -163,6 +173,12 @@ namespace LoomGUI
                     case EventType.DragEnd:
                     case EventType.LongPress:
                         BubbleRoute(evt); break;
+                    // v1d.2：keydown/up + focus/blur 走 BubbleRoute（core 算好 node_id，bubble 让祖先接）
+                    case EventType.KeyDown:
+                    case EventType.KeyUp:
+                    case EventType.FocusIn:
+                    case EventType.FocusOut:
+                        BubbleRoute(evt); break;
                     case EventType.Move:
                         DirectDispatch(evt); break;   // v1c.3：Move 改直派（核心算好的 monitor 目标）
                     case EventType.RollOver:
@@ -177,7 +193,7 @@ namespace LoomGUI
         {
             var chain = AncestorChain(evt.nodeId);   // [target, ..., root]
             var ctx = EventContext.Get();
-            ctx.target = evt.nodeId; ctx.type = evt.type; ctx.touchId = evt.touch_id; ctx.clickCount = evt.clickCount; ctx.x = evt.x; ctx.y = evt.y;
+            ctx.target = evt.nodeId; ctx.type = evt.type; ctx.touchId = evt.touch_id; ctx.clickCount = evt.clickCount; ctx.keyCode = (uint)evt.touch_id; ctx.modifiers = evt.modifiers; ctx.x = evt.x; ctx.y = evt.y;
             // capture 阶段：根→target 反向，全跑（照 fgui line 302-311 不检查 stop）。消费 _touchCapture 记 _captureNodeCap。
             for (int i = chain.Count - 1; i >= 0; i--)
             {
@@ -203,7 +219,7 @@ namespace LoomGUI
         {
             var ctx = EventContext.Get();
             ctx.target = ctx.currentTarget = evt.nodeId; ctx.phase = Phase.Target;
-            ctx.type = evt.type; ctx.touchId = evt.touch_id; ctx.clickCount = evt.clickCount; ctx.x = evt.x; ctx.y = evt.y;
+            ctx.type = evt.type; ctx.touchId = evt.touch_id; ctx.clickCount = evt.clickCount; ctx.keyCode = (uint)evt.touch_id; ctx.modifiers = evt.modifiers; ctx.x = evt.x; ctx.y = evt.y;
             var bridge = TryGetBridge(evt.nodeId, evt.type);
             if (bridge != null) { bridge.CallCapture(ctx); bridge.CallBubble(ctx); }
             EventContext.Return(ctx);

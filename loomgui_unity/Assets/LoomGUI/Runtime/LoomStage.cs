@@ -448,7 +448,10 @@ namespace LoomGUI
 
             // v1c.1：输入采集 → set_input（tick 前——input 管线消费本帧输入产事件）。
             if (_inputCollector != null)
+            {
                 _inputCollector.Collect((System.IntPtr)_stage, _designSize, _safeArea);
+                _inputCollector.CollectKeys((System.IntPtr)_stage);   // v1d.2：键盘采集（tick 前）
+            }
 
             // tick → build_blob 写入 Rust 拥有缓存。v1c.4：dt 累积进 time_s（双击窗口）；用
             // unscaledDeltaTime（照 fgui Time.unscaledTime，暂停不受影响）。
