@@ -567,6 +567,20 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 **解决**：给 struct 加字段后，**全仓 grep 所有构造点**（`grep -rn "Scene {" loomgui_core/src/` + `Scene::build(` 调用）一次性枚举，不靠 per-file 任务记忆。T4 implementer 补了漏的 4 文件（render/mod.rs+batch.rs+hit.rs+layout，stage.rs 最小补丁留 T5 结构化重写）。
 **教训**：struct 字段/签名变更的 fallout 枚举要**全仓 grep 驱动**，不能依赖 plan 的文件清单（plan 写时未必枚举全）。controller pre-flight review 应 grep 一遍构造点写进 brief，而非让 implementer 边编译边发现。
 
+### 坑 44：compound_matches 不检伪类 → 伪类规则污染 base_style（v1d 验收）
+
+**症状**：v1d 加 `:focus` 后所有 `.btn` 默认紫、`.drag` 默认棕黄（v1c.1 的 :hover/:active 本也污染 base，颜色/源序未察觉，:focus 源序最后胜才暴露）。
+**根因**：`pack` 调 `resolve_styles(tree, &sheet)` 用**完整 sheet**，`parse::selector::compound_matches` 只检 tag/classes/id **不检伪类标志** → `.btn:focus` 匹配 .btn 进 base（cascade specificity 同级 (0,2,0)，源序最后者胜 → 全 .btn 紫）。
+**解决**：`compound_matches` 开头 `if pseudo_hover||active||disabled||focus { return false }`——伪类规则只走运行时 `rematch_pseudo_classes`，不进 base cascade。+ 回归测 `pseudo_class_rules_excluded_from_base_cascade`（RED base=紫 → GREEN base=灰）。
+**教训**：base cascade（resolve_styles）与动态 rematch 是**两条独立匹配路径**；加新伪类时 `compound_matches` 跳过 + `extract_dynamic_rules` has_pseudo + `compound_matches_with_state` 状态门**三处同步**，漏任一即污染/漏匹配。
+
+### 坑 45：键盘采集套 InputSystem 过度设计（v1d.2-T6 → 验收修）
+
+**症状**：`CollectKeys` 用 `Keyboard.current[Key]` → CS1503（`UnityEngine.KeyCode` ≠ `InputSystem.Key`），手补 40-case KeyCode→Key 映射是补丁（被 review 否）。
+**根因**：v1d.2-T6 键盘采集照搬指针的 InputSystem 路径——但指针要 InputSystem（多触摸 `Touchscreen`），键盘 `Input.GetKeyDown(KeyCode)` 本就够，`Keyboard[Key]` 反逼两套枚举转换。
+**解决**：`CollectKeys` 统一 `Input.GetKeyDown/GetUp(KeyCode)`（工程 Both 模式可用），KeyCode 直对 core `key_code=(uint)KeyCode` 零转换；撤 #if 分支 + 映射函数。指针 `Collect` 仍双路径（多触摸要 InputSystem）。
+**教训**：输入采集**按需选 API**——多触摸/高级特性才上 InputSystem，键盘/鼠标按钮旧 `Input.GetKey(KeyCode)` 够；别因「新 API」一刀切套同模型。
+
 ## 6. 调试/验证技巧
 
 - **★ 实现 v1+ 后端/渲染/对象模型前，先参考 `temp/FairyGUI-unity/` 源码**（对照机制、避免走歪——本 session 因没先看 fgui 的 sortingOrder/rect-mask/MaterialManager，初版设计走了弯路：误用 z 排序、误以为 rect mask 要独立 GO、把绘制序想复杂）。
@@ -676,7 +690,7 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 **v1d.2 defer（→ v1d.3+ / v1.x）**：IME/character（随 TextInput v1.x）、TextInput 控件（v1.x）、`:focus-visible`（区分键盘/鼠标聚焦成因，v1.x）、Tab preventDefault（业务拦 Tab，v1.x）、Tab 链缓存（每 Tab O(N) 即时构造，UI 规模可接受，v1e perf）。
 
 **v1 其余 defer（v0 起，未动）**：
-- v1b 全收尾（A/B/C/mesh/CJK ✅）+ v1c.1 最小交互闭环 ✅ + v1c.2 路由完整化 ✅ + v1c.3 多触摸+CaptureTouch ✅ + v1c.4 click 增强 ✅ + v1d.1 拖拽+长按+safe-area ✅（待家里机验）+ **v1d.2 键盘+焦点+Tab+:focus ✅（待家里机验）**。
+- v1b 全收尾（A/B/C/mesh/CJK ✅）+ v1c.1 最小交互闭环 ✅ + v1c.2 路由完整化 ✅ + v1c.3 多触摸+CaptureTouch ✅ + v1c.4 click 增强 ✅ + v1d.1 拖拽+长按+safe-area ✅（家里机 PlayMode 验，main @ 013b96f，修坑 44/45）+ **v1d.2 键盘+焦点+Tab+:focus ✅（家里机 PlayMode 验）**。
 - **下一个**：v1d.3 transform（命中 world_to_local + drag 跟手落地 transform.translate）/ v1d.4 GTween / v1d.5 ScrollPane+滚轮+手势仲裁（关验收 #2，消费 v1d.1 drag）/ v1e perf。
 - NativeHost/virtualization/shape mask：v1.x。
 
