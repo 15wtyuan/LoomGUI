@@ -304,7 +304,8 @@ pub fn read_package(bytes: &[u8]) -> Result<(Scene, (f32, f32), AtlasSection), P
         strings.push(s);
     }
     // NodeBlock → entries
-    let mut entries: Vec<(Option<usize>, NodeKind, ResolvedStyle, Vec<String>, Option<String>)> = Vec::with_capacity(node_count);
+    // ponytail: draggable 暂硬编码 false（T2 pkg v4 字段接真值前占位）。
+    let mut entries: Vec<(Option<usize>, NodeKind, ResolvedStyle, Vec<String>, Option<String>, bool)> = Vec::with_capacity(node_count);
     for _ in 0..node_count {
         let pidx = r.i32("parent_idx")?;
         let kind_tag = r.u8("kind")?;
@@ -337,7 +338,7 @@ pub fn read_package(bytes: &[u8]) -> Result<(Scene, (f32, f32), AtlasSection), P
             },
             other => return Err(PkgError::BadKind(other)),
         };
-        entries.push((parent, kind, style, classes, id_attr));
+        entries.push((parent, kind, style, classes, id_attr, false));
     }
     // —— AtlasSection（v2）——
     let atlas_count = r.u32("atlas_count")? as usize;
@@ -461,8 +462,8 @@ mod tests {
         // 手搓一个覆盖 4 种 kind + 嵌套的 Scene（不走 parse，靠 Scene::build）。
         let mut img_style = ResolvedStyle::default();
         img_style.background_color = Some([1.0, 0.0, 0.0, 1.0]);
-        let entries: Vec<(Option<usize>, NodeKind, ResolvedStyle, Vec<String>, Option<String>)> = vec![
-            (None, NodeKind::Container, ResolvedStyle::default(), Vec::new(), None),
+        let entries: Vec<(Option<usize>, NodeKind, ResolvedStyle, Vec<String>, Option<String>, bool)> = vec![
+            (None, NodeKind::Container, ResolvedStyle::default(), Vec::new(), None, false),
             (
                 Some(0),
                 NodeKind::Text {
@@ -471,6 +472,7 @@ mod tests {
                 ResolvedStyle::default(),
                 Vec::new(),
                 None,
+                false,
             ),
             (
                 Some(0),
@@ -480,8 +482,9 @@ mod tests {
                 img_style.clone(),
                 Vec::new(),
                 None,
+                false,
             ),
-            (None, NodeKind::Button, ResolvedStyle::default(), Vec::new(), None),
+            (None, NodeKind::Button, ResolvedStyle::default(), Vec::new(), None, false),
         ];
         let scene = Scene::build(&entries);
 
@@ -520,8 +523,8 @@ mod tests {
     fn read_rejects_unsupported_version() {
         // 借 round-trip 测的合法包（v3），把 version 字段（offset 4）改成 4 / 2。
         // MIN_VERSION=MAX_VERSION=3：v2 → TooOld，v4 → TooNew。
-        let entries: Vec<(Option<usize>, NodeKind, ResolvedStyle, Vec<String>, Option<String>)> =
-            vec![(None, NodeKind::Container, ResolvedStyle::default(), Vec::new(), None)];
+        let entries: Vec<(Option<usize>, NodeKind, ResolvedStyle, Vec<String>, Option<String>, bool)> =
+            vec![(None, NodeKind::Container, ResolvedStyle::default(), Vec::new(), None, false)];
         let mut bytes = write_package(&Scene::build(&entries), (100.0, 100.0), &AtlasSection::default(), &crate::style::dynamic::DynamicRuleTable::default());
         bytes[4..8].copy_from_slice(&4u32.to_le_bytes()); // version=4 → too new
         assert!(matches!(read_package(&bytes), Err(PkgError::TooNew(4))));
@@ -534,7 +537,7 @@ mod tests {
         // 空 scene + 非空 AtlasSection → round-trip 后 atlas 字段逐项相等。
         // 覆盖：filename intern、sprite src intern（与 NodeBlock 共 stringTable）、
         // u32 × 4 sprite 字段、atlas_count/sprite_count。
-        let entries = vec![(None, NodeKind::Container, ResolvedStyle::default(), Vec::new(), None)];
+        let entries = vec![(None, NodeKind::Container, ResolvedStyle::default(), Vec::new(), None, false)];
         let scene = Scene::build(&entries);
         let atlas = AtlasSection {
             atlases: vec![AtlasInfo { filename: "a.atlas.png".into(), width: 512, height: 256 }],
@@ -591,6 +594,7 @@ mod tests {
             ResolvedStyle::default(),
             Vec::new(),
             None,
+            false,
         )];
         let scene = Scene::build(&entries);
         let dynamic = DynamicRuleTable {
@@ -644,6 +648,7 @@ mod tests {
             ResolvedStyle::default(),
             Vec::new(),
             None,
+            false,
         )];
         let scene = Scene::build(&entries);
         let pkg = write_package(
@@ -668,6 +673,7 @@ mod tests {
             ResolvedStyle::default(),
             vec!["a".to_string(), "b".to_string()],
             Some("x".to_string()),
+            false,
         )];
         let scene = Scene::build(&entries);
         let pkg = write_package(
@@ -687,8 +693,8 @@ mod tests {
     #[test]
     fn stringtable_dedups_repeated_strings() {
         // 两个 Text 同 content → stringTable 只一条，textIdx 相同。
-        let entries: Vec<(Option<usize>, NodeKind, ResolvedStyle, Vec<String>, Option<String>)> = vec![
-            (None, NodeKind::Container, ResolvedStyle::default(), Vec::new(), None),
+        let entries: Vec<(Option<usize>, NodeKind, ResolvedStyle, Vec<String>, Option<String>, bool)> = vec![
+            (None, NodeKind::Container, ResolvedStyle::default(), Vec::new(), None, false),
             (
                 Some(0),
                 NodeKind::Text {
@@ -697,6 +703,7 @@ mod tests {
                 ResolvedStyle::default(),
                 Vec::new(),
                 None,
+                false,
             ),
             (
                 Some(0),
@@ -706,6 +713,7 @@ mod tests {
                 ResolvedStyle::default(),
                 Vec::new(),
                 None,
+                false,
             ),
         ];
         let bytes = write_package(&Scene::build(&entries), (10.0, 10.0), &AtlasSection::default(), &crate::style::dynamic::DynamicRuleTable::default());

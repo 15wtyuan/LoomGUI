@@ -61,6 +61,8 @@ pub struct Node {
     pub active: bool,
     /// 业务设（set_node_disabled），伪类源 + active/click 抑制。
     pub disabled: bool,
+    /// v1d.1：opt-in 可拖拽（HTML `draggable="true"` 属性）。drag 状态机据此发起 drag。
+    pub draggable: bool,
 }
 
 impl Default for Node {
@@ -86,6 +88,7 @@ impl Default for Node {
             hovered: false,
             active: false,
             disabled: false,
+            draggable: false,
         }
     }
 }
@@ -103,13 +106,13 @@ impl Scene {
     /// `parent_idx` 指向 entries 下标，`None` = 根。
     /// clip_rect slot / dirty 标志按 style.overflow_hidden / kind 派生。
     /// parse 路径（build_scene）与包加载路径（read_package）共用——防建树逻辑分叉。
-    pub fn build(entries: &[(Option<usize>, NodeKind, ResolvedStyle, Vec<String>, Option<String>)]) -> Scene {
+    pub fn build(entries: &[(Option<usize>, NodeKind, ResolvedStyle, Vec<String>, Option<String>, bool)]) -> Scene {
         let mut scene = Scene {
             roots: Vec::new(),
             nodes: Vec::new(),
             dynamic_rules: crate::style::dynamic::DynamicRuleTable::default(),
         };
-        for (i, (parent_idx, kind, style, classes, id_attr)) in entries.iter().enumerate() {
+        for (i, (parent_idx, kind, style, classes, id_attr, draggable)) in entries.iter().enumerate() {
             scene.nodes.push(Node {
                 id: NodeId(i),
                 parent: parent_idx.map(NodeId),
@@ -132,6 +135,7 @@ impl Scene {
                 hovered: false,
                 active: false,
                 disabled: false,
+                draggable: *draggable,
             });
         }
         // 接 children + roots（entries 先序 → 按 parent 出现序填，与旧 build_rec 一致）
@@ -160,7 +164,7 @@ impl Scene {
 /// `styles` 必须与 `tree.nodes` 同长且同序（由 `style::cascade::resolve_styles` 保证）。
 #[cfg(feature = "parse")]
 pub fn build_scene(tree: &ElementTree, styles: &[ResolvedStyle]) -> Scene {
-    let mut entries: Vec<(Option<usize>, NodeKind, ResolvedStyle, Vec<String>, Option<String>)> = Vec::new();
+    let mut entries: Vec<(Option<usize>, NodeKind, ResolvedStyle, Vec<String>, Option<String>, bool)> = Vec::new();
     for root in &tree.roots {
         gather_rec(tree, styles, *root, None, &mut entries);
     }
@@ -173,7 +177,7 @@ fn gather_rec(
     styles: &[ResolvedStyle],
     el_id: ElementId,
     parent_idx: Option<usize>,
-    entries: &mut Vec<(Option<usize>, NodeKind, ResolvedStyle, Vec<String>, Option<String>)>,
+    entries: &mut Vec<(Option<usize>, NodeKind, ResolvedStyle, Vec<String>, Option<String>, bool)>,
 ) -> usize {
     let el = &tree.nodes[el_id.0];
     let style = &styles[el_id.0];
@@ -195,8 +199,11 @@ fn gather_rec(
             el.tag
         ),
     };
+    // v1d.1：draggable="true" → Node.draggable（HTML 原生属性，AI 熟悉）。
+    // 非 "true" 一律 false（draggable="false"/缺省/任意值 → false，照 HTML truthy 语义简化）。
+    let draggable = el.attrs.get("draggable").map(|v| v == "true").unwrap_or(false);
     let my_idx = entries.len();
-    entries.push((parent_idx, kind.clone(), style.clone(), el.classes.clone(), el.id.clone()));
+    entries.push((parent_idx, kind.clone(), style.clone(), el.classes.clone(), el.id.clone(), draggable));
 
     // §4.2：Container/Button 的裸文本 → Text 子节点。文本子像无 class 的 <span>：
     // taffy_style 取 DEFAULT（由测量定尺寸），视觉/字体字段继承父值。
@@ -213,7 +220,7 @@ fn gather_rec(
             ts.letter_spacing = style.letter_spacing;
             ts.text_align = style.text_align;
             ts.white_space_nowrap = style.white_space_nowrap;
-            entries.push((Some(my_idx), NodeKind::Text { content: text.clone() }, ts, Vec::new(), None));
+            entries.push((Some(my_idx), NodeKind::Text { content: text.clone() }, ts, Vec::new(), None, false));
         }
     }
 
@@ -243,6 +250,23 @@ mod tests {
     }
 
     #[test]
+    fn node_has_draggable_field_default_false() {
+        let n = Node::default();
+        assert!(!n.draggable, "draggable 默认 false");
+    }
+
+    #[test]
+    fn scene_build_6tuple_sets_draggable() {
+        let entries: Vec<(Option<usize>, NodeKind, ResolvedStyle, Vec<String>, Option<String>, bool)> = vec![
+            (None, NodeKind::Container, ResolvedStyle::default(), Vec::new(), None, false),
+            (Some(0), NodeKind::Button, ResolvedStyle::default(), Vec::new(), None, true),
+        ];
+        let scene = Scene::build(&entries);
+        assert!(!scene.nodes[0].draggable, "root draggable=false");
+        assert!(scene.nodes[1].draggable, "btn draggable=true");
+    }
+
+    #[test]
     fn scene_default_has_empty_dynamic_rules() {
         let s = Scene {
             roots: vec![],
@@ -261,9 +285,9 @@ mod tests {
         // 不走 parse_html/build_scene——证明 Scene::build 独立于 parse（read_package 依赖此）。
         let root_style = ResolvedStyle::default();
         let text_style = ResolvedStyle::default();
-        let entries: Vec<(Option<usize>, NodeKind, ResolvedStyle, Vec<String>, Option<String>)> = vec![
-            (None, NodeKind::Container, root_style, Vec::new(), None),
-            (Some(0), NodeKind::Text { content: "hi".into() }, text_style, Vec::new(), None),
+        let entries: Vec<(Option<usize>, NodeKind, ResolvedStyle, Vec<String>, Option<String>, bool)> = vec![
+            (None, NodeKind::Container, root_style, Vec::new(), None, false),
+            (Some(0), NodeKind::Text { content: "hi".into() }, text_style, Vec::new(), None, false),
         ];
         let scene = Scene::build(&entries);
 
@@ -282,7 +306,7 @@ mod tests {
         // overflow_hidden → clip slot 派生
         let mut of = ResolvedStyle::default();
         of.overflow_hidden = true;
-        let scene2 = Scene::build(&[(None, NodeKind::Container, of, Vec::new(), None)]);
+        let scene2 = Scene::build(&[(None, NodeKind::Container, of, Vec::new(), None, false)]);
         assert!(scene2.nodes[0].clip_rect.is_some(), "overflow_hidden=true → clip slot");
     }
 }
@@ -314,9 +338,9 @@ mod parse_tests {
         // 手搓 Scene（不走 parse）：root(id="root") + btn(id="btn") + Text 子(无 id)。
         // 验：精确匹配返 NodeId；无匹配/空 id → None。
         let entries = vec![
-            (None, NodeKind::Container, ResolvedStyle::default(), vec![], Some("root".to_string())),
-            (Some(0), NodeKind::Button, ResolvedStyle::default(), vec![], Some("btn".to_string())),
-            (Some(1), NodeKind::Text { content: "x".into() }, ResolvedStyle::default(), vec![], None),
+            (None, NodeKind::Container, ResolvedStyle::default(), vec![], Some("root".to_string()), false),
+            (Some(0), NodeKind::Button, ResolvedStyle::default(), vec![], Some("btn".to_string()), false),
+            (Some(1), NodeKind::Text { content: "x".into() }, ResolvedStyle::default(), vec![], None, false),
         ];
         let scene = Scene::build(&entries);
         assert_eq!(scene.find_by_id_attr("btn"), Some(NodeId(1)), "find btn → node 1");
@@ -458,5 +482,35 @@ mod parse_tests {
             matches!(child.style.taffy_style.size.height, Dimension::Auto),
             "text child height should be Auto (measured), not inherited parent's 30px"
         );
+    }
+
+    #[test]
+    fn draggable_attr_true_sets_node_draggable() {
+        let html = r#"<div><button draggable="true">OK</button></div>"#;
+        let css = "";
+        let tree = parse_html(html).unwrap();
+        let sheet = parse_css(css).unwrap();
+        let styles = resolve_styles(&tree, &sheet);
+        let scene = build_scene(&tree, &styles);
+        let root = &scene.nodes[scene.roots[0].0];
+        // btn 是 root 的子（root 的 Text 子"OK"另算——button 裸文本→Text 子）。
+        // 找 button kind 的子：
+        let btn = scene.nodes.iter().find(|n| matches!(n.kind, NodeKind::Button)).expect("btn");
+        assert!(btn.draggable, "draggable=\"true\" → Node.draggable=true");
+        assert!(!root.draggable, "root 无 draggable 属性 → false");
+    }
+
+    #[test]
+    fn draggable_attr_absent_or_false_is_false() {
+        let html = r#"<div draggable="false"><button draggable="yes">x</button></div>"#;
+        let css = "";
+        let tree = parse_html(html).unwrap();
+        let sheet = parse_css(css).unwrap();
+        let styles = resolve_styles(&tree, &sheet);
+        let scene = build_scene(&tree, &styles);
+        let root = &scene.nodes[scene.roots[0].0];
+        assert!(!root.draggable, "draggable=\"false\" → false");
+        let btn = scene.nodes.iter().find(|n| matches!(n.kind, NodeKind::Button)).expect("btn");
+        assert!(!btn.draggable, "draggable=\"yes\"（非 true）→ false（truthy 仅认 true）");
     }
 }
