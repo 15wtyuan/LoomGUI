@@ -120,6 +120,7 @@ pub fn parse_selector(raw: &str) -> Result<ParsedSelector, String> {
         let mut pseudo_hover = false;
         let mut pseudo_active = false;
         let mut pseudo_disabled = false;
+        let mut pseudo_focus = false;
         let mut rest = text.as_str();
         while let Some(colon) = rest.find(':') {
             let after = &rest[colon + 1..];
@@ -131,7 +132,8 @@ pub fn parse_selector(raw: &str) -> Result<ParsedSelector, String> {
                 "hover" => pseudo_hover = true,
                 "active" => pseudo_active = true,
                 "disabled" => pseudo_disabled = true,
-                _ => {} // 未知伪类静默忽略（v1c.1 只认这三个）
+                "focus" => pseudo_focus = true,
+                _ => {} // 未知伪类静默忽略（v1d.2 认 hover/active/disabled/focus）
             }
             rest = &after[end..];
         }
@@ -143,6 +145,7 @@ pub fn parse_selector(raw: &str) -> Result<ParsedSelector, String> {
             pseudo_hover,
             pseudo_active,
             pseudo_disabled,
+            pseudo_focus,
         });
     }
 
@@ -423,6 +426,20 @@ mod tests {
         assert!(s.compound[0].pseudo_hover, "parent compound 含 :hover");
         assert!(!s.compound[1].pseudo_hover, "child compound 无 :hover");
         assert_eq!(s.compound[1].classes, vec!["child".to_string()]);
+    }
+
+    #[test]
+    fn parse_focus_pseudo() {
+        let s = parse_selector(".btn:focus").unwrap();
+        assert!(s.compound[0].pseudo_focus, ":focus → pseudo_focus=true");
+        assert!(!s.compound[0].pseudo_hover);
+    }
+
+    #[test]
+    fn parse_focus_with_hover() {
+        let s = parse_selector(".btn:focus:hover").unwrap();
+        assert!(s.compound[0].pseudo_focus, ":focus → pseudo_focus");
+        assert!(s.compound[0].pseudo_hover, ":hover → pseudo_hover");
     }
 
     #[test]

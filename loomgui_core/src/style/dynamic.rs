@@ -40,6 +40,7 @@ pub struct Compound {
     pub pseudo_hover: bool,
     pub pseudo_active: bool,
     pub pseudo_disabled: bool,
+    pub pseudo_focus: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -101,8 +102,8 @@ pub fn compound_matches_node(c: &Compound, node: &Node) -> bool {
 
 /// 判定 compound 是否匹配 node + 伪类状态门。
 /// `pseudo_hover → node.hovered`；`pseudo_active → node.active`；
-/// `pseudo_disabled → node.disabled`。先检状态门，再调 compound_matches_node
-/// （tag/classes/id_attr 匹配）。
+/// `pseudo_disabled → node.disabled`；`pseudo_focus → node.focused`。
+/// 先检状态门，再调 compound_matches_node（tag/classes/id_attr 匹配）。
 fn compound_matches_with_state(c: &Compound, node_id: NodeId, scene: &Scene) -> bool {
     let node = &scene.nodes[node_id.0];
     if c.pseudo_hover && !node.hovered {
@@ -112,6 +113,9 @@ fn compound_matches_with_state(c: &Compound, node_id: NodeId, scene: &Scene) -> 
         return false;
     }
     if c.pseudo_disabled && !node.disabled {
+        return false;
+    }
+    if c.pseudo_focus && !node.focused {
         return false;
     }
     compound_matches_node(c, node)
@@ -257,6 +261,7 @@ mod tests {
             roots: vec![NodeId(0)],
             nodes: vec![root, btn],
             dynamic_rules: DynamicRuleTable::default(),
+            focused_node: None,
         }
     }
 
@@ -369,6 +374,7 @@ mod tests {
             roots: vec![NodeId(0)],
             nodes: vec![root, child],
             dynamic_rules: DynamicRuleTable::default(),
+            focused_node: None,
         };
         s.dynamic_rules
             .rules
@@ -416,6 +422,79 @@ mod tests {
             s.nodes[1].style.background_color,
             None,
             "取消 hover → 回 base"
+        );
+    }
+
+    #[test]
+    fn focus_pseudo_matches_focused_node() {
+        let mut s = btn_scene();
+        s.dynamic_rules
+            .rules
+            .push(rule(".btn:focus", "background-color", "#0000ff"));
+        s.nodes[1].focused = true;
+        let changed = rematch_pseudo_classes(&mut s);
+        assert_eq!(
+            s.nodes[1].style.background_color,
+            Some([0.0, 0.0, 1.0, 1.0]),
+            "focused → :focus 匹配 → 蓝"
+        );
+        assert!(!changed, "background_color 视觉字段 → layout 不 dirty");
+    }
+
+    #[test]
+    fn focus_pseudo_no_match_unfocused() {
+        let mut s = btn_scene();
+        s.nodes[1].base_style.background_color = None;
+        s.dynamic_rules
+            .rules
+            .push(rule(".btn:focus", "background-color", "#0000ff"));
+        s.nodes[1].focused = false;
+        rematch_pseudo_classes(&mut s);
+        assert_eq!(
+            s.nodes[1].style.background_color,
+            None,
+            "unfocused → :focus 不匹配 → 回 base"
+        );
+    }
+
+    #[test]
+    fn focus_pseudo_in_descendant_chain() {
+        // .parent:focus .child —— parent 聚焦 → child style 变
+        let mut root = Node::default();
+        root.id = NodeId(0);
+        root.classes = vec!["parent".to_string()];
+        root.layout_rect = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 200.0,
+            h: 200.0,
+        };
+        let mut child = Node::default();
+        child.id = NodeId(1);
+        child.parent = Some(NodeId(0));
+        child.classes = vec!["child".to_string()];
+        child.layout_rect = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 50.0,
+            h: 50.0,
+        };
+        root.children = vec![NodeId(1)];
+        let mut s = Scene {
+            roots: vec![NodeId(0)],
+            nodes: vec![root, child],
+            dynamic_rules: DynamicRuleTable::default(),
+            focused_node: None,
+        };
+        s.dynamic_rules
+            .rules
+            .push(rule(".parent:focus .child", "color", "#0000ff"));
+        s.nodes[0].focused = true;
+        rematch_pseudo_classes(&mut s);
+        assert_eq!(
+            s.nodes[1].style.color,
+            [0.0, 0.0, 1.0, 1.0],
+            "parent:focus → child 变蓝"
         );
     }
 }

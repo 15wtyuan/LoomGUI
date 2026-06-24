@@ -123,7 +123,7 @@ impl From<bincode::Error> for PkgError {
     }
 }
 
-/// §5.5：从 StyleSheet 抽含 :hover/:active/:disabled 的规则 → DynamicRuleTable。
+/// §5.5：从 StyleSheet 抽含 :hover/:active/:disabled/:focus 的规则 → DynamicRuleTable。
 /// 纯静态规则不进（已在 base_style 烤好）。判定：parse_selector 后任一 compound 含伪类标志。
 ///
 /// **parse-gated：**消费 parse 后的 StyleSheet（CSS 文本产物），runtime 无此输入。
@@ -140,7 +140,7 @@ pub fn extract_dynamic_rules(sheet: &crate::parse::css::StyleSheet) -> DynamicRu
         let has_pseudo = sel
             .compound
             .iter()
-            .any(|c| c.pseudo_hover || c.pseudo_active || c.pseudo_disabled);
+            .any(|c| c.pseudo_hover || c.pseudo_active || c.pseudo_disabled || c.pseudo_focus);
         if has_pseudo {
             rules.push(DynamicRule {
                 selector: sel,
