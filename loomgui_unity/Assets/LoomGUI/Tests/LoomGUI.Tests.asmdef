@@ -3,6 +3,7 @@
     "rootNamespace": "LoomGUI.Tests",
     "references": [
         "LoomGUI.Runtime",
+        "LoomGUI.Bindings",
         "UnityEngine.TestRunner",
         "UnityEditor.TestRunner"
     ],
@@ -10,7 +11,7 @@
         "Editor"
     ],
     "excludePlatforms": [],
-    "allowUnsafeCode": false,
+    "allowUnsafeCode": true,
     "autoReferenced": false,
     "overrideReferences": true,
     "precompiledReferences": [

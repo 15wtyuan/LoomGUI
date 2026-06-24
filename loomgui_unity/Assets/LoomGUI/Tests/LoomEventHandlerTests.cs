@@ -1,10 +1,11 @@
 using NUnit.Framework;
 using System;
 using System.Runtime.InteropServices;
+using LoomGUI.Bindings;
 
 namespace LoomGUI.Tests
 {
-    public class LoomEventHandlerTests
+    public unsafe class LoomEventHandlerTests
     {
         // 辅助：手搓 handler + handle（家里机 EditMode 需真 .dll；本机写测代码不跑）
         // node_parent 由核心 FFI 提供（Task 2），手搓场景 root(0)>parent(1)>child(2)
@@ -12,6 +13,50 @@ namespace LoomGUI.Tests
         //
         // 路由测需 Stage handle + scene（root>parent>child）。家里机实现者用 LoomStage 装载手搓包，
         // SetHandle 后注册 listener、DispatchPending 喂手搓 LoomEvent[]。本机只写测骨架 + 断言意图。
+
+        // ===== v1c.4-T8 helper =====
+
+        // BuildStage 装载 root>parent>child（node_id: root=0,parent=1,child=2）。
+        // 家里机 EditMode 需 .dll（Native.* 已加载）。返回 stage 指针 + SetHandle 过的 handler。
+        // TODO(home-machine): font_path 需真路径（DejaVuSans.ttf）——core stage_new 解析字体，null/0 会返 null。
+        // 家里机按 Application.streamingAssetsPath 或 Assets/LoomGUI/Fonts/DejaVuSans.ttf 填（参考 LoomStage.EnsureFont / stage_new）。
+        static (IntPtr stage, LoomEventHandler handler) BuildStage()
+        {
+            // TODO(home-machine): 传真字体路径字节。core stage_new(font_path=null,0,...) 会因 font 解析失败返 null。
+            // 推荐改为：System.IO.Path.Combine(Application.streamingAssetsPath, "DejaVuSans.ttf")
+            //           并 byte[] fp = Encoding.UTF8.GetBytes(fontPath); fixed(byte* fpp=fp) stage = Native.loomgui_stage_new(fpp, (nuint)fp.Length, 200f, 200f);
+            byte[] fontPathBytes = null; // 占位：家里机补真路径（见上 TODO）
+            StageHandle* stagePtr;
+            fixed (byte* fp = fontPathBytes)
+            {
+                stagePtr = Native.loomgui_stage_new(fp, (nuint)(fontPathBytes?.Length ?? 0), 200f, 200f);
+            }
+            // 家里机：若 stagePtr == null，说明 font_path 占位未补——补真路径后重试。
+            Assert.IsNotNull(stagePtr, "BuildStage: stage_new 返 null（font_path 占位未补？家里机填真路径）");
+
+            string html = "<div class=\"root\"><div class=\"parent\"><div class=\"child\"></div></div></div>";
+            string css = ".root{width:200px;height:200px;}.parent{width:100px;height:100px;}.child{width:50px;height:50px;}";
+            byte[] htmlBytes = System.Text.Encoding.UTF8.GetBytes(html);
+            byte[] cssBytes = System.Text.Encoding.UTF8.GetBytes(css);
+            fixed (byte* hp = htmlBytes, cp = cssBytes)
+            {
+                int r = Native.loomgui_stage_load_html(stagePtr, hp, (nuint)htmlBytes.Length, cp, (nuint)cssBytes.Length);
+                Assert.AreEqual(0, r, "BuildStage: load_html 失败");
+            }
+            var handler = new LoomEventHandler();
+            handler.SetHandle((IntPtr)stagePtr);
+            return ((IntPtr)stagePtr, handler);
+        }
+
+        // 手搓单条 LoomEvent → marshal ptr → DispatchPending。释放 ptr。
+        static void DispatchOne(LoomEventHandler handler, LoomEvent evt)
+        {
+            int recSize = Marshal.SizeOf<LoomEvent>();
+            IntPtr ptr = Marshal.AllocHGlobal(recSize);
+            Marshal.StructureToPtr(evt, ptr, false);
+            try { handler.DispatchPending(ptr, 1); }
+            finally { Marshal.FreeHGlobal(ptr); }
+        }
 
         /// v1c.2-T4：listener 表 + DispatchPending 分流。AddListener(5, Click) → DispatchPending
         /// 一条 EventRecord(nodeId=5,Click) → 回调被触发。v1c.2 签名是 EventCallback(ctx)（非 Action<LoomEvent>）。
@@ -104,35 +149,31 @@ namespace LoomGUI.Tests
             Assert.AreEqual(1, hits, "Remove cb1 后只 cb2");
         }
 
-        // ===== v1c.2-T4 路由测骨架（家里机补 handle 装载 + 跑）=====
-        // 下述测需 Stage handle + scene（root(0)>parent(1)>child(2)）。家里机用 LoomStage 装载
-        // 手搓包，SetHandle 后注册 listener、DispatchPending 喂手搓 LoomEvent[]。
-        // 本机写测骨架 + 断言意图；家里机补全 handle 装载（参考既有测的 setup 风格）。
+        // ===== v1c.2-T4 路由测（v1c.4-T8 回填：BuildStage helper + 真断言）=====
+        // 下述测需 Stage handle + scene（root(0)>parent(1)>child(2)）。BuildStage 装载手搓 html/css，
+        // SetHandle 后注册 listener、DispatchOne 喂手搓 LoomEvent。家里机补 font_path 后跑。
 
         /// child(2) Down → bubble: child(2) Target, parent(1) Bubble, root(0) Bubble 都收。
         /// 断言：3 个节点 listener 都被调，phase 序 Capture(root)>Target(child)>Bubble(parent/root)。
         [Test]
         public void BubbleRoute_ReachesAllAncestors()
         {
-            // 家里机：
-            //   var stage = BuildStage("root>parent>child");  // node_id: root=0, parent=1, child=2
-            //   var h = new LoomEventHandler();
-            //   h.SetHandle((IntPtr)stage.NativeHandle);
-            //   var hits = new System.Collections.Generic.List<(uint node, Phase phase)>();
-            //   h.AddCapture(0, EventType.Down, c => hits.Add((c.currentTarget, c.phase)));  // root capture（反向，根先）
-            //   h.AddCapture(1, EventType.Down, c => hits.Add((c.currentTarget, c.phase)));  // parent capture
-            //   h.AddCapture(2, EventType.Down, c => hits.Add((c.currentTarget, c.phase)));  // child capture
-            //   h.AddListener(2, EventType.Down, c => hits.Add((c.currentTarget, c.phase)));  // child target(bubble)
-            //   h.AddListener(1, EventType.Down, c => hits.Add((c.currentTarget, c.phase)));  // parent bubble
-            //   h.AddListener(0, EventType.Down, c => hits.Add((c.currentTarget, c.phase)));  // root bubble
-            //   DispatchOne(h, new LoomEvent { nodeId = 2, type = EventType.Down, x = 0, y = 0 });
-            //   // capture（反向）：root(0,Capture) → parent(1,Capture) → child(2,Capture)
-            //   // bubble（正向）：child(2,Target) → parent(1,Bubble) → root(0,Bubble)
-            //   Assert.AreEqual(6, hits.Count, "3 节点 × 2 阶段(capture+bubble) = 6 hits");
-            //   Assert.AreEqual((0u, Phase.Capture), hits[0], "capture 根先");
-            //   Assert.AreEqual((2u, Phase.Target), hits[3], "bubble target 是 child");
-            //   Assert.AreEqual((0u, Phase.Bubble), hits[5], "bubble 根最后");
-            Assert.Ignore("家里机：需 Stage handle + scene（root>parent>child）+ .dll，本机无 Unity 跳过");
+            var (stage, h) = BuildStage();
+            var hits = new System.Collections.Generic.List<(uint node, LoomGUI.Phase phase)>();
+            h.AddCapture(0, EventType.Down, c => hits.Add((c.currentTarget, c.phase)));  // root capture（反向，根先）
+            h.AddCapture(1, EventType.Down, c => hits.Add((c.currentTarget, c.phase)));  // parent capture
+            h.AddCapture(2, EventType.Down, c => hits.Add((c.currentTarget, c.phase)));  // child capture
+            h.AddListener(2, EventType.Down, c => hits.Add((c.currentTarget, c.phase)));  // child target(bubble)
+            h.AddListener(1, EventType.Down, c => hits.Add((c.currentTarget, c.phase)));  // parent bubble
+            h.AddListener(0, EventType.Down, c => hits.Add((c.currentTarget, c.phase)));  // root bubble
+            DispatchOne(h, new LoomEvent { nodeId = 2, type = EventType.Down, clickCount = 0, touch_id = -1, x = 0, y = 0 });
+            // capture（反向）：root(0,Capture) → parent(1,Capture) → child(2,Capture)
+            // bubble（正向）：child(2,Target) → parent(1,Bubble) → root(0,Bubble)
+            Assert.AreEqual(6, hits.Count, "3 节点 × 2 阶段(capture+bubble) = 6 hits");
+            Assert.AreEqual((0u, LoomGUI.Phase.Capture), hits[0], "capture 根先");
+            Assert.AreEqual((2u, LoomGUI.Phase.Target), hits[3], "bubble target 是 child");
+            Assert.AreEqual((0u, LoomGUI.Phase.Bubble), hits[5], "bubble 根最后");
+            Native.loomgui_stage_free((StageHandle*)stage);
         }
 
         /// child bubble 回调 StopPropagation → parent/root bubble 不收；
@@ -140,95 +181,88 @@ namespace LoomGUI.Tests
         [Test]
         public void StopPropagation_BreaksBubbleButNotCapture()
         {
-            // 家里机：
-            //   var stage = BuildStage("root>parent>child");
-            //   var h = new LoomEventHandler(); h.SetHandle((IntPtr)stage.NativeHandle);
-            //   int parentHits = 0, rootHits = 0, childCaptureHits = 0, rootCaptureHits = 0;
-            //   h.AddListener(2, EventType.Down, c => c.StopPropagation());           // child bubble 止
-            //   h.AddCapture(2, EventType.Down, c => childCaptureHits++);             // child capture（应跑）
-            //   h.AddCapture(0, EventType.Down, c => rootCaptureHits++);              // root capture（应跑）
-            //   h.AddListener(1, EventType.Down, c => parentHits++);                  // parent bubble（不收）
-            //   h.AddListener(0, EventType.Down, c => rootHits++);                    // root bubble（不收）
-            //   DispatchOne(h, new LoomEvent { nodeId = 2, type = EventType.Down, x = 0, y = 0 });
-            //   Assert.AreEqual(1, childCaptureHits, "capture 阶段不检查 stop，child capture 跑");
-            //   Assert.AreEqual(1, rootCaptureHits, "capture 阶段不检查 stop，root capture 跑");
-            //   Assert.AreEqual(0, parentHits, "child StopPropagation 后 parent bubble 不收");
-            //   Assert.AreEqual(0, rootHits, "child StopPropagation 后 root bubble 不收");
-            Assert.Ignore("家里机：需 Stage handle + scene（root>parent>child）+ .dll，本机无 Unity 跳过");
+            var (stage, h) = BuildStage();
+            int parentHits = 0, rootHits = 0, childCaptureHits = 0, rootCaptureHits = 0;
+            h.AddListener(2, EventType.Down, c => c.StopPropagation());           // child bubble 止
+            h.AddCapture(2, EventType.Down, c => childCaptureHits++);             // child capture（应跑）
+            h.AddCapture(0, EventType.Down, c => rootCaptureHits++);              // root capture（应跑）
+            h.AddListener(1, EventType.Down, c => parentHits++);                  // parent bubble（不收）
+            h.AddListener(0, EventType.Down, c => rootHits++);                    // root bubble（不收）
+            DispatchOne(h, new LoomEvent { nodeId = 2, type = EventType.Down, clickCount = 0, touch_id = -1, x = 0, y = 0 });
+            Assert.AreEqual(1, childCaptureHits, "capture 阶段不检查 stop，child capture 跑");
+            Assert.AreEqual(1, rootCaptureHits, "capture 阶段不检查 stop，root capture 跑");
+            Assert.AreEqual(0, parentHits, "child StopPropagation 后 parent bubble 不收");
+            Assert.AreEqual(0, rootHits, "child StopPropagation 后 root bubble 不收");
+            Native.loomgui_stage_free((StageHandle*)stage);
         }
 
         /// RollOver(child) → 只 child 收，parent/root 不收（直派非 bubble）。
         [Test]
         public void RollOver_DirectDispatch_NoBubble()
         {
-            // 家里机：
-            //   var stage = BuildStage("root>parent>child");
-            //   var h = new LoomEventHandler(); h.SetHandle((IntPtr)stage.NativeHandle);
-            //   int childHits = 0, parentHits = 0, rootHits = 0;
-            //   h.AddListener(2, EventType.RollOver, c => childHits++);
-            //   h.AddListener(1, EventType.RollOver, c => parentHits++);
-            //   h.AddListener(0, EventType.RollOver, c => rootHits++);
-            //   DispatchOne(h, new LoomEvent { nodeId = 2, type = EventType.RollOver, x = 0, y = 0 });
-            //   Assert.AreEqual(1, childHits, "DirectDispatch：child 收");
-            //   Assert.AreEqual(0, parentHits, "RollOver 不沿链，parent 不收");
-            //   Assert.AreEqual(0, rootHits, "RollOver 不沿链，root 不收");
-            Assert.Ignore("家里机：需 Stage handle + scene（root>parent>child）+ .dll，本机无 Unity 跳过");
+            var (stage, h) = BuildStage();
+            int childHits = 0, parentHits = 0, rootHits = 0;
+            h.AddListener(2, EventType.RollOver, c => childHits++);
+            h.AddListener(1, EventType.RollOver, c => parentHits++);
+            h.AddListener(0, EventType.RollOver, c => rootHits++);
+            DispatchOne(h, new LoomEvent { nodeId = 2, type = EventType.RollOver, clickCount = 0, touch_id = -1, x = 0, y = 0 });
+            Assert.AreEqual(1, childHits, "DirectDispatch：child 收");
+            Assert.AreEqual(0, parentHits, "RollOver 不沿链，parent 不收");
+            Assert.AreEqual(0, rootHits, "RollOver 不沿链，root 不收");
+            Native.loomgui_stage_free((StageHandle*)stage);
         }
 
         /// root AddCapture(Down) → capture 阶段先于 child Target 收。
         [Test]
         public void AddCapture_FiresInCapturePhaseBeforeTarget()
         {
-            // 家里机：
-            //   var stage = BuildStage("root>parent>child");
-            //   var h = new LoomEventHandler(); h.SetHandle((IntPtr)stage.NativeHandle);
-            //   var order = new System.Collections.Generic.List<string>();
-            //   h.AddCapture(0, EventType.Down, c => order.Add("root-capture"));   // root capture
-            //   h.AddListener(2, EventType.Down, c => order.Add("child-target"));  // child target(bubble)
-            //   DispatchOne(h, new LoomEvent { nodeId = 2, type = EventType.Down, x = 0, y = 0 });
-            //   Assert.AreEqual(2, order.Count);
-            //   Assert.AreEqual("root-capture", order[0], "capture 阶段（反向从根）先于 target");
-            //   Assert.AreEqual("child-target", order[1], "target(bubble) 后");
-            Assert.Ignore("家里机：需 Stage handle + scene（root>parent>child）+ .dll，本机无 Unity 跳过");
+            var (stage, h) = BuildStage();
+            var order = new System.Collections.Generic.List<string>();
+            h.AddCapture(0, EventType.Down, c => order.Add("root-capture"));   // root capture
+            h.AddListener(2, EventType.Down, c => order.Add("child-target"));  // child target(bubble)
+            DispatchOne(h, new LoomEvent { nodeId = 2, type = EventType.Down, clickCount = 0, touch_id = -1, x = 0, y = 0 });
+            Assert.AreEqual(2, order.Count);
+            Assert.AreEqual("root-capture", order[0], "capture 阶段（反向从根）先于 target");
+            Assert.AreEqual("child-target", order[1], "target(bubble) 后");
+            Native.loomgui_stage_free((StageHandle*)stage);
         }
 
         /// RemoveListener(nodeId, type, cb) 后 cb 不再被调。
         [Test]
         public void DelegateRemove_StopsReceiving()
         {
-            // 家里机：
-            //   var stage = BuildStage("root>parent>child");
-            //   var h = new LoomEventHandler(); h.SetHandle((IntPtr)stage.NativeHandle);
-            //   int hits = 0;
-            //   LoomGUI.EventCallback cb = c => hits++;
-            //   h.AddListener(2, EventType.Down, cb);
-            //   DispatchOne(h, new LoomEvent { nodeId = 2, type = EventType.Down, x = 0, y = 0 });
-            //   Assert.AreEqual(1, hits, "remove 前收 1 次");
-            //   h.RemoveListener(2, EventType.Down, cb);
-            //   DispatchOne(h, new LoomEvent { nodeId = 2, type = EventType.Down, x = 0, y = 0 });
-            //   Assert.AreEqual(1, hits, "remove 后不再收（仍 1）");
-            Assert.Ignore("家里机：需 Stage handle + scene（root>parent>child）+ .dll，本机无 Unity 跳过");
+            var (stage, h) = BuildStage();
+            int hits = 0;
+            LoomGUI.EventCallback cb = c => hits++;
+            h.AddListener(2, EventType.Down, cb);
+            DispatchOne(h, new LoomEvent { nodeId = 2, type = EventType.Down, clickCount = 0, touch_id = -1, x = 0, y = 0 });
+            Assert.AreEqual(1, hits, "remove 前收 1 次");
+            h.RemoveListener(2, EventType.Down, cb);
+            DispatchOne(h, new LoomEvent { nodeId = 2, type = EventType.Down, clickCount = 0, touch_id = -1, x = 0, y = 0 });
+            Assert.AreEqual(1, hits, "remove 后不再收（仍 1）");
+            Native.loomgui_stage_free((StageHandle*)stage);
         }
 
-        // ===== v1c.3-T4 capture / move / multitouch 测骨架（家里机补 handle + 跑）=====
-        // 下述测需 Stage handle + scene + .dll（Native.loomgui_stage_add_touch_monitor / _remove）。
-        // 本机写骨架 + Assert.Ignore（同 v1c.2 模式）；家里机按 BuildStage("root>parent>child") 风格补全。
+        // ===== v1c.3-T4 capture / move / multitouch 测（v1c.4-T8 回填）=====
 
         /// CaptureTouch 设 _touchCapture；BubbleRoute 消费即清（cap/bub 各记录一节点）。
         /// 验：root AddCapture(Down, CaptureTouch) + child AddListener(Down, CaptureTouch)
         ///     → DispatchOne(Down on child) 后 _captureNodeCap=root, _captureNodeBub=child，
         ///     核心收到两次 add_touch_monitor（同 touch_id）。
+        /// 注：核心侧观测 API 无直接断言——这里验不抛 + 两次 CaptureTouch 调用都执行（handler 内部转 add_touch_monitor）。
+        /// 家里机若需更强断言，可在 .dll 加观测 API 或 mock Native.add_touch_monitor 计数。
         [Test]
         public void CaptureTouch_SetsFlag_ConsumedOnCapAndBub()
         {
-            // 家里机：
-            //   var stage = BuildStage("root>parent>child");
-            //   var h = new LoomEventHandler(); h.SetHandle((IntPtr)stage.NativeHandle);
-            //   h.AddCapture(0, EventType.Down, c => c.CaptureTouch());   // root capture 调 CaptureTouch
-            //   h.AddListener(2, EventType.Down, c => c.CaptureTouch());  // child bubble 调 CaptureTouch
-            //   // DispatchOne 后验核心收到 add_touch_monitor(touch_id=-1, node_id=0) 和 (-1, 2)
-            //   // （需核心侧观测 API 或 mock Native，或验 Move 事件派到 monitor 节点）
-            Assert.Ignore("家里机：CaptureTouch 标志消费需 BubbleRoute + handle + 核心观测");
+            var (stage, h) = BuildStage();
+            int captureCalls = 0;
+            // root capture + child bubble 各调 CaptureTouch；不抛即过（标志消费 + 转发核心 add_touch_monitor）。
+            h.AddCapture(0, EventType.Down, c => { c.CaptureTouch(); captureCalls++; });   // root capture 调 CaptureTouch
+            h.AddListener(2, EventType.Down, c => { c.CaptureTouch(); captureCalls++; });  // child bubble 调 CaptureTouch
+            Assert.DoesNotThrow(() =>
+                DispatchOne(h, new LoomEvent { nodeId = 2, type = EventType.Down, clickCount = 0, touch_id = -1, x = 0, y = 0 }));
+            Assert.AreEqual(2, captureCalls, "cap + bub 两个节点都调 CaptureTouch（消费 _touchCapture）");
+            Native.loomgui_stage_free((StageHandle*)stage);
         }
 
         /// Move 走 DirectDispatch（不再 BubbleRoute）：只命中节点收，不沿链。
@@ -236,37 +270,34 @@ namespace LoomGUI.Tests
         [Test]
         public void Move_DirectDispatch_NoBubble()
         {
-            // 家里机：
-            //   var stage = BuildStage("root>parent>child");
-            //   var h = new LoomEventHandler(); h.SetHandle((IntPtr)stage.NativeHandle);
-            //   int childHits = 0, parentHits = 0, rootHits = 0;
-            //   h.AddListener(2, EventType.Move, c => childHits++);
-            //   h.AddListener(1, EventType.Move, c => parentHits++);
-            //   h.AddListener(0, EventType.Move, c => rootHits++);
-            //   DispatchOne(h, new LoomEvent { nodeId = 2, type = EventType.Move, touch_id = -1, x = 5f, y = 5f });
-            //   Assert.AreEqual(1, childHits, "Move 直派：child 收");
-            //   Assert.AreEqual(0, parentHits, "Move 不沿链，parent 不收");
-            //   Assert.AreEqual(0, rootHits, "Move 不沿链，root 不收");
-            Assert.Ignore("家里机：需 Stage handle + scene（root>parent>child）+ .dll，本机无 Unity 跳过");
+            var (stage, h) = BuildStage();
+            int childHits = 0, parentHits = 0, rootHits = 0;
+            h.AddListener(2, EventType.Move, c => childHits++);
+            h.AddListener(1, EventType.Move, c => parentHits++);
+            h.AddListener(0, EventType.Move, c => rootHits++);
+            DispatchOne(h, new LoomEvent { nodeId = 2, type = EventType.Move, clickCount = 0, touch_id = -1, x = 5f, y = 5f });
+            Assert.AreEqual(1, childHits, "Move 直派：child 收");
+            Assert.AreEqual(0, parentHits, "Move 不沿链，parent 不收");
+            Assert.AreEqual(0, rootHits, "Move 不沿链，root 不收");
+            Native.loomgui_stage_free((StageHandle*)stage);
         }
 
-        /// 两触摸（touch_id=0,1）Down 在两不同节点 → EventContext.touchId 各自正确 + 互不干扰。
+        /// 两触摸（touch_id=0,1）Down 在同一节点（child=2）→ EventContext.touchId 各自正确 + 互不干扰。
         /// 验：listener 收到的 ctx.touchId 与 EventRecord.touch_id 一致。
+        /// （原 stub 用 leaf_a_id；场景 root>parent>child=0/1/2，取 node 2 作 leaf。）
         [Test]
         public void MultiTouch_DistinctTouchId()
         {
-            // 家里机：
-            //   var stage = BuildStage("root>a>b>leaf_a>leaf_b");   // 两叶子节点
-            //   var h = new LoomEventHandler(); h.SetHandle((IntPtr)stage.NativeHandle);
-            //   int recTouchId = -99;
-            //   h.AddListener(leaf_a_id, EventType.Down, c => recTouchId = c.touchId);
-            //   // 喂 touch_id=0 的 Down on leaf_a
-            //   DispatchOne(h, new LoomEvent { nodeId = leaf_a_id, type = EventType.Down, touch_id = 0, x = 0, y = 0 });
-            //   Assert.AreEqual(0, recTouchId, "touch_id=0 的 Down → ctx.touchId=0");
-            //   // 喂 touch_id=1 的 Down on leaf_a
-            //   DispatchOne(h, new LoomEvent { nodeId = leaf_a_id, type = EventType.Down, touch_id = 1, x = 0, y = 0 });
-            //   Assert.AreEqual(1, recTouchId, "touch_id=1 的 Down → ctx.touchId=1");
-            Assert.Ignore("家里机：需 handle + 两 touch_id EventRecord");
+            var (stage, h) = BuildStage();
+            int recTouchId = -99;
+            h.AddListener(2, EventType.Down, c => recTouchId = c.touchId);
+            // 喂 touch_id=0 的 Down on child(2)
+            DispatchOne(h, new LoomEvent { nodeId = 2, type = EventType.Down, clickCount = 0, touch_id = 0, x = 0, y = 0 });
+            Assert.AreEqual(0, recTouchId, "touch_id=0 的 Down → ctx.touchId=0");
+            // 喂 touch_id=1 的 Down on child(2)
+            DispatchOne(h, new LoomEvent { nodeId = 2, type = EventType.Down, clickCount = 0, touch_id = 1, x = 0, y = 0 });
+            Assert.AreEqual(1, recTouchId, "touch_id=1 的 Down → ctx.touchId=1");
+            Native.loomgui_stage_free((StageHandle*)stage);
         }
 
         /// RemoveTouchMonitor(nodeId) 主动释放——转发核心 remove（业务拖拽结束调）。
@@ -274,11 +305,40 @@ namespace LoomGUI.Tests
         [Test]
         public void RemoveTouchMonitor_NoThrow_FreesCapture()
         {
-            // 家里机：
-            //   var stage = BuildStage("root>parent>child");
-            //   var h = new LoomEventHandler(); h.SetHandle((IntPtr)stage.NativeHandle);
-            //   Assert.DoesNotThrow(() => h.RemoveTouchMonitor(2), "remove 不存在的 monitor 应 no-op");
-            Assert.Ignore("家里机：需 Stage handle + .dll 验核心 remove 转发");
+            var (stage, h) = BuildStage();
+            Assert.DoesNotThrow(() => h.RemoveTouchMonitor(2), "remove 不存在的 monitor 应 no-op");
+            Native.loomgui_stage_free((StageHandle*)stage);
+        }
+
+        // ===== v1c.4-T8 新测（StopImmediate + 双击 clickCount）=====
+
+        /// v1c.4：StopImmediatePropagation 止同节点剩余监听器（StopPropagation 不会）。
+        /// 单节点链（node 2，无祖先需 BuildStage 的多节点链；但用 BuildStage 保持一致性）。
+        [Test]
+        public void StopImmediate_StopsSiblingListenersOnSameNode()
+        {
+            var (stage, h) = BuildStage();
+            int hit1 = 0, hit2 = 0;
+            h.AddListener(2, EventType.Down, c => { hit1++; c.StopImmediatePropagation(); });   // 第一个：止同节点剩余
+            h.AddListener(2, EventType.Down, c => { hit2++; });                                  // 同节点第二个：不应跑
+            DispatchOne(h, new LoomEvent { nodeId = 2, type = EventType.Down, clickCount = 0, touch_id = -1, x = 0, y = 0 });
+            Assert.AreEqual(1, hit1, "第一个 listener 跑");
+            Assert.AreEqual(0, hit2, "StopImmediate 止同节点第二个 listener");
+            Native.loomgui_stage_free((StageHandle*)stage);
+        }
+
+        /// v1c.4：双击 clickCount 透传 EventContext（core 算 2，C# 读 ctx.clickCount=2）。
+        /// 手搓 Click 事件 clickCount=2 → listener 收 ctx.clickCount=2 + isDoubleClick=true。
+        [Test]
+        public void DoubleClick_ClickCount_ReachesEventContext()
+        {
+            var (stage, h) = BuildStage();
+            byte recvCount = 0; bool recvDouble = false;
+            h.AddListener(2, EventType.Click, c => { recvCount = c.clickCount; recvDouble = c.isDoubleClick; });
+            DispatchOne(h, new LoomEvent { nodeId = 2, type = EventType.Click, clickCount = 2, touch_id = -1, x = 0, y = 0 });
+            Assert.AreEqual(2, recvCount, "clickCount=2 透传");
+            Assert.IsTrue(recvDouble, "isDoubleClick=true");
+            Native.loomgui_stage_free((StageHandle*)stage);
         }
     }
 }
