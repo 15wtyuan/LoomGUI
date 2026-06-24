@@ -2,35 +2,20 @@ using UnityEngine;
 
 namespace LoomGUI
 {
-    /// v1c.2-T5 interact sample 的 C# driver：演示事件冒泡 / stopPropagation / capture 三阶段。
-    /// 挂在与 LoomStage 同 GO（或任意 GO 上引用 LoomStage）——Awake 取 stage.EventHandler 注册 listener。
+    /// v1d interact sample 的 C# driver：演示全事件谱。
+    /// v1c.1 disabled + v1c.2 capture/bubble/hover + v1c.3 capture touch + v1d.1 drag/longpress + v1d.2 focus/key。
     ///
-    /// nodeId 按 build 序（scene/node.rs build 顺序）：
-    ///   root=0, btn1=1, btn2=2, btn_disabled=3, outer=4, inner btn=5
-    /// **注：此 id 为推断序——家里机 PlayMode 调试确认实际 id（可临时在 listener 里打
-    ///   ctx.target / ctx.currentTarget 对比命中节点）**。若序偏移，按实际调整常量。
-    ///
-    /// 演示：
-    ///   - outer capture（先于 btn target/bubble）
-    ///   - btn click + StopPropagation（btn stop → outer bubble 不收）
-    ///   - outer bubble（btn 未 stop 时收；本 sample btn stop，故 outer bubble 回调不触发——
-    ///     注释保留供调试：取消 btn 的 StopPropagation 即见 outer bubble 收到）
+    /// 挂在与 LoomStage 同 GO（_stage 引用），Awake 取 EventHandler 注册 listener。
+    /// 全部 nodeId 走 FindNodeById（HTML id 属性），不依赖 build 序——加元素不破 id。
+    /// sample id：btn_disabled / drag(draggable) / outer / foc1(tabindex=1) / foc2(=2) / foc3(=0)。
     public class LoomInteractDemo : MonoBehaviour
     {
         [SerializeField] LoomStage _stage;
 
-        // nodeId 推断序（家里机 PlayMode 调试确认实际 id）
-        const uint OuterId = 4u;
-        const uint BtnId = 5u;
-
         void Awake()
         {
             if (_stage == null) _stage = GetComponent<LoomStage>();
-            if (_stage == null)
-            {
-                Debug.LogError("[LoomInteractDemo] 未找到 LoomStage");
-                return;
-            }
+            if (_stage == null) { Debug.LogError("[demo] 未找到 LoomStage"); return; }
             RegisterListeners();
         }
 
@@ -38,47 +23,68 @@ namespace LoomGUI
         {
             var h = _stage.EventHandler;
 
-            // 禁用按钮：find by id → set Node.disabled（让「禁用按钮」真禁用——:disabled 伪类 + active/click 抑制）。
-            // 替代硬编码 build 序 id（auto Text 子会偏移序，不可靠）。pkg 须含 id_attr（page.html id="btn_disabled"）。
             uint disabledId = _stage.FindNodeById("btn_disabled");
-            if (disabledId != uint.MaxValue)
-                _stage.SetNodeDisabled(disabledId, true);
-            else
-                Debug.LogWarning("[LoomInteractDemo] find btn_disabled 失败——pkg 未含 id？检查 page.html id + 重打 pkg.bin");
+            uint dragId     = _stage.FindNodeById("drag");
+            uint outerId    = _stage.FindNodeById("outer");
+            uint foc1Id     = _stage.FindNodeById("foc1");
 
-            // capture：outer 在 capture 阶段先收（root→target 反向，全跑，stop 不阻断 capture）
-            h.AddCapture(OuterId, EventType.Click, ctx =>
-                Debug.Log($"[interact] outer capture click target={ctx.target} cur={ctx.currentTarget} phase={ctx.phase}"));
+            // ===== v1c.1 disabled：find by id → set Node.disabled（「禁用按钮」真禁用：:disabled + 抑制 active/click/longpress）=====
+            if (disabledId != uint.MaxValue) _stage.SetNodeDisabled(disabledId, true);
+            else Debug.LogWarning("[demo] find btn_disabled 失败——pkg 未含 id？");
 
-            // btn target/bubble：click + stop → outer bubble 不收（capture 仍跑）
-            h.AddListener(BtnId, EventType.Click, ctx =>
+            // ===== v1c.2 capture/bubble 演示：foc1 click → outer capture（先）+ foc1 target StopPropagation → outer bubble 不收 =====
+            if (outerId != uint.MaxValue)
+                h.AddCapture(outerId, EventType.Click, ctx =>
+                    Debug.Log($"[v1c.2] outer CAPTURE click target={ctx.target} phase={ctx.phase}"));
+            if (foc1Id != uint.MaxValue)
+                h.AddListener(foc1Id, EventType.Click, ctx =>
+                {
+                    Debug.Log($"[v1c.2] foc1 click target/bubble → StopPropagation");
+                    ctx.StopPropagation();   // outer bubble 回调不触发（capture 仍跑）
+                });
+            if (outerId != uint.MaxValue)
+                h.AddListener(outerId, EventType.Click, ctx =>
+                    Debug.Log($"[v1c.2] outer BUBBLE click（foc1 stop 时不触发）"));
+
+            // ===== v1c.3 capture touch：foc1 Down → CaptureTouch → 手指移出仍收 Move =====
+            if (foc1Id != uint.MaxValue)
             {
-                Debug.Log($"[interact] btn click target={ctx.target} cur={ctx.currentTarget} phase={ctx.phase}");
-                ctx.StopPropagation();   // 演示止冒泡：outer bubble 回调不触发
-            });
+                h.AddListener(foc1Id, EventType.Down, ctx =>
+                {
+                    ctx.CaptureTouch();
+                    Debug.Log($"[v1c.3] foc1 Down touch={ctx.touchId} → capture");
+                });
+                h.AddListener(foc1Id, EventType.Move, ctx =>
+                    Debug.Log($"[v1c.3] foc1 Move (capture 中) pos=({ctx.x},{ctx.y})"));
+            }
 
-            // outer bubble：btn stop 时此处不触发（保留验证 stop 生效）
-            h.AddListener(OuterId, EventType.Click, ctx =>
-                Debug.Log($"[interact] outer bubble click target={ctx.target} cur={ctx.currentTarget} phase={ctx.phase}"));
+            // ===== v1d.1 drag（opt-in：仅 draggable=true 的 drag 元素）+ longpress（universal）=====
+            if (dragId != uint.MaxValue)
+            {
+                h.AddListener(dragId, EventType.DragStart, ctx => Debug.Log($"[v1d.1] drag Start pos=({ctx.x},{ctx.y}) touch={ctx.touchId}（drag 起后 Up 无 click）"));
+                h.AddListener(dragId, EventType.DragMove,  ctx => Debug.Log($"[v1d.1] drag Move pos=({ctx.x},{ctx.y})"));
+                h.AddListener(dragId, EventType.DragEnd,   ctx => Debug.Log($"[v1d.1] drag End pos=({ctx.x},{ctx.y})"));
+                // longpress universal：drag 节点按住 1.5s 发一次（独立 click——松手仍 Click）
+                h.AddListener(dragId, EventType.LongPress, ctx => Debug.Log($"[v1d.1] longpress fired node={ctx.target}"));
+            }
 
-            // v1c.3 capture demo：Down 在 btn 时 CaptureTouch → 手指移出仍收 Move（核心 add_touch_monitor）
-            h.AddListener(BtnId, EventType.Down, ctx => {
-                ctx.CaptureTouch();
-                Debug.Log($"[interact] btn Down touch={ctx.touchId} → capture");
-            });
-            h.AddListener(BtnId, EventType.Move, ctx => {
-                Debug.Log($"[interact] btn Move (capture 中) touch={ctx.touchId} pos=({ctx.x},{ctx.y})");
-            });
+            // ===== v1d.2 focus（tabindex opt-in）+ keydown：foc1/2/3 都注册 =====
+            foreach (var idName in new[] { "foc1", "foc2", "foc3" })
+            {
+                string name = idName;   // 闭包捕获局部拷贝
+                uint id = _stage.FindNodeById(name);
+                if (id == uint.MaxValue) continue;
+                h.AddListener(id, EventType.FocusIn,  ctx => Debug.Log($"[v1d.2] focus IN  {name}({ctx.target})"));
+                h.AddListener(id, EventType.FocusOut, ctx => Debug.Log($"[v1d.2] focus OUT {name}({ctx.target})"));
+                h.AddListener(id, EventType.KeyDown,  ctx => Debug.Log($"[v1d.2] key down {name} code={ctx.keyCode} mod={ctx.modifiers}"));
+            }
 
-            // hover 祖先链演示：outer RollOver（btn hover 时 outer 也 RollOver——v1c.2 祖先链 diff）
-            h.AddListener(OuterId, EventType.RollOver, ctx =>
-                Debug.Log($"[interact] outer RollOver cur={ctx.currentTarget}"));
-            h.AddListener(OuterId, EventType.RollOut, ctx =>
-                Debug.Log($"[interact] outer RollOut cur={ctx.currentTarget}"));
-            h.AddListener(BtnId, EventType.RollOver, ctx =>
-                Debug.Log($"[interact] btn RollOver cur={ctx.currentTarget}"));
-            h.AddListener(BtnId, EventType.RollOut, ctx =>
-                Debug.Log($"[interact] btn RollOut cur={ctx.currentTarget}"));
+            // ===== v1c.2 hover 祖先链：foc hover → outer 也 RollOver（祖先链 diff）=====
+            if (outerId != uint.MaxValue)
+            {
+                h.AddListener(outerId, EventType.RollOver, ctx => Debug.Log($"[hover] outer RollOver（后代 hover）"));
+                h.AddListener(outerId, EventType.RollOut,  ctx => Debug.Log($"[hover] outer RollOut"));
+            }
         }
     }
 }
