@@ -1,11 +1,11 @@
-//! 包格式（spec §5）：.pkg.bin v4。
+//! 包格式（spec §5）：.pkg.bin v5。
 //! Rust-internal（packager 写、runtime 读，C# 不解析）。
 //!
-//! 扁平布局：Header(28B) + StringTable + NodeBlock（DFS 先序，含 classes/id/flags）+
+//! 扁平布局：Header(28B) + StringTable + NodeBlock（DFS 先序，含 classes/id/flags/tabindex）+
 //! AtlasSection + DynamicRuleSection（v3 新增，bincode 整个 DynamicRuleTable）。
 //! style 字段 = bincode(ResolvedStyle)。字符串表放 text content + image src +
 //! atlas filename + sprite src + classes + id_attr（统一 intern 去重）。
-//! v4：NodeBlock 末 +1 byte flags（bit0=draggable）。
+//! v4：NodeBlock 末 +1 byte flags（bit0=draggable）。v5：flags 后 +tabindex:i32（None→i32::MIN）。
 
 use crate::scene::{NodeKind, NodeId, Scene};
 use crate::style::dynamic::DynamicRuleTable;
@@ -14,9 +14,9 @@ use crate::style::resolved::ResolvedStyle;
 pub mod texture; // v1b.2：纹理注册表（src→TexMeta）
 
 pub const PKG_MAGIC: u32 = 0x474B504C; // 磁盘字节(LE) "LPKG"（不与 frame blob "LOOM" 撞）
-pub const PKG_FORMAT_VERSION: u32 = 4; // v4：+NodeBlock draggable flags byte（v3=DynamicRuleSection+classes/id，v2=AtlasSection，v1=纯 scene）
-const MIN_VERSION: u32 = 4;
-const MAX_VERSION: u32 = 4;
+pub const PKG_FORMAT_VERSION: u32 = 5; // v5：+NodeBlock tabindex（v4=draggable flags，v3=DynamicRuleSection+classes/id，v2=AtlasSection，v1=纯 scene）
+const MIN_VERSION: u32 = 5;
+const MAX_VERSION: u32 = 5;
 const NULL_IDX: u16 = 0xFFFF;
 
 const KIND_CONTAINER: u8 = 0;
@@ -252,6 +252,9 @@ pub fn write_package(
         // v4：flags byte（bit0=draggable）
         let flags: u8 = if scene.nodes[node_i].draggable { 0x01 } else { 0x00 };
         out.push(flags);
+        // v5：tabindex i32（None→i32::MIN 哨兵，反序列化还原 None）
+        let tab = scene.nodes[node_i].tabindex.unwrap_or(i32::MIN);
+        out.extend_from_slice(&tab.to_le_bytes());
     }
     // —— AtlasSection（v2 新增，NodeBlock 之后）——
     // atlas_count + 每 atlas{filename_idx,u16; w,u32; h,u32}
@@ -307,8 +310,8 @@ pub fn read_package(bytes: &[u8]) -> Result<(Scene, (f32, f32), AtlasSection), P
         let s = r.utf8(len, "str_bytes")?;
         strings.push(s);
     }
-    // NodeBlock → entries（v4：末位 draggable 来自 flags byte bit0）
-    let mut entries: Vec<(Option<usize>, NodeKind, ResolvedStyle, Vec<String>, Option<String>, bool)> = Vec::with_capacity(node_count);
+    // NodeBlock → entries（v5：tabindex 来自 flags 后 i32，i32::MIN→None）
+    let mut entries: Vec<(Option<usize>, NodeKind, ResolvedStyle, Vec<String>, Option<String>, bool, Option<i32>)> = Vec::with_capacity(node_count);
     for _ in 0..node_count {
         let pidx = r.i32("parent_idx")?;
         let kind_tag = r.u8("kind")?;
@@ -332,6 +335,9 @@ pub fn read_package(bytes: &[u8]) -> Result<(Scene, (f32, f32), AtlasSection), P
         // v4：flags byte（bit0=draggable）
         let flags = r.u8("flags")?;
         let draggable = (flags & 0x01) != 0;
+        // v5：tabindex i32（i32::MIN 哨兵 → None）
+        let tab_raw = r.i32("tabindex")?;
+        let tabindex = if tab_raw == i32::MIN { None } else { Some(tab_raw) };
         let parent = if pidx < 0 { None } else { Some(pidx as usize) };
         let kind = match kind_tag {
             KIND_CONTAINER => NodeKind::Container,
@@ -344,7 +350,7 @@ pub fn read_package(bytes: &[u8]) -> Result<(Scene, (f32, f32), AtlasSection), P
             },
             other => return Err(PkgError::BadKind(other)),
         };
-        entries.push((parent, kind, style, classes, id_attr, draggable));
+        entries.push((parent, kind, style, classes, id_attr, draggable, tabindex));
     }
     // —— AtlasSection（v2）——
     let atlas_count = r.u32("atlas_count")? as usize;
@@ -468,8 +474,8 @@ mod tests {
         // 手搓一个覆盖 4 种 kind + 嵌套的 Scene（不走 parse，靠 Scene::build）。
         let mut img_style = ResolvedStyle::default();
         img_style.background_color = Some([1.0, 0.0, 0.0, 1.0]);
-        let entries: Vec<(Option<usize>, NodeKind, ResolvedStyle, Vec<String>, Option<String>, bool)> = vec![
-            (None, NodeKind::Container, ResolvedStyle::default(), Vec::new(), None, false),
+        let entries: Vec<(Option<usize>, NodeKind, ResolvedStyle, Vec<String>, Option<String>, bool, Option<i32>)> = vec![
+            (None, NodeKind::Container, ResolvedStyle::default(), Vec::new(), None, false, None),
             (
                 Some(0),
                 NodeKind::Text {
@@ -479,6 +485,7 @@ mod tests {
                 Vec::new(),
                 None,
                 false,
+                None,
             ),
             (
                 Some(0),
@@ -489,8 +496,9 @@ mod tests {
                 Vec::new(),
                 None,
                 false,
+                None,
             ),
-            (None, NodeKind::Button, ResolvedStyle::default(), Vec::new(), None, false),
+            (None, NodeKind::Button, ResolvedStyle::default(), Vec::new(), None, false, None),
         ];
         let scene = Scene::build(&entries);
 
@@ -527,15 +535,15 @@ mod tests {
 
     #[test]
     fn read_rejects_unsupported_version() {
-        // 借 round-trip 测的合法包（v4），把 version 字段（offset 4）改成 5 / 3。
-        // MIN_VERSION=MAX_VERSION=4：v3 → TooOld，v5 → TooNew。
-        let entries: Vec<(Option<usize>, NodeKind, ResolvedStyle, Vec<String>, Option<String>, bool)> =
-            vec![(None, NodeKind::Container, ResolvedStyle::default(), Vec::new(), None, false)];
+        // 借 round-trip 测的合法包（v5），把 version 字段（offset 4）改成 6 / 4。
+        // MIN_VERSION=MAX_VERSION=5：v4 → TooOld，v6 → TooNew。
+        let entries: Vec<(Option<usize>, NodeKind, ResolvedStyle, Vec<String>, Option<String>, bool, Option<i32>)> =
+            vec![(None, NodeKind::Container, ResolvedStyle::default(), Vec::new(), None, false, None)];
         let mut bytes = write_package(&Scene::build(&entries), (100.0, 100.0), &AtlasSection::default(), &crate::style::dynamic::DynamicRuleTable::default());
-        bytes[4..8].copy_from_slice(&5u32.to_le_bytes()); // version=5 → too new
-        assert!(matches!(read_package(&bytes), Err(PkgError::TooNew(5))));
-        bytes[4..8].copy_from_slice(&3u32.to_le_bytes()); // version=3 → too old（v4 起拒 v3）
-        assert!(matches!(read_package(&bytes), Err(PkgError::TooOld(3))));
+        bytes[4..8].copy_from_slice(&6u32.to_le_bytes()); // version=6 → too new
+        assert!(matches!(read_package(&bytes), Err(PkgError::TooNew(6))));
+        bytes[4..8].copy_from_slice(&4u32.to_le_bytes()); // version=4 → too old（v5 起拒 v4）
+        assert!(matches!(read_package(&bytes), Err(PkgError::TooOld(4))));
     }
 
     #[test]
@@ -543,7 +551,7 @@ mod tests {
         // 空 scene + 非空 AtlasSection → round-trip 后 atlas 字段逐项相等。
         // 覆盖：filename intern、sprite src intern（与 NodeBlock 共 stringTable）、
         // u32 × 4 sprite 字段、atlas_count/sprite_count。
-        let entries = vec![(None, NodeKind::Container, ResolvedStyle::default(), Vec::new(), None, false)];
+        let entries = vec![(None, NodeKind::Container, ResolvedStyle::default(), Vec::new(), None, false, None)];
         let scene = Scene::build(&entries);
         let atlas = AtlasSection {
             atlases: vec![AtlasInfo { filename: "a.atlas.png".into(), width: 512, height: 256 }],
@@ -601,6 +609,7 @@ mod tests {
             Vec::new(),
             None,
             false,
+            None,
         )];
         let scene = Scene::build(&entries);
         let dynamic = DynamicRuleTable {
@@ -655,6 +664,7 @@ mod tests {
             Vec::new(),
             None,
             false,
+            None,
         )];
         let scene = Scene::build(&entries);
         let pkg = write_package(
@@ -680,6 +690,7 @@ mod tests {
             vec!["a".to_string(), "b".to_string()],
             Some("x".to_string()),
             false,
+            None,
         )];
         let scene = Scene::build(&entries);
         let pkg = write_package(
@@ -699,8 +710,8 @@ mod tests {
     #[test]
     fn stringtable_dedups_repeated_strings() {
         // 两个 Text 同 content → stringTable 只一条，textIdx 相同。
-        let entries: Vec<(Option<usize>, NodeKind, ResolvedStyle, Vec<String>, Option<String>, bool)> = vec![
-            (None, NodeKind::Container, ResolvedStyle::default(), Vec::new(), None, false),
+        let entries: Vec<(Option<usize>, NodeKind, ResolvedStyle, Vec<String>, Option<String>, bool, Option<i32>)> = vec![
+            (None, NodeKind::Container, ResolvedStyle::default(), Vec::new(), None, false, None),
             (
                 Some(0),
                 NodeKind::Text {
@@ -710,6 +721,7 @@ mod tests {
                 Vec::new(),
                 None,
                 false,
+                None,
             ),
             (
                 Some(0),
@@ -720,6 +732,7 @@ mod tests {
                 Vec::new(),
                 None,
                 false,
+                None,
             ),
         ];
         let bytes = write_package(&Scene::build(&entries), (10.0, 10.0), &AtlasSection::default(), &crate::style::dynamic::DynamicRuleTable::default());
@@ -734,9 +747,9 @@ mod tests {
     #[test]
     fn pkg_v4_preserves_draggable_flag() {
         use crate::style::resolved::ResolvedStyle;
-        let entries: Vec<(Option<usize>, NodeKind, ResolvedStyle, Vec<String>, Option<String>, bool)> = vec![
-            (None, NodeKind::Container, ResolvedStyle::default(), Vec::new(), None, false),
-            (Some(0), NodeKind::Button, ResolvedStyle::default(), Vec::new(), None, true),
+        let entries: Vec<(Option<usize>, NodeKind, ResolvedStyle, Vec<String>, Option<String>, bool, Option<i32>)> = vec![
+            (None, NodeKind::Container, ResolvedStyle::default(), Vec::new(), None, false, None),
+            (Some(0), NodeKind::Button, ResolvedStyle::default(), Vec::new(), None, true, None),
         ];
         let scene = Scene::build(&entries);
         let pkg = write_package(&scene, (100.0, 50.0), &AtlasSection::default(), &crate::style::dynamic::DynamicRuleTable::default());
@@ -747,7 +760,7 @@ mod tests {
 
     #[test]
     fn pkg_v4_rejects_v3() {
-        // 手搓 v3 包（version=3）——v4 MIN=4 应拒 TooOld
+        // 手搓 v3 包（version=3）——v5 MIN=5 仍拒 TooOld
         let mut pkg = Vec::new();
         pkg.extend_from_slice(&PKG_MAGIC.to_le_bytes());
         pkg.extend_from_slice(&3u32.to_le_bytes()); // version=3
@@ -758,7 +771,42 @@ mod tests {
         pkg.extend_from_slice(&50.0f32.to_le_bytes());
         match read_package(&pkg) {
             Err(PkgError::TooOld(3)) => (), // 预期
-            other => panic!("v3 应被 v4 拒，got {:?}", other),
+            other => panic!("v3 应被 v5 拒，got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn pkg_v5_preserves_tabindex() {
+        use crate::style::resolved::ResolvedStyle;
+        let entries: Vec<(Option<usize>, NodeKind, ResolvedStyle, Vec<String>, Option<String>, bool, Option<i32>)> = vec![
+            (None, NodeKind::Container, ResolvedStyle::default(), Vec::new(), None, false, None),
+            (Some(0), NodeKind::Button, ResolvedStyle::default(), Vec::new(), None, false, Some(0)),
+            (Some(0), NodeKind::Button, ResolvedStyle::default(), Vec::new(), None, false, Some(3)),
+            (Some(0), NodeKind::Button, ResolvedStyle::default(), Vec::new(), None, false, Some(-1)),
+        ];
+        let scene = Scene::build(&entries);
+        let pkg = write_package(&scene, (100.0, 50.0), &AtlasSection::default(), &crate::style::dynamic::DynamicRuleTable::default());
+        let (scene2, _, _) = read_package(&pkg).unwrap();
+        assert_eq!(scene2.nodes[0].tabindex, None, "root tabindex=None round-trip");
+        assert_eq!(scene2.nodes[1].tabindex, Some(0));
+        assert_eq!(scene2.nodes[2].tabindex, Some(3));
+        assert_eq!(scene2.nodes[3].tabindex, Some(-1));
+    }
+
+    #[test]
+    fn pkg_v5_rejects_v4() {
+        // 手搓 v4 包（version=4）——v5 MIN=5 应拒 TooOld
+        let mut pkg = Vec::new();
+        pkg.extend_from_slice(&PKG_MAGIC.to_le_bytes());
+        pkg.extend_from_slice(&4u32.to_le_bytes()); // version=4
+        pkg.extend_from_slice(&0u32.to_le_bytes());
+        pkg.extend_from_slice(&0u32.to_le_bytes());
+        pkg.extend_from_slice(&0u32.to_le_bytes());
+        pkg.extend_from_slice(&100.0f32.to_le_bytes());
+        pkg.extend_from_slice(&50.0f32.to_le_bytes());
+        match read_package(&pkg) {
+            Err(PkgError::TooOld(4)) => (), // 预期
+            other => panic!("v4 应被 v5 拒，got {:?}", other),
         }
     }
 }
