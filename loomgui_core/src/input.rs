@@ -23,6 +23,7 @@ pub enum PointerKind {
     Down = 0,
     Up = 1,
     Move = 2,
+    Canceled = 3,   // v1c.4：触摸 TouchPhase.Canceled（鼠标无）
 }
 
 /// 事件输出（FFI 扁平 POD）。event_type: 0=Down,1=Up,2=Move,3=Click,4=RollOver,5=RollOut。
@@ -187,6 +188,18 @@ impl PointerState {
         }
     }
 
+    /// 外部取消待 click（照 fgui Stage.CancelClick）：置对应槽 click_cancelled。
+    /// 触摸槽满 / 未找到 → no-op。下个 Up 的 click_test 见 cancelled → 不发 Click + reset。
+    pub fn cancel_click(&mut self, touch_id: i32) {
+        let slot_idx = if touch_id == -1 { 0 } else {
+            match (1..self.slots.len()).find(|&i| self.slots[i].touch_id == touch_id) {
+                Some(i) => i,
+                None => return,
+            }
+        };
+        self.slots[slot_idx].click_cancelled = true;
+    }
+
     /// 找/分配槽。鼠标(touch_id=-1)恒 slots[0]；触摸按 touch_id 找，找不到→分配首个空闲。
     /// 返回 slot index；找不到（触摸槽满）→ None。
     /// 注：触摸槽在任意事件（Move/Down/Up）分配（fgui 触摸可 Move 先于 Down 合成），
@@ -281,7 +294,10 @@ impl PointerState {
                     }
                     Self::hover_diff_slot(slot, scene, &mut out);
                 }
-                PointerKind::Up => {
+                PointerKind::Up | PointerKind::Canceled => {
+                    if ev.kind == PointerKind::Canceled {
+                        slot.click_cancelled = true;   // v1c.4：Canceled 隐式 CancelClick（不发 Click + reset）
+                    }
                     slot.is_down = false;
                     if let Some(n) = hit {
                         if !scene.nodes[n.0].disabled {
@@ -1124,5 +1140,49 @@ mod tests {
         let out = ps.process(&mut s, &[PointerEvent { kind: PointerKind::Up, x: 70.0, y: 50.0, button: 0, pad: [0, 0], touch_id: -1 }]);
         assert!(!out.iter().any(|e| e.event_type == EVT_CLICK), "Move>50 → 取消 click");
         assert!(out.iter().any(|e| e.event_type == EVT_UP), "Up 仍发");
+    }
+
+    // ===== v1c.4 T3: Canceled + CancelClick =====
+
+    /// Canceled：发 Up、不发 Click。
+    #[test]
+    fn canceled_emits_up_skips_click() {
+        let mut s = one_button_scene();
+        let mut ps = PointerState::new();
+        ps.process(&mut s, &[PointerEvent { kind: PointerKind::Down, x: 50.0, y: 50.0, button: 0, pad: [0, 0], touch_id: -1 }]);
+        let out = ps.process(&mut s, &[PointerEvent { kind: PointerKind::Canceled, x: 50.0, y: 50.0, button: 0, pad: [0, 0], touch_id: -1 }]);
+        assert!(out.iter().any(|e| e.event_type == EVT_UP), "Canceled → Up 仍发");
+        assert!(!out.iter().any(|e| e.event_type == EVT_CLICK), "Canceled → 不发 Click");
+    }
+
+    /// cancel_click API：Down → cancel_click → Up → 无 Click。
+    #[test]
+    fn cancel_click_api_skips_click() {
+        let mut s = one_button_scene();
+        let mut ps = PointerState::new();
+        ps.process(&mut s, &[PointerEvent { kind: PointerKind::Down, x: 50.0, y: 50.0, button: 0, pad: [0, 0], touch_id: -1 }]);
+        ps.cancel_click(-1);   // Down 后、Up 前取消
+        let out = ps.process(&mut s, &[PointerEvent { kind: PointerKind::Up, x: 50.0, y: 50.0, button: 0, pad: [0, 0], touch_id: -1 }]);
+        assert!(!out.iter().any(|e| e.event_type == EVT_CLICK), "cancel_click → 无 Click");
+        assert!(out.iter().any(|e| e.event_type == EVT_UP), "Up 仍发");
+    }
+
+    /// Canceled reset 双击窗口（spec §0.6 偏离）：Canceled 后 click_count=1、last_click_time=0。
+    /// 用 time_s≥1.0（reset-to-0 在真实游戏时间下永远超 350ms；小 time_s 是测伪影）。
+    #[test]
+    fn canceled_resets_click_count() {
+        let mut s = one_button_scene();
+        let mut ps = PointerState::new();
+        ps.time_s = 1.0;
+        ps.process(&mut s, &[PointerEvent { kind: PointerKind::Down, x: 50.0, y: 50.0, button: 0, pad: [0, 0], touch_id: -1 }]);
+        ps.process(&mut s, &[PointerEvent { kind: PointerKind::Up, x: 50.0, y: 50.0, button: 0, pad: [0, 0], touch_id: -1 }]);   // count1
+        ps.time_s = 1.1;
+        ps.process(&mut s, &[PointerEvent { kind: PointerKind::Down, x: 50.0, y: 50.0, button: 0, pad: [0, 0], touch_id: -1 }]);
+        ps.process(&mut s, &[PointerEvent { kind: PointerKind::Up, x: 50.0, y: 50.0, button: 0, pad: [0, 0], touch_id: -1 }]);   // count2
+        assert_eq!(ps.slots[0].click_count, 2);
+        ps.time_s = 1.2;
+        ps.process(&mut s, &[PointerEvent { kind: PointerKind::Canceled, x: 50.0, y: 50.0, button: 0, pad: [0, 0], touch_id: -1 }]);
+        assert_eq!(ps.slots[0].click_count, 1, "Canceled reset click_count=1");
+        assert_eq!(ps.slots[0].last_click_time, 0.0, "Canceled reset last_click_time=0");
     }
 }
