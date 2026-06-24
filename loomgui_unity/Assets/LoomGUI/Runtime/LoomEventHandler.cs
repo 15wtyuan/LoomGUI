@@ -48,9 +48,11 @@ namespace LoomGUI
         public byte clickCount;          // v1c.4：照 fgui InputEvent.clickCount（1=单击/2=双击）
         public bool isDoubleClick => clickCount > 1;   // v1c.4：消费侧便利（照 fgui）
         public float x, y;
-        internal bool _stopsPropagation, _defaultPrevented, _touchCapture;
+        internal bool _stopsPropagation, _defaultPrevented, _touchCapture, _stopsImmediatePropagation;
         public void StopPropagation() => _stopsPropagation = true;
         public void PreventDefault() => _defaultPrevented = true;
+        /// v1c.4：止当前节点剩余监听器 + 止冒泡（W3C stopImmediatePropagation；比 StopPropagation 多止同节点剩余）。
+        public void StopImmediatePropagation() { _stopsImmediatePropagation = true; _stopsPropagation = true; }
         /// capture 当前触摸（照 fgui：设标志，BubbleRoute 消费即清，cap/bub 各加一 monitor）。
         public void CaptureTouch() => _touchCapture = true;
 
@@ -58,7 +60,7 @@ namespace LoomGUI
         public static EventContext Get()
         {
             var ctx = _pool.Count > 0 ? _pool.Pop() : new EventContext();
-            ctx._stopsPropagation = false; ctx._defaultPrevented = false; ctx._touchCapture = false;
+            ctx._stopsPropagation = false; ctx._defaultPrevented = false; ctx._touchCapture = false; ctx._stopsImmediatePropagation = false;
             return ctx;
         }
         public static void Return(EventContext ctx) => _pool.Push(ctx);
@@ -76,8 +78,24 @@ namespace LoomGUI
         public void Remove(EventCallback cb) => _bubble -= cb;
         public void RemoveCapture(EventCallback cb) => _capture -= cb;
         public bool isEmpty => _bubble == null && _capture == null;
-        public void CallBubble(EventContext ctx) { if (_bubble != null) _bubble(ctx); }
-        public void CallCapture(EventContext ctx) { if (_capture != null) _capture(ctx); }
+        public void CallBubble(EventContext ctx)
+        {
+            if (_bubble == null) return;
+            foreach (EventCallback cb in _bubble.GetInvocationList())
+            {
+                cb(ctx);
+                if (ctx != null && ctx._stopsImmediatePropagation) break;
+            }
+        }
+        public void CallCapture(EventContext ctx)
+        {
+            if (_capture == null) return;
+            foreach (EventCallback cb in _capture.GetInvocationList())
+            {
+                cb(ctx);
+                if (ctx != null && ctx._stopsImmediatePropagation) break;
+            }
+        }
     }
 
     /// C# 事件路由（v1c.2 方向 A，照 fgui EventDispatcher）。listener 表 + bubble/capture 路由。
