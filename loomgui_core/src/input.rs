@@ -58,6 +58,9 @@ const MOVE_CANCEL_PX: f32 = 50.0;      // fgui Move 硬编码取消阈值（per-
 const DRAG_THRESHOLD_MOUSE: f32 = 2.0;    // fgui UIConfig.clickDragSensitivity（mouse）
 const DRAG_THRESHOLD_TOUCH: f32 = 10.0;   // fgui UIConfig.touchDragSensitivity（touch）
 const LONGPRESS_TRIGGER: f32 = 1.5;       // fgui LongPressGesture.TRIGGER（秒）
+// ponytail: LONGPRESS_RADIUS 与 MOVE_CANCEL_PX 同值（50），longpress 半径由 Move 臂置 longpress_cancelled
+// 间接实现（用 MOVE_CANCEL_PX）。本常量仅明义 longpress 半径意图，不直接被读，故 allow(dead_code)。
+#[allow(dead_code)]
 const LONGPRESS_RADIUS: f32 = 50.0;       // fgui holdRangeRadius（与 MOVE_CANCEL_PX 同值，独立常量明义）
 
 fn click_threshold(touch_id: i32) -> f32 {
@@ -266,6 +269,33 @@ impl PointerState {
             if active && !used_touch_ids.contains(&self.slots[i].touch_id) {
                 self.slots[i].last_hit = hit_test(scene, self.slots[i].last_pos);
                 Self::hover_diff_slot(&mut self.slots[i], scene, &mut out);
+            }
+        }
+        // v1d.1：longpress tick 检查——每帧跑（含空事件 tick，此处先于 is_empty early-return）。
+        // is_down 槽按住 ≥1.5s 且未取消 → 发一次 EVT_LONG_PRESS（与 Click 独立）。
+        // 半径 LONGPRESS_RADIUS 不直接查——Move>MOVE_CANCEL_PX(==50) 时 Move 臂已置 longpress_cancelled。
+        for i in 0..self.slots.len() {
+            let active = i == 0 || self.slots[i].touch_id >= 0;
+            if !active { continue; }
+            let slot = &mut self.slots[i];
+            if slot.is_down && !slot.longpress_fired && !slot.longpress_cancelled {
+                if let Some(n) = slot.down_node {
+                    if n.0 < scene.nodes.len()
+                        && !scene.nodes[n.0].disabled
+                        && time_s - slot.down_time >= LONGPRESS_TRIGGER
+                    {
+                        slot.longpress_fired = true;
+                        out.push(EventRecord {
+                            node_id: n.0 as u32,
+                            event_type: EVT_LONG_PRESS,
+                            click_count: 0,
+                            pad: [0, 0],
+                            touch_id: slot.touch_id,
+                            x: slot.last_pos.0,
+                            y: slot.last_pos.1,
+                        });
+                    }
+                }
             }
         }
         if events.is_empty() {
@@ -1444,5 +1474,83 @@ mod tests {
         ps.process(&mut s, &[PointerEvent { kind: PointerKind::Move, x: 55.0, y: 50.0, button: 0, pad: [0, 0], touch_id: -1 }]); // DragStart
         let out = ps.process(&mut s, &[PointerEvent { kind: PointerKind::Canceled, x: 55.0, y: 50.0, button: 0, pad: [0, 0], touch_id: -1 }]);
         assert!(out.iter().any(|e| e.event_type == EVT_DRAG_END && e.node_id == 1), "Canceled → DragEnd@btn");
+    }
+
+    // ===== v1d.1 T4: core longpress 检测 =====
+
+    #[test]
+    fn longpress_fires_after_1_5s_no_move() {
+        // Down@btn → time_s 推进 1.5s（空事件 tick）→ LongPress@btn 一次。
+        let mut s = one_button_scene();
+        let mut ps = PointerState::new();
+        ps.time_s = 0.0;
+        ps.process(&mut s, &[PointerEvent { kind: PointerKind::Down, x: 50.0, y: 50.0, button: 0, pad: [0, 0], touch_id: -1 }]);
+        ps.time_s = 1.5;
+        let out = ps.process(&mut s, &[]);   // 空事件 tick → longpress 检查
+        assert!(out.iter().any(|e| e.event_type == EVT_LONG_PRESS && e.node_id == 1),
+            "按住 1.5s 无 move → LongPress@btn");
+    }
+
+    #[test]
+    fn longpress_not_fired_before_trigger() {
+        let mut s = one_button_scene();
+        let mut ps = PointerState::new();
+        ps.time_s = 0.0;
+        ps.process(&mut s, &[PointerEvent { kind: PointerKind::Down, x: 50.0, y: 50.0, button: 0, pad: [0, 0], touch_id: -1 }]);
+        ps.time_s = 1.0;   // <1.5
+        let out = ps.process(&mut s, &[]);
+        assert!(!out.iter().any(|e| e.event_type == EVT_LONG_PRESS), "<1.5s → 不发 LongPress");
+    }
+
+    #[test]
+    fn longpress_cancelled_by_move_over_50() {
+        let mut s = one_button_scene();
+        let mut ps = PointerState::new();
+        ps.time_s = 0.0;
+        ps.process(&mut s, &[PointerEvent { kind: PointerKind::Down, x: 50.0, y: 50.0, button: 0, pad: [0, 0], touch_id: -1 }]);
+        // Move 60px → longpress_cancelled（与 click_cancelled 同处）
+        ps.process(&mut s, &[PointerEvent { kind: PointerKind::Move, x: 110.0, y: 50.0, button: 0, pad: [0, 0], touch_id: -1 }]);
+        ps.time_s = 1.5;
+        let out = ps.process(&mut s, &[]);
+        assert!(!out.iter().any(|e| e.event_type == EVT_LONG_PRESS), "Move>50 → longpress 取消");
+    }
+
+    #[test]
+    fn longpress_fires_only_once_per_press() {
+        let mut s = one_button_scene();
+        let mut ps = PointerState::new();
+        ps.time_s = 0.0;
+        ps.process(&mut s, &[PointerEvent { kind: PointerKind::Down, x: 50.0, y: 50.0, button: 0, pad: [0, 0], touch_id: -1 }]);
+        ps.time_s = 1.5;
+        let out1 = ps.process(&mut s, &[]);
+        assert!(out1.iter().any(|e| e.event_type == EVT_LONG_PRESS), "1.5s → 发一次");
+        ps.time_s = 2.0;   // 继续 tick
+        let out2 = ps.process(&mut s, &[]);
+        assert!(!out2.iter().any(|e| e.event_type == EVT_LONG_PRESS), "已 fired → 不再发");
+    }
+
+    #[test]
+    fn longpress_independent_of_click() {
+        // LongPress 后 Up → Click 照发（独立，照 fgui）。
+        let mut s = one_button_scene();
+        let mut ps = PointerState::new();
+        ps.time_s = 0.0;
+        ps.process(&mut s, &[PointerEvent { kind: PointerKind::Down, x: 50.0, y: 50.0, button: 0, pad: [0, 0], touch_id: -1 }]);
+        ps.time_s = 1.5;
+        ps.process(&mut s, &[]);   // LongPress
+        let out = ps.process(&mut s, &[PointerEvent { kind: PointerKind::Up, x: 50.0, y: 50.0, button: 0, pad: [0, 0], touch_id: -1 }]);
+        assert!(out.iter().any(|e| e.event_type == EVT_CLICK), "LongPress 后 Up → Click 仍发（独立）");
+    }
+
+    #[test]
+    fn longpress_disabled_node_no_fire() {
+        let mut s = one_button_scene();
+        s.nodes[1].disabled = true;
+        let mut ps = PointerState::new();
+        ps.time_s = 0.0;
+        ps.process(&mut s, &[PointerEvent { kind: PointerKind::Down, x: 50.0, y: 50.0, button: 0, pad: [0, 0], touch_id: -1 }]);
+        ps.time_s = 1.5;
+        let out = ps.process(&mut s, &[]);
+        assert!(!out.iter().any(|e| e.event_type == EVT_LONG_PRESS), "disabled → 不发 LongPress");
     }
 }
