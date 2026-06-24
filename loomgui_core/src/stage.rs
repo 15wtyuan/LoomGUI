@@ -35,6 +35,11 @@ pub struct Stage {
     pub pending_input: Vec<PointerEvent>,
     /// v1c.1：本帧 tick 产出的事件序列（process 返回）；last_events/borrow_events 读。
     pub last_events: Vec<EventRecord>,
+    /// v1d.2：set_key_input 缓存的本帧键盘输入；tick 消费后 clear。
+    pub pending_keys: Vec<crate::input::KeyEvent>,
+    /// v1d.2：编程聚焦/清焦点请求（request_focus/blur tick 外调记，tick 最前消费）。
+    /// 外层 Some=有请求；内层 Some(id)=聚焦某节点 / None=清焦点。
+    pub pending_focus_request: Option<Option<NodeId>>,
 }
 
 impl Stage {
@@ -50,6 +55,8 @@ impl Stage {
             pointer_state: PointerState::new(),
             pending_input: Vec::new(),
             last_events: Vec::new(),
+            pending_keys: Vec::new(),
+            pending_focus_request: None,
         })
     }
 
@@ -128,6 +135,34 @@ impl Stage {
         self.pointer_state.cancel_click(touch_id);
     }
 
+    /// v1d.2：缓存本帧键盘输入（tick 前调；覆盖式）。
+    pub fn set_key_input(&mut self, keys: &[crate::input::KeyEvent]) {
+        self.pending_keys.clear();
+        self.pending_keys.extend_from_slice(keys);
+    }
+
+    /// v1d.2：编程聚焦（照 fgui RequestFocus）。强制聚焦任意非 disabled 节点
+    /// （含 tabindex=None/-1——request_focus 是编程 API，不查 tabindex）。
+    /// disabled 拒 / 越界跳过。记 pending_focus_request，下 tick 最前消费（不直接写 last_events）。
+    pub fn request_focus(&mut self, node_id: NodeId) {
+        if let Some(scene) = self.scene.as_ref() {
+            if node_id.0 >= scene.nodes.len() {
+                return;
+            }
+            if scene.nodes[node_id.0].disabled {
+                return; // §3.5 disabled 拒
+            }
+        } else {
+            return;
+        }
+        self.pending_focus_request = Some(Some(node_id));
+    }
+
+    /// v1d.2：编程清焦点。记 pending_focus_request = Some(None)，下 tick 消费。
+    pub fn blur(&mut self) {
+        self.pending_focus_request = Some(None);
+    }
+
     /// 本帧产出的事件（tick 后读；FFI borrow_events 用）。
     pub fn last_events(&self) -> &[EventRecord] {
         &self.last_events
@@ -147,14 +182,24 @@ impl Stage {
     /// 不读 layout_rect.size）。v1c.1 视觉伪类为主，layout 伪类为边角，此权衡 OK。
     pub fn tick_and_render(&mut self) -> FrameData {
         let scene = self.scene.as_mut().expect("load first");
+        let mut out: Vec<EventRecord> = Vec::new();
+        // v1d.2：消费 pending_focus_request（编程聚焦/清焦点，tick 外 request_focus/blur 记）
+        // 最前消费——下 tick 才生效，避免 R3（tick 覆写 last_events 丢请求事件）。
+        if let Some(req) = self.pending_focus_request.take() {
+            crate::input::focus_node(scene, req, &mut out);
+        }
         // 1. solve（先解 layout_rect，hit_test 要用）
         solve(scene, &self.font, self.root_size, &self.textures);
         // 借用冲突解（brief Step 3 注）：process 借 &mut scene + &input——scene 与 pending_input
         // 都是 self 字段，同时借 self 冲突。先 take 出 input（离开 self 借用），process 返回后 drop。
         let input = std::mem::take(&mut self.pending_input);
-        self.last_events = self.pointer_state.process(scene, &input);
-        // 3. cur_hit 已在 process 内更新各槽 last_hit；is_pointer_on_ui 读各槽
-        // 4. 伪类重匹配（按新 hover/active 改 Node.style——视觉变本帧 render 吃到）
+        let mut ptr_out = self.pointer_state.process(scene, &input);
+        out.append(&mut ptr_out);
+        // v1d.2：键盘事件（keydown/up + Tab 导航 + FocusIn/Out）
+        let keys = std::mem::take(&mut self.pending_keys);
+        crate::input::process_keys(scene, &keys, &mut out);
+        self.last_events = out;
+        // 4. 伪类重匹配（按新 hover/active/focused 改 Node.style——视觉变本帧 render 吃到）
         rematch_pseudo_classes(scene);
         // 5. 渲染
         build_render_nodes(scene, &self.font, &self.textures)

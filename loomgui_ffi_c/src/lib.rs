@@ -4,11 +4,11 @@
 pub mod blob;
 
 use std::ffi::CString;
-use loomgui_core::input::{EventRecord, PointerEvent};
+use loomgui_core::input::{EventRecord, KeyEvent, PointerEvent};
 use loomgui_core::scene::NodeId;
 use loomgui_core::stage::Stage;
 
-/// 版本字符串（C null-terminated `b"v1d.1\0"`）。Task 1 工具链 round-trip 用。
+/// 版本字符串（C null-terminated `b"v1d.2\0"`）。Task 1 工具链 round-trip 用。
 ///
 /// 返回 `*const u8`（csbindgen 映射为 C# `byte*`）；CString::as_ptr 给的是
 /// `*const c_char`（i8），这里 cast 对齐签名。OnceLock 缓存，避免每次分配+泄漏。
@@ -16,7 +16,7 @@ use loomgui_core::stage::Stage;
 pub extern "C" fn loomgui_version() -> *const u8 {
     static VERSION: std::sync::OnceLock<CString> = std::sync::OnceLock::new();
     VERSION
-        .get_or_init(|| CString::new("v1d.1").unwrap())
+        .get_or_init(|| CString::new("v1d.2").unwrap())
         .as_ptr() as *const u8
 }
 
@@ -354,6 +354,46 @@ pub extern "C" fn loomgui_stage_cancel_click(h: *mut StageHandle, touch_id: i32)
     sh.stage.cancel_click(touch_id);
 }
 
+/// v1d.2：注入本帧键盘事件（扁平 KeyEvent 数组）。tick 前调。null/len=0 = 无键盘输入。
+///
+/// **常驻（不 gate）：**输入是 runtime 稳定入口。
+#[no_mangle]
+pub extern "C" fn loomgui_stage_set_key_input(h: *mut StageHandle, keys: *const KeyEvent, len: usize) {
+    if h.is_null() { return; }
+    let sh = unsafe { &mut *h };
+    if keys.is_null() || len == 0 {
+        sh.stage.set_key_input(&[]);
+        return;
+    }
+    let ks = unsafe { std::slice::from_raw_parts(keys, len) };
+    sh.stage.set_key_input(ks);
+}
+
+/// v1d.2：编程聚焦节点（照 fgui RequestFocus）。强制聚焦任意非 disabled 节点
+/// （含 tabindex=None/-1）；disabled 拒；越界跳过。null 句柄 → no-op。
+///
+/// **常驻（不 gate）。**
+#[no_mangle]
+pub extern "C" fn loomgui_stage_request_focus(h: *mut StageHandle, node_id: u32) {
+    if h.is_null() { return; }
+    let sh = unsafe { &mut *h };
+    sh.stage.request_focus(NodeId(node_id as usize));
+}
+
+/// v1d.2：读当前焦点节点。无焦点/无 scene → 0xFFFF_FFFF（sentinel，同 node_parent）。null 句柄 → sentinel。
+///
+/// **常驻（不 gate）。**
+#[no_mangle]
+pub extern "C" fn loomgui_stage_focused_node(h: *const StageHandle) -> u32 {
+    const NONE: u32 = 0xFFFF_FFFF;
+    if h.is_null() { return NONE; }
+    let sh = unsafe { &*h };
+    match &sh.stage.scene {
+        Some(scene) => scene.focused_node.map(|n| n.0 as u32).unwrap_or(NONE),
+        None => NONE,
+    }
+}
+
 /// 全局 shutdown（Domain reload hook）。C# `LoomStage.ResetStatics`（SubsystemRegistration）
 /// 调用本函数——即使当前核心无全局态，hook 必须存在：v1b 引入 global texture/font registry
 /// 时此处自动清，无需再改接线。
@@ -378,10 +418,10 @@ mod tests {
     use std::ffi::CStr;
 
     #[test]
-    fn version_returns_c_string_v1d1() {
+    fn version_returns_c_string_v1d2() {
         unsafe {
             let s = CStr::from_ptr(loomgui_version() as *const i8);
-            assert_eq!(s.to_str().unwrap(), "v1d.1");
+            assert_eq!(s.to_str().unwrap(), "v1d.2");
         }
     }
 }
@@ -442,9 +482,9 @@ mod abi_tests {
         use loomgui_core::style::resolved::ResolvedStyle;
         let (fp, fplen) = font_path();
         // 手搓 scene（不走 parse），打成包
-        let entries = vec![
-            (None, NodeKind::Container, ResolvedStyle::default(), Vec::new(), None, false),
-            (Some(0), NodeKind::Text { content: "hi".into() }, ResolvedStyle::default(), Vec::new(), None, false),
+        let entries: Vec<(Option<usize>, NodeKind, ResolvedStyle, Vec<String>, Option<String>, bool, Option<i32>)> = vec![
+            (None, NodeKind::Container, ResolvedStyle::default(), Vec::new(), None, false, None),
+            (Some(0), NodeKind::Text { content: "hi".into() }, ResolvedStyle::default(), Vec::new(), None, false, None),
         ];
         let pkg = write_package(&Scene::build(&entries), (100.0, 50.0), &loomgui_core::asset::AtlasSection::default(), &loomgui_core::style::dynamic::DynamicRuleTable::default());
 
@@ -483,10 +523,10 @@ mod abi_tests {
         use loomgui_core::scene::{NodeKind, Scene};
         use loomgui_core::style::resolved::ResolvedStyle;
         let (fp, fplen) = font_path();
-        let entries = vec![
-            (None, NodeKind::Container, ResolvedStyle::default(), Vec::new(), None, false),
-            (Some(0), NodeKind::Image { src: "a.png".into() }, ResolvedStyle::default(), Vec::new(), None, false),
-            (Some(0), NodeKind::Image { src: "b.png".into() }, ResolvedStyle::default(), Vec::new(), None, false),
+        let entries: Vec<(Option<usize>, NodeKind, ResolvedStyle, Vec<String>, Option<String>, bool, Option<i32>)> = vec![
+            (None, NodeKind::Container, ResolvedStyle::default(), Vec::new(), None, false, None),
+            (Some(0), NodeKind::Image { src: "a.png".into() }, ResolvedStyle::default(), Vec::new(), None, false, None),
+            (Some(0), NodeKind::Image { src: "b.png".into() }, ResolvedStyle::default(), Vec::new(), None, false, None),
         ];
         let atlas = AtlasSection {
             atlases: vec![AtlasInfo { filename: "loom.atlas.png".into(), width: 512, height: 256 }],
@@ -574,7 +614,7 @@ mod abi_tests {
         let (fp, fplen) = font_path();
         let h = loomgui_stage_new(fp.as_ptr() as *const u8, fplen, 200.0, 100.0);
         // 手搓空 scene（单根 Container），不走 parse
-        let entries = vec![(None, NodeKind::Container, ResolvedStyle::default(), Vec::new(), None, false)];
+        let entries: Vec<(Option<usize>, NodeKind, ResolvedStyle, Vec<String>, Option<String>, bool, Option<i32>)> = vec![(None, NodeKind::Container, ResolvedStyle::default(), Vec::new(), None, false, None)];
         let pkg = write_package(
             &Scene::build(&entries),
             (200.0, 100.0),
@@ -699,9 +739,9 @@ mod abi_tests {
         use loomgui_core::scene::{NodeKind, Scene};
         use loomgui_core::style::{resolved::ResolvedStyle, dynamic::DynamicRuleTable};
         let (fp, fplen) = font_path();
-        let entries = vec![
-            (None, NodeKind::Container, ResolvedStyle::default(), Vec::new(), None, false),
-            (Some(0), NodeKind::Container, ResolvedStyle::default(), Vec::new(), None, false),
+        let entries: Vec<(Option<usize>, NodeKind, ResolvedStyle, Vec<String>, Option<String>, bool, Option<i32>)> = vec![
+            (None, NodeKind::Container, ResolvedStyle::default(), Vec::new(), None, false, None),
+            (Some(0), NodeKind::Container, ResolvedStyle::default(), Vec::new(), None, false, None),
         ];
         let pkg = write_package(&Scene::build(&entries), (100.0, 50.0), &AtlasSection::default(), &DynamicRuleTable::default());
         let h = loomgui_stage_new(fp.as_ptr() as *const u8, fplen, 100.0, 50.0);
@@ -721,10 +761,10 @@ mod abi_tests {
         use loomgui_core::scene::{NodeKind, Scene};
         use loomgui_core::style::{resolved::ResolvedStyle, dynamic::DynamicRuleTable};
         let (fp, fplen) = font_path();
-        let entries = vec![
-            (None, NodeKind::Container, ResolvedStyle::default(), Vec::new(), None, false),
-            (Some(0), NodeKind::Button, ResolvedStyle::default(), Vec::new(), Some("ok".to_string()), false),
-            (Some(1), NodeKind::Text { content: "OK".into() }, ResolvedStyle::default(), Vec::new(), None, false),
+        let entries: Vec<(Option<usize>, NodeKind, ResolvedStyle, Vec<String>, Option<String>, bool, Option<i32>)> = vec![
+            (None, NodeKind::Container, ResolvedStyle::default(), Vec::new(), None, false, None),
+            (Some(0), NodeKind::Button, ResolvedStyle::default(), Vec::new(), Some("ok".to_string()), false, None),
+            (Some(1), NodeKind::Text { content: "OK".into() }, ResolvedStyle::default(), Vec::new(), None, false, None),
         ];
         let pkg = write_package(&Scene::build(&entries), (100.0, 50.0), &AtlasSection::default(), &DynamicRuleTable::default());
         let h = loomgui_stage_new(fp.as_ptr() as *const u8, fplen, 100.0, 50.0);
@@ -745,13 +785,13 @@ mod abi_tests {
         loomgui_stage_free(h);
     }
 
-    /// v1d.1：version 字符串 == "v1d.1"。
+    /// v1d.2：version 字符串 == "v1d.2"。
     #[test]
-    fn version_is_v1d_1() {
+    fn version_is_v1d_2() {
         let p = loomgui_version();
         let len = (0..).take_while(|&i| unsafe { *p.add(i) != 0 }).count();
         let s = std::str::from_utf8(unsafe { std::slice::from_raw_parts(p, len) }).unwrap();
-        assert_eq!(s, "v1d.1");
+        assert_eq!(s, "v1d.2");
     }
 
     /// v1d.1：EventRecord 仍 20B（drag/longpress 复用 event_type 空位 6-9）、PointerEvent 16B、Canceled=3。
@@ -842,6 +882,95 @@ mod abi_tests {
         let p = loomgui_stage_borrow_events(h, &mut len);
         let recs = unsafe { std::slice::from_raw_parts(p as *const loomgui_core::input::EventRecord, len) };
         assert!(recs.iter().any(|e| e.event_type == EVT_LONG_PRESS), "按住 1.5s → LongPress");
+        loomgui_stage_free(h);
+    }
+
+    /// v1d.2：KeyEvent sizeof 8B + EventRecord 仍 20B / PointerEvent 16B。
+    #[test]
+    fn key_event_sizeof_and_unchanged() {
+        use loomgui_core::input::{EventRecord, KeyEvent, PointerEvent};
+        use std::mem::size_of;
+        assert_eq!(size_of::<KeyEvent>(), 8, "KeyEvent 8B");
+        assert_eq!(size_of::<EventRecord>(), 20, "EventRecord 20B 不变");
+        assert_eq!(size_of::<PointerEvent>(), 16, "PointerEvent 16B 不变");
+    }
+
+    /// v1d.2：EVT 常量值锁（12/13/14/15）。
+    #[test]
+    fn evt_constants_v1d2() {
+        assert_eq!(loomgui_core::input::EVT_KEY_DOWN, 12);
+        assert_eq!(loomgui_core::input::EVT_KEY_UP, 13);
+        assert_eq!(loomgui_core::input::EVT_FOCUS_IN, 14);
+        assert_eq!(loomgui_core::input::EVT_FOCUS_OUT, 15);
+    }
+
+    /// v1d.2：key 事件 round-trip——click-to-focus btn + Enter keydown + tick → borrow_events 含 KeyDown@焦点。
+    #[cfg(feature = "parse")]
+    #[test]
+    fn key_event_round_trip() {
+        use loomgui_core::input::{KeyEvent, EVT_KEY_DOWN};
+        let (fp, fplen) = font_path();
+        let h = loomgui_stage_new(fp.as_ptr() as *const u8, fplen, 200.0, 100.0);
+        assert!(!h.is_null());
+        // btn tabindex=0 可聚焦
+        let html = b"<button class=\"btn\" tabindex=\"0\">OK</button>";
+        let css = b".btn{width:100px;height:50px;}";
+        loomgui_stage_load_html(h, html.as_ptr() as *const u8, html.len(), css.as_ptr() as *const u8, css.len());
+        // click-to-focus：Down@btn → tick → 焦点 btn
+        use loomgui_core::input::{PointerEvent, PointerKind};
+        loomgui_stage_set_input(h, [PointerEvent { kind: PointerKind::Down, x: 50.0, y: 25.0, button: 0, pad: [0, 0], touch_id: -1 }].as_ptr(), 1);
+        loomgui_stage_tick(h, 0.0);
+        // 现在焦点应 btn。再 Enter keydown + tick
+        loomgui_stage_set_key_input(h, [KeyEvent { key_code: 13, modifiers: 0, is_down: true, pad: [0, 0] }].as_ptr(), 1);
+        loomgui_stage_tick(h, 0.0);
+        let mut len = 0usize;
+        let p = loomgui_stage_borrow_events(h, &mut len);
+        let recs = unsafe { std::slice::from_raw_parts(p as *const loomgui_core::input::EventRecord, len) };
+        assert!(recs.iter().any(|e| e.event_type == EVT_KEY_DOWN), "聚焦 btn + Enter down → KeyDown@btn");
+        loomgui_stage_free(h);
+    }
+
+    /// v1d.2：Tab 导航 round-trip——两可聚焦 btn + Tab → borrow_events 含 FocusIn（无 KeyDown）。
+    #[cfg(feature = "parse")]
+    #[test]
+    fn tab_navigation_round_trip() {
+        use loomgui_core::input::{KeyEvent, EVT_FOCUS_IN, EVT_KEY_DOWN, KEY_TAB};
+        let (fp, fplen) = font_path();
+        let h = loomgui_stage_new(fp.as_ptr() as *const u8, fplen, 200.0, 100.0);
+        let html = b"<button class=\"a\" tabindex=\"0\">A</button><button class=\"b\" tabindex=\"0\">B</button>";
+        let css = b"button{width:50px;height:30px;}";
+        loomgui_stage_load_html(h, html.as_ptr() as *const u8, html.len(), css.as_ptr() as *const u8, css.len());
+        // Tab → 焦点首个可聚焦（A，node 1）
+        loomgui_stage_set_key_input(h, [KeyEvent { key_code: KEY_TAB, modifiers: 0, is_down: true, pad: [0, 0] }].as_ptr(), 1);
+        loomgui_stage_tick(h, 0.0);
+        let mut len = 0usize;
+        let p = loomgui_stage_borrow_events(h, &mut len);
+        let recs = unsafe { std::slice::from_raw_parts(p as *const loomgui_core::input::EventRecord, len) };
+        assert!(recs.iter().any(|e| e.event_type == EVT_FOCUS_IN), "Tab → FocusIn");
+        assert!(recs.iter().all(|e| e.event_type != EVT_KEY_DOWN), "Tab 被消费，无 KeyDown");
+        // focused_node 读首个可聚焦（A=node 0：parse 无合成根，两 button 各为 root；
+        // DFS 先序：button.a(0)→Text(1)→button.b(2)→Text(3)；tabindex=0 进 zero 桶 → chain=[0,2]，Tab→0）
+        assert_eq!(loomgui_stage_focused_node(h), 0, "Tab → 焦点 button.a(node 0，首个可聚焦)");
+        loomgui_stage_free(h);
+    }
+
+    /// v1d.2：request_focus + focused_node round-trip。验 R3 修正：request_focus 记 pending，
+    /// 未 tick 时 focused_node 仍 sentinel；tick 后消费生效。
+    #[cfg(feature = "parse")]
+    #[test]
+    fn request_focus_round_trip() {
+        let (fp, fplen) = font_path();
+        let h = loomgui_stage_new(fp.as_ptr() as *const u8, fplen, 200.0, 100.0);
+        let html = b"<button id=\"ok\" tabindex=\"0\">OK</button>";
+        let css = b"button{width:50px;height:30px;}";
+        loomgui_stage_load_html(h, html.as_ptr() as *const u8, html.len(), css.as_ptr() as *const u8, css.len());
+        let id = std::ffi::CString::new("ok").unwrap();
+        let ok_node = loomgui_stage_find_node_by_id(h, id.as_ptr() as *const u8, id.as_bytes().len());
+        assert_ne!(ok_node, 0xFFFF_FFFF, "find ok");
+        loomgui_stage_request_focus(h, ok_node);
+        assert_eq!(loomgui_stage_focused_node(h), 0xFFFF_FFFF, "request_focus 后未 tick → focused_node 仍 sentinel");
+        loomgui_stage_tick(h, 0.0);
+        assert_eq!(loomgui_stage_focused_node(h), ok_node, "tick 后焦点 = ok");
         loomgui_stage_free(h);
     }
 }
