@@ -342,5 +342,39 @@ namespace LoomGUI.Tests
             Assert.IsTrue(recvDouble, "isDoubleClick=true");
             Native.loomgui_stage_free((StageHandle*)stage);
         }
+
+        // ===== v1d.1-T7 新测（drag/longpress BubbleRoute 路由）=====
+
+        /// v1d.1：DragStart 走 BubbleRoute——child(2) DragStart → child Target + parent(1) + root(0) Bubble 都收。
+        [Test]
+        public void DragStart_BubbleRoute_ReachesAncestors()
+        {
+            var (stage, h) = BuildStage();
+            int childHits = 0, parentHits = 0, rootHits = 0;
+            h.AddListener(2, EventType.DragStart, c => childHits++);
+            h.AddListener(1, EventType.DragStart, c => parentHits++);
+            h.AddListener(0, EventType.DragStart, c => rootHits++);
+            DispatchOne(h, new LoomEvent { nodeId = 2, type = EventType.DragStart, clickCount = 0, touch_id = -1, x = 5f, y = 5f });
+            Assert.AreEqual(1, childHits, "DragStart bubble：child 收");
+            Assert.AreEqual(1, parentHits, "DragStart bubble：parent 收");
+            Assert.AreEqual(1, rootHits, "DragStart bubble：root 收");
+            Native.loomgui_stage_free((StageHandle*)stage);
+        }
+
+        /// v1d.1：LongPress 走 BubbleRoute——child(2) LongPress → 祖先链都收。
+        [Test]
+        public void LongPress_BubbleRoute_ReachesAncestors()
+        {
+            var (stage, h) = BuildStage();
+            int childHits = 0, parentHits = 0, rootHits = 0;
+            h.AddListener(2, EventType.LongPress, c => childHits++);
+            h.AddListener(1, EventType.LongPress, c => parentHits++);
+            h.AddListener(0, EventType.LongPress, c => rootHits++);
+            DispatchOne(h, new LoomEvent { nodeId = 2, type = EventType.LongPress, clickCount = 0, touch_id = -1, x = 0, y = 0 });
+            Assert.AreEqual(1, childHits, "LongPress bubble：child 收");
+            Assert.AreEqual(1, parentHits, "LongPress bubble：parent 收");
+            Assert.AreEqual(1, rootHits, "LongPress bubble：root 收");
+            Native.loomgui_stage_free((StageHandle*)stage);
+        }
     }
 }
