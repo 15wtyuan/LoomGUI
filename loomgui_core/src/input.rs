@@ -26,6 +26,25 @@ pub enum PointerKind {
     Canceled = 3,   // v1c.4：触摸 TouchPhase.Canceled（鼠标无）
 }
 
+/// v1d.2：键盘输入事件（FFI POD）。C# set_key_input 推一组；core process_keys 产 keydown/up EventRecord。
+/// 8B：key_code@0(4) + modifiers@4(1) + is_down@5(1) + pad@6(2)。
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct KeyEvent {
+    pub key_code: u32,   // KeyCode 枚举值（Unity KeyCode 转 u32；core 不解释语义，只透传 + Tab 判定）
+    pub modifiers: u8,   // bit0=shift / bit1=ctrl / bit2=alt
+    pub is_down: bool,   // true=按下→keydown；false=松开→keyup
+    pub pad: [u8; 2],
+}
+
+/// v1d.2 modifiers 位掩码（KeyEvent.modifiers）。
+pub const MOD_SHIFT: u8 = 0x01;
+pub const MOD_CTRL: u8 = 0x02;
+pub const MOD_ALT: u8 = 0x04;
+
+/// v1d.2：Tab 的 KeyCode 值（Unity KeyCode.Tab = 9）。core 内判定 Tab 导航用。
+pub const KEY_TAB: u32 = 9;
+
 /// 事件输出（FFI 扁平 POD）。event_type: 0=Down,1=Up,2=Move,3=Click,4=RollOver,5=RollOut。
 /// v1c.3：+touch_id:i32 @8（破 v1c.2 零改，16→20 字节）。v1c.4：pad[0]→click_count（20B 不变）。
 #[repr(C)]
@@ -50,6 +69,10 @@ pub const EVT_DRAG_START: u8 = 6;
 pub const EVT_DRAG_MOVE: u8 = 7;
 pub const EVT_DRAG_END: u8 = 8;
 pub const EVT_LONG_PRESS: u8 = 9;
+pub const EVT_KEY_DOWN: u8 = 12;
+pub const EVT_KEY_UP: u8 = 13;
+pub const EVT_FOCUS_IN: u8 = 14;
+pub const EVT_FOCUS_OUT: u8 = 15;
 
 const CLICK_THRESHOLD_MOUSE: f32 = 10.0;   // fgui _clickTestThreshold(mouse)，per-axis
 const CLICK_THRESHOLD_TOUCH: f32 = 50.0;   // fgui _clickTestThreshold(touch)
@@ -176,6 +199,134 @@ fn ancestor_chain(scene: &Scene, target: Option<NodeId>) -> Vec<NodeId> {
         cur = scene.nodes[id.0].parent;
     }
     chain
+}
+
+/// v1d.2：设焦点为 new（None=清除焦点）。发 FocusOut@旧焦点 + FocusIn@新焦点。
+/// 模块级 pub(crate) 自由函数——process（click-to-focus）+ process_keys（Tab）+ Stage（pending_focus_request）共用。
+/// 写 scene.focused_node + node.focused 标志 + 推 FocusOut/FocusIn 进 out。old==new → no-op。
+pub(crate) fn focus_node(scene: &mut Scene, new: Option<NodeId>, out: &mut Vec<EventRecord>) {
+    let old = scene.focused_node;
+    if old == new {
+        return; // 无变化不发
+    }
+    if let Some(o) = old {
+        if o.0 < scene.nodes.len() {
+            scene.nodes[o.0].focused = false;
+        }
+        out.push(EventRecord {
+            node_id: o.0 as u32,
+            event_type: EVT_FOCUS_OUT,
+            click_count: 0,
+            pad: [0, 0],
+            touch_id: 0,
+            x: 0.0,
+            y: 0.0,
+        });
+    }
+    if let Some(n) = new {
+        if n.0 < scene.nodes.len() {
+            scene.nodes[n.0].focused = true;
+        }
+        out.push(EventRecord {
+            node_id: n.0 as u32,
+            event_type: EVT_FOCUS_IN,
+            click_count: 0,
+            pad: [0, 0],
+            touch_id: 0,
+            x: 0.0,
+            y: 0.0,
+        });
+    }
+    scene.focused_node = new;
+}
+
+/// v1d.2：DFS 先序收集 tabindex>=0 且非 disabled 节点，分桶 positive(>0)/zero(==0)。
+fn dfs_collect(scene: &Scene, id: NodeId, positive: &mut Vec<(i32, NodeId)>, zero: &mut Vec<NodeId>) {
+    if id.0 >= scene.nodes.len() {
+        return;
+    }
+    let n = &scene.nodes[id.0];
+    if !n.disabled {
+        match n.tabindex {
+            Some(t) if t > 0 => positive.push((t, id)),
+            Some(0) => zero.push(id),
+            _ => {} // Some(-1)/None 不进链
+        }
+    }
+    // 先序：先本节点入桶，再递归 children（DOM 序）
+    let children: Vec<NodeId> = n.children.clone();
+    for c in children {
+        dfs_collect(scene, c, positive, zero);
+    }
+}
+
+/// v1d.2：构造 Tab 链——正整数按 tabindex 升序（stable，同值保 DFS 序），后接 0 组（DFS 序）。
+/// 照 DOM：正整数显式序先于 0 组。tabindex=-1/None/disabled 不进。
+pub(crate) fn build_tab_chain(scene: &Scene) -> Vec<NodeId> {
+    let mut positive: Vec<(i32, NodeId)> = Vec::new();
+    let mut zero: Vec<NodeId> = Vec::new();
+    for root in &scene.roots {
+        dfs_collect(scene, *root, &mut positive, &mut zero);
+    }
+    positive.sort_by_key(|(t, _)| *t); // stable：同 tabindex 保 DFS 序
+    positive.into_iter().map(|(_, n)| n).chain(zero.into_iter()).collect()
+}
+
+/// v1d.2：从 current 焦点算 Tab/Shift+Tab 下一个焦点。空链 → None。
+/// current 在链中 → 取前/后；不在（或 None）→ 链首(forward)/链尾(backward)；边界 wrap。
+fn next_focus(chain: &[NodeId], current: Option<NodeId>, backward: bool) -> Option<NodeId> {
+    if chain.is_empty() {
+        return None;
+    }
+    let idx = current.and_then(|c| chain.iter().position(|n| *n == c));
+    let next = match idx {
+        Some(i) => {
+            let len = chain.len();
+            let ni = if backward {
+                (i + len - 1) % len
+            } else {
+                (i + 1) % len
+            };
+            chain[ni]
+        }
+        None => {
+            // current 不在链 → forward 取链首，backward 取链尾
+            if backward { *chain.last().unwrap() } else { chain[0] }
+        }
+    };
+    Some(next)
+}
+
+/// v1d.2：处理键盘事件——keydown/up（有焦点才发）+ Tab/Shift+Tab 导航（focus_node）。
+/// Stage tick 在 pointer process 后调。Tab 被导航消费（不发 keydown，照 DOM Tab 默认动作=移焦）。
+pub(crate) fn process_keys(scene: &mut Scene, keys: &[KeyEvent], out: &mut Vec<EventRecord>) {
+    for ke in keys {
+        let focused = scene.focused_node;
+        if ke.is_down && ke.key_code == KEY_TAB {
+            // Tab 导航
+            let chain = build_tab_chain(scene);
+            if chain.is_empty() {
+                continue; // 无可聚焦节点 → Tab 无操作（不发 keydown）
+            }
+            let backward = (ke.modifiers & MOD_SHIFT) != 0;
+            let next = next_focus(&chain, focused, backward);
+            focus_node(scene, next, out); // 发 FocusOut(旧)+FocusIn(新)
+            continue; // Tab 被消费，不发 keydown
+        }
+        // 普通 keydown/up：有焦点才发（无焦点丢弃，spec §1）
+        if let Some(n) = focused {
+            let event_type = if ke.is_down { EVT_KEY_DOWN } else { EVT_KEY_UP };
+            out.push(EventRecord {
+                node_id: n.0 as u32,
+                event_type,
+                click_count: 0,
+                pad: [ke.modifiers, 0],          // pad[0]=modifiers
+                touch_id: ke.key_code as i32,    // touch_id 复用装 key_code（u32 bit pattern → i32）
+                x: 0.0,
+                y: 0.0,
+            });
+        }
+    }
 }
 
 impl PointerState {
@@ -389,6 +540,17 @@ impl PointerState {
                         .copied();
                     slot.drag_testing = slot.drag_target.is_some();
                     slot.dragging = false;
+                    // v1d.2：click-to-focus——pointer-down 命中 tabindex>=0 节点 → 聚焦（照 fgui+DOM）。
+                    // 沿 down_targets（leaf 优先，同 drag_target 模式）找最近可聚焦非 disabled 节点。
+                    // 不可聚焦/`-1` → 不夺焦（照 DOM：点空白不 blur）。
+                    let focus_target = slot.down_targets.iter()
+                        .find(|&&n| n.0 < scene.nodes.len()
+                            && !scene.nodes[n.0].disabled
+                            && matches!(scene.nodes[n.0].tabindex, Some(t) if t >= 0))
+                        .copied();
+                    if let Some(t) = focus_target {
+                        focus_node(scene, Some(t), &mut out);
+                    }
                     if let Some(n) = hit {
                         if !scene.nodes[n.0].disabled {
                             out.push(EventRecord {
@@ -640,6 +802,7 @@ mod tests {
             roots: vec![NodeId(0)],
             nodes: vec![root, btn],
             dynamic_rules: Default::default(),
+            focused_node: None,
         }
     }
 
@@ -665,6 +828,7 @@ mod tests {
             roots: vec![NodeId(0)],
             nodes: vec![root, btn, txt],
             dynamic_rules: Default::default(),
+            focused_node: None,
         }
     }
 
@@ -862,7 +1026,7 @@ mod tests {
         child.layout_rect = Rect { x: 0.0, y: 0.0, w: 50.0, h: 50.0 };
         parent.children = vec![NodeId(2)];
         root.children = vec![NodeId(1)];
-        Scene { roots: vec![NodeId(0)], nodes: vec![root, parent, child], dynamic_rules: Default::default() }
+        Scene { roots: vec![NodeId(0)], nodes: vec![root, parent, child], dynamic_rules: Default::default(), focused_node: None }
     }
 
     #[test]
@@ -890,7 +1054,7 @@ mod tests {
         b.id = NodeId(2); b.parent = Some(NodeId(0));
         b.layout_rect = Rect { x: 100.0, y: 100.0, w: 50.0, h: 50.0 };
         root.children = vec![NodeId(1), NodeId(2)];
-        let mut s = Scene { roots: vec![NodeId(0)], nodes: vec![root, a, b], dynamic_rules: Default::default() };
+        let mut s = Scene { roots: vec![NodeId(0)], nodes: vec![root, a, b], dynamic_rules: Default::default(), focused_node: None };
         let mut ps = PointerState::new();
         ps.process(&mut s, &[PointerEvent { kind: PointerKind::Move, x: 25.0, y: 25.0, button: 0, pad: [0, 0], touch_id: -1 }]);  // 命中 A
         let out = ps.process(&mut s, &[PointerEvent { kind: PointerKind::Move, x: 125.0, y: 125.0, button: 0, pad: [0, 0], touch_id: -1 }]);  // 命中 B
@@ -948,7 +1112,7 @@ mod tests {
         let mut b = Node::default();
         b.id = NodeId(2); b.parent = Some(NodeId(0)); b.layout_rect = Rect { x: 100.0, y: 0.0, w: 50.0, h: 50.0 };
         root.children = vec![NodeId(1), NodeId(2)];
-        let mut s = Scene { roots: vec![NodeId(0)], nodes: vec![root, a, b], dynamic_rules: Default::default() };
+        let mut s = Scene { roots: vec![NodeId(0)], nodes: vec![root, a, b], dynamic_rules: Default::default(), focused_node: None };
         let mut ps = PointerState::new();
         // touch_id=1 Down 在 A，touch_id=2 Down 在 B（同帧）
         let out = ps.process(&mut s, &[
@@ -964,7 +1128,7 @@ mod tests {
     fn touch_alloc_fourth_dropped() {
         let mut root = Node::default();
         root.id = NodeId(0); root.layout_rect = Rect { x: 0.0, y: 0.0, w: 200.0, h: 200.0 };
-        let mut s = Scene { roots: vec![NodeId(0)], nodes: vec![root], dynamic_rules: Default::default() };
+        let mut s = Scene { roots: vec![NodeId(0)], nodes: vec![root], dynamic_rules: Default::default(), focused_node: None };
         let mut ps = PointerState::new();
         // touch_id 1..5 全 Down（4 触摸槽 slot1-4，第 5 指应丢）
         let mut evs = Vec::new();
@@ -1007,7 +1171,7 @@ mod tests {
         let mut b = Node::default();
         b.id = NodeId(2); b.parent = Some(NodeId(0)); b.layout_rect = Rect { x: 100.0, y: 0.0, w: 50.0, h: 50.0 };
         root.children = vec![NodeId(1), NodeId(2)];
-        let mut s = Scene { roots: vec![NodeId(0)], nodes: vec![root, a, b], dynamic_rules: Default::default() };
+        let mut s = Scene { roots: vec![NodeId(0)], nodes: vec![root, a, b], dynamic_rules: Default::default(), focused_node: None };
         let mut ps = PointerState::new();
         ps.process(&mut s, &[
             PointerEvent { kind: PointerKind::Move, x: 25.0, y: 25.0, button: 0, pad: [0, 0], touch_id: 1 },  // 命中 A
@@ -1027,7 +1191,7 @@ mod tests {
         let mut b = Node::default();
         b.id = NodeId(2); b.parent = Some(NodeId(0)); b.kind = NodeKind::Button; b.layout_rect = Rect { x: 100.0, y: 0.0, w: 50.0, h: 50.0 };
         root.children = vec![NodeId(1), NodeId(2)];
-        let mut s = Scene { roots: vec![NodeId(0)], nodes: vec![root, a, b], dynamic_rules: Default::default() };
+        let mut s = Scene { roots: vec![NodeId(0)], nodes: vec![root, a, b], dynamic_rules: Default::default(), focused_node: None };
         let mut ps = PointerState::new();
         ps.process(&mut s, &[
             PointerEvent { kind: PointerKind::Down, x: 25.0, y: 25.0, button: 0, pad: [0, 0], touch_id: 1 },
@@ -1050,7 +1214,7 @@ mod tests {
         let mut b = Node::default();
         b.id = NodeId(2); b.parent = Some(NodeId(0)); b.layout_rect = Rect { x: 100.0, y: 0.0, w: 50.0, h: 50.0 };
         root.children = vec![NodeId(1), NodeId(2)];
-        let mut s = Scene { roots: vec![NodeId(0)], nodes: vec![root, a, b], dynamic_rules: Default::default() };
+        let mut s = Scene { roots: vec![NodeId(0)], nodes: vec![root, a, b], dynamic_rules: Default::default(), focused_node: None };
         let mut ps = PointerState::new();
         let out = ps.process(&mut s, &[
             PointerEvent { kind: PointerKind::Move, x: 25.0, y: 25.0, button: 0, pad: [0, 0], touch_id: 1 },
@@ -1194,14 +1358,14 @@ mod tests {
         child.id = NodeId(1); child.parent = Some(NodeId(0));
         child.layout_rect = Rect { x: 0.0, y: 0.0, w: 50.0, h: 50.0 };
         root.children = vec![NodeId(1)];
-        let mut s1 = Scene { roots: vec![NodeId(0)], nodes: vec![root, child], dynamic_rules: Default::default() };
+        let mut s1 = Scene { roots: vec![NodeId(0)], nodes: vec![root, child], dynamic_rules: Default::default(), focused_node: None };
         let mut ps = PointerState::new();
         // Down@(25,25)→child；down_targets=[child(1),root(0)]
         ps.process(&mut s1, &[PointerEvent { kind: PointerKind::Down, x: 25.0, y: 25.0, button: 0, pad: [0, 0], touch_id: -1 }]);
         // scene2: 仅 root（child 移除）——NodeId(1) 越界
         let mut root2 = Node::default();
         root2.id = NodeId(0); root2.layout_rect = Rect { x: 0.0, y: 0.0, w: 200.0, h: 200.0 };
-        let mut s2 = Scene { roots: vec![NodeId(0)], nodes: vec![root2], dynamic_rules: Default::default() };
+        let mut s2 = Scene { roots: vec![NodeId(0)], nodes: vec![root2], dynamic_rules: Default::default(), focused_node: None };
         let out = ps.process(&mut s2, &[PointerEvent { kind: PointerKind::Up, x: 25.0, y: 25.0, button: 0, pad: [0, 0], touch_id: -1 }]);
         // click_test：down_targets[0]=NodeId(1) 越界→走祖先；current_hit=root(0) in down_targets → Click@root
         assert!(out.iter().any(|e| e.event_type == EVT_CLICK && e.node_id == 0),
@@ -1330,7 +1494,7 @@ mod tests {
         btn2.id = NodeId(1); btn2.parent = Some(NodeId(0)); btn2.kind = NodeKind::Button;
         btn2.layout_rect = Rect { x: 150.0, y: 150.0, w: 100.0, h: 100.0 };
         root2.children = vec![NodeId(1)];
-        let mut s2 = Scene { roots: vec![NodeId(0)], nodes: vec![root2, btn2], dynamic_rules: Default::default() };
+        let mut s2 = Scene { roots: vec![NodeId(0)], nodes: vec![root2, btn2], dynamic_rules: Default::default(), focused_node: None };
         let out = ps.process(&mut s2, &[]);   // 空事件 → stationary follow
         assert!(out.iter().any(|e| e.event_type == EVT_ROLL_OUT && e.node_id == 1),
             "btn 移走（静止光标）→ RollOut(btn)");
@@ -1356,6 +1520,7 @@ mod tests {
             roots: vec![NodeId(0)],
             nodes: vec![root, btn],
             dynamic_rules: Default::default(),
+            focused_node: None,
         }
     }
 
@@ -1552,5 +1717,205 @@ mod tests {
         ps.time_s = 1.5;
         let out = ps.process(&mut s, &[]);
         assert!(!out.iter().any(|e| e.event_type == EVT_LONG_PRESS), "disabled → 不发 LongPress");
+    }
+
+    // ===== v1d.2 T4: 焦点 + 键盘 =====
+
+    /// root + btnA(tabindex=0) + btnB(tabindex=0)，均 @ 各位可区分。
+    fn two_focusable_scene() -> Scene {
+        let mut root = Node::default();
+        root.id = NodeId(0);
+        root.layout_rect = Rect { x: 0.0, y: 0.0, w: 200.0, h: 200.0 };
+        let mut a = Node::default();
+        a.id = NodeId(1); a.parent = Some(NodeId(0)); a.kind = NodeKind::Button;
+        a.tabindex = Some(0);
+        a.layout_rect = Rect { x: 0.0, y: 0.0, w: 50.0, h: 50.0 };
+        let mut b = Node::default();
+        b.id = NodeId(2); b.parent = Some(NodeId(0)); b.kind = NodeKind::Button;
+        b.tabindex = Some(0);
+        b.layout_rect = Rect { x: 100.0, y: 0.0, w: 50.0, h: 50.0 };
+        root.children = vec![NodeId(1), NodeId(2)];
+        Scene { roots: vec![NodeId(0)], nodes: vec![root, a, b], dynamic_rules: Default::default(), focused_node: None }
+    }
+
+    #[test]
+    fn focus_node_emits_focusout_then_focusin() {
+        let mut s = two_focusable_scene();
+        let mut out = Vec::new();
+        // 先聚焦 A
+        focus_node(&mut s, Some(NodeId(1)), &mut out);
+        assert!(s.nodes[1].focused, "A focused=true");
+        assert_eq!(s.focused_node, Some(NodeId(1)));
+        // 聚焦 B → FocusOut@A + FocusIn@B
+        focus_node(&mut s, Some(NodeId(2)), &mut out);
+        assert!(!s.nodes[1].focused, "A focused=false（失焦）");
+        assert!(s.nodes[2].focused, "B focused=true");
+        assert_eq!(s.focused_node, Some(NodeId(2)));
+        // out 含 [FocusIn@A, FocusOut@A, FocusIn@B]
+        assert!(out.iter().any(|e| e.event_type == EVT_FOCUS_IN && e.node_id == 1), "FocusIn@A");
+        assert!(out.iter().any(|e| e.event_type == EVT_FOCUS_OUT && e.node_id == 1), "FocusOut@A");
+        assert!(out.iter().any(|e| e.event_type == EVT_FOCUS_IN && e.node_id == 2), "FocusIn@B");
+    }
+
+    #[test]
+    fn focus_node_same_target_no_event() {
+        let mut s = two_focusable_scene();
+        let mut out = Vec::new();
+        focus_node(&mut s, Some(NodeId(1)), &mut out);
+        let mut out2 = Vec::new();
+        focus_node(&mut s, Some(NodeId(1)), &mut out2);   // 同目标
+        assert!(out2.is_empty(), "同目标重复聚焦 → 不发事件");
+    }
+
+    #[test]
+    fn focus_node_clear_blur() {
+        let mut s = two_focusable_scene();
+        let mut out = Vec::new();
+        focus_node(&mut s, Some(NodeId(1)), &mut out);
+        focus_node(&mut s, None, &mut out);   // 清焦点
+        assert_eq!(s.focused_node, None);
+        assert!(!s.nodes[1].focused);
+        assert!(out.iter().any(|e| e.event_type == EVT_FOCUS_OUT && e.node_id == 1), "blur → FocusOut@A");
+    }
+
+    /// root + A(tabindex=2) + B(tabindex=1) + C(tabindex=0) + D(tabindex=-1) + E(无属性) + disabled F(tabindex=0)
+    fn tab_chain_scene() -> Scene {
+        let mut root = Node::default();
+        root.id = NodeId(0);
+        root.layout_rect = Rect { x: 0.0, y: 0.0, w: 400.0, h: 200.0 };
+        let mk = |id: usize, ti: Option<i32>, disabled: bool| {
+            let mut n = Node::default();
+            n.id = NodeId(id); n.parent = Some(NodeId(0)); n.kind = NodeKind::Button;
+            n.tabindex = ti; n.disabled = disabled;
+            n.layout_rect = Rect { x: id as f32 * 50.0, y: 0.0, w: 40.0, h: 40.0 };
+            n
+        };
+        let a = mk(1, Some(2), false);
+        let b = mk(2, Some(1), false);
+        let c = mk(3, Some(0), false);
+        let d = mk(4, Some(-1), false);
+        let e = mk(5, None, false);
+        let f = mk(6, Some(0), true);   // disabled
+        root.children = vec![NodeId(1), NodeId(2), NodeId(3), NodeId(4), NodeId(5), NodeId(6)];
+        Scene { roots: vec![NodeId(0)], nodes: vec![root, a, b, c, d, e, f], dynamic_rules: Default::default(), focused_node: None }
+    }
+
+    #[test]
+    fn tab_chain_orders_by_tabindex_then_dfs() {
+        let s = tab_chain_scene();
+        let chain = build_tab_chain(&s);
+        // 正整数组 [B(tabindex=1), A(tabindex=2)] 升序，后接 0 组 [C(tabindex=0)]。
+        // D(-1)/E(None)/F(disabled) 不进。
+        let ids: Vec<usize> = chain.iter().map(|n| n.0).collect();
+        assert_eq!(ids, vec![2, 1, 3], "链序：正整数升序(B=1,A=2)后接 0 组(C=0)");
+    }
+
+    #[test]
+    fn tab_forward_cycles_through_chain() {
+        let mut s = tab_chain_scene();
+        let mut out = Vec::new();
+        // 焦点 None → Tab → B(2)（链首）
+        process_keys(&mut s, &[KeyEvent { key_code: KEY_TAB, modifiers: 0, is_down: true, pad: [0, 0] }], &mut out);
+        assert_eq!(s.focused_node, Some(NodeId(2)), "首次 Tab → 链首 B");
+        // Tab → A(1)
+        process_keys(&mut s, &[KeyEvent { key_code: KEY_TAB, modifiers: 0, is_down: true, pad: [0, 0] }], &mut out);
+        assert_eq!(s.focused_node, Some(NodeId(1)), "Tab → A");
+        // Tab → C(3) → Tab → wrap 回 B(2)
+        process_keys(&mut s, &[KeyEvent { key_code: KEY_TAB, modifiers: 0, is_down: true, pad: [0, 0] }], &mut out);
+        assert_eq!(s.focused_node, Some(NodeId(3)), "Tab → C");
+        process_keys(&mut s, &[KeyEvent { key_code: KEY_TAB, modifiers: 0, is_down: true, pad: [0, 0] }], &mut out);
+        assert_eq!(s.focused_node, Some(NodeId(2)), "链尾 Tab → wrap 回链首 B");
+    }
+
+    #[test]
+    fn shift_tab_backward_cycles() {
+        let mut s = tab_chain_scene();
+        let mut out = Vec::new();
+        // 焦点 None → Shift+Tab → 链尾 C(3)
+        process_keys(&mut s, &[KeyEvent { key_code: KEY_TAB, modifiers: MOD_SHIFT, is_down: true, pad: [0, 0] }], &mut out);
+        assert_eq!(s.focused_node, Some(NodeId(3)), "Shift+Tab 从 None → 链尾 C");
+        process_keys(&mut s, &[KeyEvent { key_code: KEY_TAB, modifiers: MOD_SHIFT, is_down: true, pad: [0, 0] }], &mut out);
+        assert_eq!(s.focused_node, Some(NodeId(1)), "Shift+Tab → A");
+        process_keys(&mut s, &[KeyEvent { key_code: KEY_TAB, modifiers: MOD_SHIFT, is_down: true, pad: [0, 0] }], &mut out);
+        assert_eq!(s.focused_node, Some(NodeId(2)), "Shift+Tab → B");
+        process_keys(&mut s, &[KeyEvent { key_code: KEY_TAB, modifiers: MOD_SHIFT, is_down: true, pad: [0, 0] }], &mut out);
+        assert_eq!(s.focused_node, Some(NodeId(3)), "链首 Shift+Tab → wrap 回链尾 C");
+    }
+
+    #[test]
+    fn tab_empty_chain_no_op() {
+        // 无可聚焦节点 → Tab 无操作（不发 keydown，不改焦点）
+        let mut s = one_button_scene();   // btn 无 tabindex
+        let mut out = Vec::new();
+        process_keys(&mut s, &[KeyEvent { key_code: KEY_TAB, modifiers: 0, is_down: true, pad: [0, 0] }], &mut out);
+        assert_eq!(s.focused_node, None, "无可聚焦 → Tab 不改焦点");
+        assert!(out.is_empty(), "空链 Tab → 无事件");
+    }
+
+    #[test]
+    fn keydown_emitted_to_focused_node() {
+        let mut s = two_focusable_scene();
+        let mut out = Vec::new();
+        focus_node(&mut s, Some(NodeId(1)), &mut out);   // 聚焦 A
+        out.clear();
+        // Enter keydown（KeyCode.Return=13，core 不解释，只透传）
+        process_keys(&mut s, &[KeyEvent { key_code: 13, modifiers: MOD_CTRL, is_down: true, pad: [0, 0] }], &mut out);
+        let kd = out.iter().find(|e| e.event_type == EVT_KEY_DOWN).expect("keydown");
+        assert_eq!(kd.node_id, 1, "keydown@焦点 A");
+        assert_eq!(kd.touch_id, 13, "key_code 复用 touch_id");
+        assert_eq!(kd.pad[0], MOD_CTRL, "modifiers 复用 pad[0]");
+    }
+
+    #[test]
+    fn keydown_no_focus_dropped() {
+        let mut s = two_focusable_scene();
+        let mut out = Vec::new();
+        // 无焦点 + keydown → 丢弃
+        process_keys(&mut s, &[KeyEvent { key_code: 13, modifiers: 0, is_down: true, pad: [0, 0] }], &mut out);
+        assert!(out.iter().all(|e| e.event_type != EVT_KEY_DOWN), "无焦点 keydown 丢弃");
+    }
+
+    #[test]
+    fn tab_consumed_no_keydown() {
+        let mut s = two_focusable_scene();
+        let mut out = Vec::new();
+        process_keys(&mut s, &[KeyEvent { key_code: KEY_TAB, modifiers: 0, is_down: true, pad: [0, 0] }], &mut out);
+        assert!(out.iter().all(|e| e.event_type != EVT_KEY_DOWN), "Tab 被导航消费，不发 keydown");
+        assert!(out.iter().any(|e| e.event_type == EVT_FOCUS_IN), "Tab → FocusIn");
+    }
+
+    #[test]
+    fn click_to_focus_focusable_node() {
+        // pointer-down 命中 tabindex=0 节点 → FocusIn@该节点
+        let mut s = two_focusable_scene();   // A(1)@0,0,50,50 tabindex=0
+        let mut ps = PointerState::new();
+        let out = ps.process(&mut s, &[PointerEvent { kind: PointerKind::Down, x: 25.0, y: 25.0, button: 0, pad: [0, 0], touch_id: -1 }]);
+        assert!(out.iter().any(|e| e.event_type == EVT_FOCUS_IN && e.node_id == 1), "down@A(tabindex=0) → FocusIn@A");
+        assert_eq!(s.focused_node, Some(NodeId(1)));
+    }
+
+    #[test]
+    fn click_non_focusable_no_blur() {
+        // 焦点 A，pointer-down 不可聚焦节点（btn 无 tabindex）→ 不夺焦（不发 FocusOut）
+        let mut s = one_button_scene();   // btn(1) 无 tabindex，root(0) 无 tabindex
+        let mut ps = PointerState::new();
+        // 先聚焦 root（编程模拟）——root 无 tabindex，但 focus_node 可强制（测 click-to-focus 不夺焦）
+        let mut tmp = Vec::new();
+        focus_node(&mut s, Some(NodeId(0)), &mut tmp);
+        // down@btn(1)（不可聚焦）→ 不应 FocusOut root
+        let out = ps.process(&mut s, &[PointerEvent { kind: PointerKind::Down, x: 50.0, y: 50.0, button: 0, pad: [0, 0], touch_id: -1 }]);
+        assert!(out.iter().all(|e| e.event_type != EVT_FOCUS_OUT), "down 不可聚焦节点 → 不夺焦（无 FocusOut）");
+        assert_eq!(s.focused_node, Some(NodeId(0)), "焦点保持 root");
+    }
+
+    #[test]
+    fn click_disabled_focusable_no_focus() {
+        // disabled 可聚焦节点 → pointer-down 不聚焦
+        let mut s = two_focusable_scene();
+        s.nodes[1].disabled = true;   // A disabled（tabindex=0）
+        let mut ps = PointerState::new();
+        let out = ps.process(&mut s, &[PointerEvent { kind: PointerKind::Down, x: 25.0, y: 25.0, button: 0, pad: [0, 0], touch_id: -1 }]);
+        assert!(out.iter().all(|e| e.event_type != EVT_FOCUS_IN), "disabled 可聚焦 → down 不聚焦");
+        assert_eq!(s.focused_node, None);
     }
 }

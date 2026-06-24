@@ -78,6 +78,7 @@ mod tests {
             roots: vec![NodeId(0)],
             nodes: vec![root, a, b],
             dynamic_rules: Default::default(),
+            focused_node: None,
         }
     }
 
@@ -87,6 +88,7 @@ mod tests {
             roots: vec![],
             nodes: vec![],
             dynamic_rules: Default::default(),
+            focused_node: None,
         };
         assert_eq!(hit_test(&s, (10.0, 10.0)), None);
     }
