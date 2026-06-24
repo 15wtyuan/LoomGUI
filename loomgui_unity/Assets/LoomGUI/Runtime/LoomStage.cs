@@ -48,6 +48,10 @@ namespace LoomGUI
         // OnGUI 左上角 FPS 读数（1/Time.smoothDeltaTime + pool 节点数）。stress500 或本开关任一为真即显。
         [SerializeField] bool _showFps;
 
+        // v1d.1：safe-area 根 letterbox（默认 on）。on 时根 shrink-to-fit 到 Screen.safeArea，
+        // 内容自动避刘海；off 时回归全屏（v1c 行为）。无刘海屏 safeArea==全屏 → 零回归。
+        [SerializeField] bool _safeArea = true;
+
         // csbindgen 生成的 Native 用类型化指针 StageHandle*（非 IntPtr）；
         // 借出长度参数是 nuint*（非 ulong*）。故本类标 unsafe 并持 StageHandle*。
         StageHandle* _stage;
@@ -373,25 +377,44 @@ namespace LoomGUI
         }
 
         /// <summary>
-        /// 根 Stage transform：scale=(sf,-sf,sf)、position=(-sw/2, sh/2, 0)。
-        /// UI 相机：正交、orthoSize=sh/2、cullingMask=1&lt;&lt;LoomUI、pos=(0,0,-10) 看向 z=0。
-        /// 校验：design 点 (dx,dy) → 世界 (-sw/2 + dx·sf, sh/2 − dy·sf)。
+        /// v1d.1：design→screen 根变换（sf + rootPos）。_safeArea=true 时 shrink-to-fit 到 Screen.safeArea
+        /// 并居中（safe 区外 letterbox）；false 时全屏（v1c 行为）。
+        /// 相机 orthoSize 不变（仍=sh/2 覆盖全屏），root transform 把 design 映射进 safe 区。
+        /// ScreenToDesign 用同一 (sf, rootPos) 逆映射（safe 区直接映射等价），保触摸对齐。
+        /// 验证：safe==全屏 → offX=offY=0 → rootPos=(-sw/2, sh/2)（v1c 值）✓
         /// </summary>
+        (float sf, Vector3 rootPos) ComputeRootTransform()
+        {
+            float sw = Screen.width, sh = Screen.height;
+            Rect area = _safeArea ? Screen.safeArea : new Rect(0, 0, sw, sh);
+            // 防御：safeArea 可能零宽高（编辑器未配屏）→ 退回全屏
+            if (area.width <= 0f || area.height <= 0f) area = new Rect(0, 0, sw, sh);
+            // 注：shrink-to-fit（取较小缩放比，保证完整可见 + 留白 letterbox），
+            // ≈ CanvasScaler MatchWidthOrHeight 在 match≈0.5 但带 letterboxing。
+            // v1d responsive 再重审（可能改为 cover/contain 选项）。
+            float sf = Mathf.Min(area.width / _designSize.x, area.height / _designSize.y);
+            // safe 区中心 → 屏幕中心偏移。屏幕原点在 GO 空间是 (-sw/2, sh/2)（照 v1c localPosition）。
+            // safeArea 是左下原点像素 Rect；safe 中心 = (area.x + area.width/2, area.y + area.height/2)。
+            // 屏幕中心 = (sw/2, sh/2)。偏移 = safeCenter - screenCenter。
+            float offX = (area.x + area.width * 0.5f) - sw * 0.5f;
+            float offY = (area.y + area.height * 0.5f) - sh * 0.5f;
+            // v1c rootPos = (-sw/2, sh/2)；加偏移：(-sw/2 + offX, sh/2 + offY)。
+            Vector3 rootPos = new Vector3(-sw * 0.5f + offX, sh * 0.5f + offY, 0f);
+            return (sf, rootPos);
+        }
+
         void ConfigureTransforms()
         {
             float sw = Screen.width, sh = Screen.height;
-            // 注：这是 shrink-to-fit（取较小缩放比，保证完整可见 + 留白 letterbox），
-            // ≈ CanvasScaler MatchWidthOrHeight 在 match≈0.5 但带 letterboxing，
-            // 并非字面意义的 MatchWidthOrHeight 插值缩放。v1d responsive 再重审（可能改为 cover/contain 选项）。
-            float sf = Mathf.Min(sw / _designSize.x, sh / _designSize.y);
+            var (sf, rootPos) = ComputeRootTransform();
 
             transform.localScale = new Vector3(sf, -sf, sf);
-            transform.localPosition = new Vector3(-sw / 2f, sh / 2f, 0f);
+            transform.localPosition = rootPos;
 
             if (_uiCamera != null)
             {
                 _uiCamera.orthographic = true;
-                _uiCamera.orthographicSize = sh / 2f;
+                _uiCamera.orthographicSize = sh / 2f;   // v1d.1：不变（覆盖全屏，root 映射进 safe 区）
                 _uiCamera.cullingMask = 1 << LoomUILayer;
                 _uiCamera.clearFlags = CameraClearFlags.Depth;
                 _uiCamera.nearClipPlane = 0.1f;   // Unity 要求 near>0；相机 z=-10 看向 z=0 内容
@@ -417,7 +440,7 @@ namespace LoomGUI
 
             // v1c.1：输入采集 → set_input（tick 前——input 管线消费本帧输入产事件）。
             if (_inputCollector != null)
-                _inputCollector.Collect((System.IntPtr)_stage, _designSize);
+                _inputCollector.Collect((System.IntPtr)_stage, _designSize, _safeArea);
 
             // tick → build_blob 写入 Rust 拥有缓存。v1c.4：dt 累积进 time_s（双击窗口）；用
             // unscaledDeltaTime（照 fgui Time.unscaledTime，暂停不受影响）。
