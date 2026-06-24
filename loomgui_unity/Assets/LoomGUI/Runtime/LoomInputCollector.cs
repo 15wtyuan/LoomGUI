@@ -14,21 +14,32 @@ namespace LoomGUI
     [ExecuteAlways]
     public unsafe class LoomInputCollector : MonoBehaviour
     {
-        /// v1d.1：screen→design 映射 + y-flip + safe-area 偏移（与 LoomStage.ComputeRootTransform 对齐）。
-        /// 简化用 safe 区直接映射（safe 区 = root 渲染区，二者一一对应）：
-        ///   design_x = (screen_x - area.x) / area.width * rootW
-        ///   design_y = rootH - (screen_y - area.y) / area.height * rootH
-        /// useSafeArea=false 时 area 退回全屏（v1c 行为）；safe==全屏时 area.x=area.y=0 → 等价原式 ✓
+        /// v1d.1：screen→design 映射，与 LoomStage.ComputeRootTransform 逐项逆（同一 sf 居中公式）。
+        /// 前向（design→screen，见 ComputeRootTransform 注释）：
+        ///   screen.x = offX    + dx*sf     其中 offX = area.x + (area.width  - dw*sf)*0.5
+        ///   screen.y = offYTop - dy*sf     其中 offYTop = area.y + area.height
+        /// 逆：
+        ///   dx = (screen.x - offX)    / sf
+        ///   dy = (offYTop - screen.y) / sf
+        /// sf = min(area.w/dw, area.h/dh)【统一缩放，与渲染一致——修 v1c 渲染用 uniform sf / 输入用 per-axis stretch 的潜在错位】。
+        /// useSafeArea=false 时 area 退回全屏（v1c 行为）。
+        /// ponytail 验证：safe==全屏 + width-binding（sf=sw/dw）→ offX=0、offYTop=sh → dx=screen.x*dw/sw、dy=(sh-screen.y)*dw/sw ✓（v1c 式，但 y 也用 sf——见报告）
         public static Vector2 ScreenToDesign(Vector2 screen, Vector2Int screenSize, Vector2 rootSize, Rect area, bool useSafeArea)
         {
-            Rect a = useSafeArea ? area : new Rect(0, 0, screenSize.x, screenSize.y);
-            // 除零保护：area/rootSize 退化为 0（EditMode 未配屏 / 桌面 minimize）。
-            float aw = a.width > 0 ? a.width : 1;
-            float ah = a.height > 0 ? a.height : 1;
-            float rx = rootSize.x > 0 ? rootSize.x : 1;
-            float ry = rootSize.y > 0 ? rootSize.y : 1;
-            float dx = (screen.x - a.x) / aw * rx;
-            float dy = ry - ((screen.y - a.y) / ah * ry);
+            float sw = screenSize.x > 0 ? screenSize.x : 1;
+            float sh = screenSize.y > 0 ? screenSize.y : 1;
+            Rect a = useSafeArea ? area : new Rect(0, 0, sw, sh);
+            // 防御：safeArea 可能零宽高（编辑器未配屏）→ 退回全屏
+            if (a.width <= 0f || a.height <= 0f) a = new Rect(0, 0, sw, sh);
+            float dw = rootSize.x > 0 ? rootSize.x : 1;
+            float dh = rootSize.y > 0 ? rootSize.y : 1;
+            // 统一 shrink-to-fit 缩放（与 ComputeRootTransform 同一式）。
+            float sf = Mathf.Min(a.width / dw, a.height / dh);
+            sf = sf > 0 ? sf : 1f;   // 除零保护
+            float offX = a.x + (a.width - dw * sf) * 0.5f;
+            float offYTop = a.y + a.height;
+            float dx = (screen.x - offX) / sf;
+            float dy = (offYTop - screen.y) / sf;
             return new Vector2(dx, dy);
         }
 

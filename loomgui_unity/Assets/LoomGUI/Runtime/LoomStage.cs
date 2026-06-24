@@ -378,10 +378,19 @@ namespace LoomGUI
 
         /// <summary>
         /// v1d.1：design→screen 根变换（sf + rootPos）。_safeArea=true 时 shrink-to-fit 到 Screen.safeArea
-        /// 并居中（safe 区外 letterbox）；false 时全屏（v1c 行为）。
+        /// 并把设计 span 居中进 safe 区（safe 区外 letterbox，避刘海）；false 时全屏。
         /// 相机 orthoSize 不变（仍=sh/2 覆盖全屏），root transform 把 design 映射进 safe 区。
-        /// ScreenToDesign 用同一 (sf, rootPos) 逆映射（safe 区直接映射等价），保触摸对齐。
-        /// 验证：safe==全屏 → offX=offY=0 → rootPos=(-sw/2, sh/2)（v1c 值）✓
+        /// ScreenToDesign 用同一公式逐项逆映射，保触摸↔渲染对齐。
+        ///
+        /// 前向映射（design→screen，组合 root transform + 正交相机）：
+        ///   screen.x = rootPos.x + dx*sf + sw/2     （world.x = rootPos.x + dx*sf；screen.x = world.x + sw/2）
+        ///   screen.y = rootPos.y - dy*sf + sh/2     （world.y = rootPos.y - dy*sf，y-flip；screen.y = world.y + sh/2）
+        /// 令 offX = 设计 span 在屏幕的左边距（screen.x of design(0)），offYTop = span 顶边（screen.y of design(0)）：
+        ///   offX   = area.x + (area.width  - dw*sf) * 0.5   （safe 区水平居中 rendered span dw*sf）
+        ///   offYTop= area.y + area.height                  （Unity screen y 下原点，设计 y 上原点 → span 顶 = safe 区顶）
+        ///   rootPos.x = offX   - sw/2     （令 screen.x of design(0) = offX = rootPos.x + sw/2）
+        ///   rootPos.y = offYTop - sh/2     （令 screen.y of design(0) = offYTop = rootPos.y + sh/2）
+        /// ponytail：safe==全屏 + width-binding 时 dw*sf=sw → offX=0、offYTop=sh → rootPos=(-sw/2, sh/2)（v1c 值）✓
         /// </summary>
         (float sf, Vector3 rootPos) ComputeRootTransform()
         {
@@ -389,17 +398,16 @@ namespace LoomGUI
             Rect area = _safeArea ? Screen.safeArea : new Rect(0, 0, sw, sh);
             // 防御：safeArea 可能零宽高（编辑器未配屏）→ 退回全屏
             if (area.width <= 0f || area.height <= 0f) area = new Rect(0, 0, sw, sh);
-            // 注：shrink-to-fit（取较小缩放比，保证完整可见 + 留白 letterbox），
-            // ≈ CanvasScaler MatchWidthOrHeight 在 match≈0.5 但带 letterboxing。
+            float dw = _designSize.x, dh = _designSize.y;
+            // shrink-to-fit：取较小缩放比，保证完整可见 + 留白 letterbox。
             // v1d responsive 再重审（可能改为 cover/contain 选项）。
-            float sf = Mathf.Min(area.width / _designSize.x, area.height / _designSize.y);
-            // safe 区中心 → 屏幕中心偏移。屏幕原点在 GO 空间是 (-sw/2, sh/2)（照 v1c localPosition）。
-            // safeArea 是左下原点像素 Rect；safe 中心 = (area.x + area.width/2, area.y + area.height/2)。
-            // 屏幕中心 = (sw/2, sh/2)。偏移 = safeCenter - screenCenter。
-            float offX = (area.x + area.width * 0.5f) - sw * 0.5f;
-            float offY = (area.y + area.height * 0.5f) - sh * 0.5f;
-            // v1c rootPos = (-sw/2, sh/2)；加偏移：(-sw/2 + offX, sh/2 + offY)。
-            Vector3 rootPos = new Vector3(-sw * 0.5f + offX, sh * 0.5f + offY, 0f);
+            float sf = Mathf.Min(area.width / dw, area.height / dh);
+            // 把设计的 rendered span（dw*sf × dh*sf）在 safe 区内居中。
+            // offX = safe 左边 + 半（safe 宽 - rendered 宽）；span 顶 = safe 区顶（Unity screen y 下原点）。
+            float offX = area.x + (area.width - dw * sf) * 0.5f;
+            float offYTop = area.y + area.height;
+            // world-root 位置：令 design(0,0) 渲染到 screen(offX, offYTop) [span 左上角，y 已 flip]。
+            Vector3 rootPos = new Vector3(offX - sw * 0.5f, offYTop - sh * 0.5f, 0f);
             return (sf, rootPos);
         }
 
