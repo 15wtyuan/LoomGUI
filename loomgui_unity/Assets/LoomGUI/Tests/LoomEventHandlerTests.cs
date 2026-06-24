@@ -376,5 +376,40 @@ namespace LoomGUI.Tests
             Assert.AreEqual(1, rootHits, "LongPress bubble：root 收");
             Native.loomgui_stage_free((StageHandle*)stage);
         }
+
+        // ===== v1d.2-T7 新测（keydown/focusin BubbleRoute 路由）=====
+
+        /// v1d.2：KeyDown 走 BubbleRoute——child(2) KeyDown → child Target + parent(1) + root(0) Bubble 都收。
+        /// key_code 复用 touch_id=13（Return），modifiers=0（Rust EventRecord pad[0] @6，非 key 事件=0 正确）。
+        [Test]
+        public void KeyDown_BubbleRoute_ReachesAncestors()
+        {
+            var (stage, h) = BuildStage();
+            int childHits = 0, parentHits = 0, rootHits = 0;
+            h.AddListener(2, EventType.KeyDown, c => childHits++);
+            h.AddListener(1, EventType.KeyDown, c => parentHits++);
+            h.AddListener(0, EventType.KeyDown, c => rootHits++);
+            DispatchOne(h, new LoomEvent { nodeId = 2, type = EventType.KeyDown, clickCount = 0, modifiers = 0, touch_id = 13, x = 0f, y = 0f });
+            Assert.AreEqual(1, childHits, "KeyDown bubble：child 收");
+            Assert.AreEqual(1, parentHits, "KeyDown bubble：parent 收");
+            Assert.AreEqual(1, rootHits, "KeyDown bubble：root 收");
+            Native.loomgui_stage_free((StageHandle*)stage);
+        }
+
+        /// v1d.2：FocusIn 走 BubbleRoute——child(2) FocusIn → child + parent(1) + root(0) 都收。
+        [Test]
+        public void FocusIn_BubbleRoute_ReachesAncestors()
+        {
+            var (stage, h) = BuildStage();
+            int childHits = 0, parentHits = 0, rootHits = 0;
+            h.AddListener(2, EventType.FocusIn, c => childHits++);
+            h.AddListener(1, EventType.FocusIn, c => parentHits++);
+            h.AddListener(0, EventType.FocusIn, c => rootHits++);
+            DispatchOne(h, new LoomEvent { nodeId = 2, type = EventType.FocusIn, clickCount = 0, modifiers = 0, touch_id = 0, x = 0f, y = 0f });
+            Assert.AreEqual(1, childHits, "FocusIn bubble：child 收");
+            Assert.AreEqual(1, parentHits, "FocusIn bubble：parent 收");
+            Assert.AreEqual(1, rootHits, "FocusIn bubble：root 收");
+            Native.loomgui_stage_free((StageHandle*)stage);
+        }
     }
 }
