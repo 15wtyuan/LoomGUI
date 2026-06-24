@@ -227,14 +227,18 @@ impl PointerState {
     /// 消费本帧输入 → 产 EventRecord 序列。
     pub fn process(&mut self, scene: &mut Scene, events: &[PointerEvent]) -> Vec<EventRecord> {
         let mut out: Vec<EventRecord> = Vec::new();
-        let time_s = self.time_s;   // 本地副本：避免事件循环内 &mut slot 与 &self.time_s 借用冲突（Up 臂用）
-        if events.is_empty() {
-            for i in 0..self.slots.len() {
-                if i == 0 || self.slots[i].touch_id >= 0 {
-                    // 活跃槽
-                    Self::hover_diff_slot(&mut self.slots[i], scene, &mut out);
-                }
+        let time_s = self.time_s;   // T2：本地化避免 &mut self 与 &mut slot 借用冲突
+        // v1c.4 T4：stationary hover follow——本帧无事件的活跃槽刷新命中 + hover diff
+        // （静止光标下元素移动 → :hover 刷新；fgui 依赖 Move 事件，LoomGUI 改进）。
+        let used_touch_ids: Vec<i32> = events.iter().map(|e| e.touch_id).collect();
+        for i in 0..self.slots.len() {
+            let active = i == 0 || self.slots[i].touch_id >= 0;
+            if active && !used_touch_ids.contains(&self.slots[i].touch_id) {
+                self.slots[i].last_hit = hit_test(scene, self.slots[i].last_pos);
+                Self::hover_diff_slot(&mut self.slots[i], scene, &mut out);
             }
+        }
+        if events.is_empty() {
             self.recompute_hovered(scene);
             self.recompute_active(scene);
             return out;
@@ -1184,5 +1188,30 @@ mod tests {
         ps.process(&mut s, &[PointerEvent { kind: PointerKind::Canceled, x: 50.0, y: 50.0, button: 0, pad: [0, 0], touch_id: -1 }]);
         assert_eq!(ps.slots[0].click_count, 1, "Canceled reset click_count=1");
         assert_eq!(ps.slots[0].last_click_time, 0.0, "Canceled reset last_click_time=0");
+    }
+
+    // ===== v1c.4 T4: Stationary hover 跟随 =====
+
+    /// 静止光标下元素移走 → hover 跟随刷新（无 Move 事件）。
+    /// Move@btn → hover btn；scene2 btn 移到 (150,150)，空事件 → re-hit-test (50,50)=root → RollOut(btn)。
+    #[test]
+    fn stationary_cursor_hover_follows_moved_element() {
+        let mut s1 = one_button_scene();   // root(0,0,200,200)+btn(0,0,100,100)
+        let mut ps = PointerState::new();
+        ps.process(&mut s1, &[PointerEvent { kind: PointerKind::Move, x: 50.0, y: 50.0, button: 0, pad: [0, 0], touch_id: -1 }]);
+        assert!(s1.nodes[1].hovered, "Move@btn → btn hovered");
+        // scene2：btn 移到 (150,150)——(50,50) 现仅 root
+        let mut root2 = Node::default();
+        root2.id = NodeId(0); root2.layout_rect = Rect { x: 0.0, y: 0.0, w: 200.0, h: 200.0 };
+        let mut btn2 = Node::default();
+        btn2.id = NodeId(1); btn2.parent = Some(NodeId(0)); btn2.kind = NodeKind::Button;
+        btn2.layout_rect = Rect { x: 150.0, y: 150.0, w: 100.0, h: 100.0 };
+        root2.children = vec![NodeId(1)];
+        let mut s2 = Scene { roots: vec![NodeId(0)], nodes: vec![root2, btn2], dynamic_rules: Default::default() };
+        let out = ps.process(&mut s2, &[]);   // 空事件 → stationary follow
+        assert!(out.iter().any(|e| e.event_type == EVT_ROLL_OUT && e.node_id == 1),
+            "btn 移走（静止光标）→ RollOut(btn)");
+        assert!(!out.iter().any(|e| e.event_type == EVT_ROLL_OVER),
+            "root 已 hovered → 无 RollOver");
     }
 }
