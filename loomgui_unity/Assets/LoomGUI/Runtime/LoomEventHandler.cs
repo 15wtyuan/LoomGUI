@@ -14,6 +14,11 @@ namespace LoomGUI
         Click = 3,
         RollOver = 4,
         RollOut = 5,
+        // v1d.1：drag（opt-in draggable，core 检测）+ longpress（universal）。
+        DragStart = 6,
+        DragMove = 7,
+        DragEnd = 8,
+        LongPress = 9,
     }
 
     /// C# 镜像 Rust loomgui_core::input::EventRecord（#[repr(C)]）。
@@ -151,6 +156,12 @@ namespace LoomGUI
                         break;
                     case EventType.Up:
                     case EventType.Click:
+                        BubbleRoute(evt); break;
+                    // v1d.1：drag + longpress 走 BubbleRoute（core 算好 node_id，bubble 让祖先接）
+                    case EventType.DragStart:
+                    case EventType.DragMove:
+                    case EventType.DragEnd:
+                    case EventType.LongPress:
                         BubbleRoute(evt); break;
                     case EventType.Move:
                         DirectDispatch(evt); break;   // v1c.3：Move 改直派（核心算好的 monitor 目标）
