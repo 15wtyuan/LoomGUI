@@ -8,7 +8,7 @@ use loomgui_core::input::{EventRecord, PointerEvent};
 use loomgui_core::scene::NodeId;
 use loomgui_core::stage::Stage;
 
-/// 版本字符串（C null-terminated `b"v1c.4\0"`）。Task 1 工具链 round-trip 用。
+/// 版本字符串（C null-terminated `b"v1d.1\0"`）。Task 1 工具链 round-trip 用。
 ///
 /// 返回 `*const u8`（csbindgen 映射为 C# `byte*`）；CString::as_ptr 给的是
 /// `*const c_char`（i8），这里 cast 对齐签名。OnceLock 缓存，避免每次分配+泄漏。
@@ -16,7 +16,7 @@ use loomgui_core::stage::Stage;
 pub extern "C" fn loomgui_version() -> *const u8 {
     static VERSION: std::sync::OnceLock<CString> = std::sync::OnceLock::new();
     VERSION
-        .get_or_init(|| CString::new("v1c.4").unwrap())
+        .get_or_init(|| CString::new("v1d.1").unwrap())
         .as_ptr() as *const u8
 }
 
@@ -378,10 +378,10 @@ mod tests {
     use std::ffi::CStr;
 
     #[test]
-    fn version_returns_c_string_v1c4() {
+    fn version_returns_c_string_v1d1() {
         unsafe {
             let s = CStr::from_ptr(loomgui_version() as *const i8);
-            assert_eq!(s.to_str().unwrap(), "v1c.4");
+            assert_eq!(s.to_str().unwrap(), "v1d.1");
         }
     }
 }
@@ -443,8 +443,8 @@ mod abi_tests {
         let (fp, fplen) = font_path();
         // 手搓 scene（不走 parse），打成包
         let entries = vec![
-            (None, NodeKind::Container, ResolvedStyle::default(), Vec::new(), None),
-            (Some(0), NodeKind::Text { content: "hi".into() }, ResolvedStyle::default(), Vec::new(), None),
+            (None, NodeKind::Container, ResolvedStyle::default(), Vec::new(), None, false),
+            (Some(0), NodeKind::Text { content: "hi".into() }, ResolvedStyle::default(), Vec::new(), None, false),
         ];
         let pkg = write_package(&Scene::build(&entries), (100.0, 50.0), &loomgui_core::asset::AtlasSection::default(), &loomgui_core::style::dynamic::DynamicRuleTable::default());
 
@@ -484,9 +484,9 @@ mod abi_tests {
         use loomgui_core::style::resolved::ResolvedStyle;
         let (fp, fplen) = font_path();
         let entries = vec![
-            (None, NodeKind::Container, ResolvedStyle::default(), Vec::new(), None),
-            (Some(0), NodeKind::Image { src: "a.png".into() }, ResolvedStyle::default(), Vec::new(), None),
-            (Some(0), NodeKind::Image { src: "b.png".into() }, ResolvedStyle::default(), Vec::new(), None),
+            (None, NodeKind::Container, ResolvedStyle::default(), Vec::new(), None, false),
+            (Some(0), NodeKind::Image { src: "a.png".into() }, ResolvedStyle::default(), Vec::new(), None, false),
+            (Some(0), NodeKind::Image { src: "b.png".into() }, ResolvedStyle::default(), Vec::new(), None, false),
         ];
         let atlas = AtlasSection {
             atlases: vec![AtlasInfo { filename: "loom.atlas.png".into(), width: 512, height: 256 }],
@@ -574,7 +574,7 @@ mod abi_tests {
         let (fp, fplen) = font_path();
         let h = loomgui_stage_new(fp.as_ptr() as *const u8, fplen, 200.0, 100.0);
         // 手搓空 scene（单根 Container），不走 parse
-        let entries = vec![(None, NodeKind::Container, ResolvedStyle::default(), Vec::new(), None)];
+        let entries = vec![(None, NodeKind::Container, ResolvedStyle::default(), Vec::new(), None, false)];
         let pkg = write_package(
             &Scene::build(&entries),
             (200.0, 100.0),
@@ -700,8 +700,8 @@ mod abi_tests {
         use loomgui_core::style::{resolved::ResolvedStyle, dynamic::DynamicRuleTable};
         let (fp, fplen) = font_path();
         let entries = vec![
-            (None, NodeKind::Container, ResolvedStyle::default(), Vec::new(), None),
-            (Some(0), NodeKind::Container, ResolvedStyle::default(), Vec::new(), None),
+            (None, NodeKind::Container, ResolvedStyle::default(), Vec::new(), None, false),
+            (Some(0), NodeKind::Container, ResolvedStyle::default(), Vec::new(), None, false),
         ];
         let pkg = write_package(&Scene::build(&entries), (100.0, 50.0), &AtlasSection::default(), &DynamicRuleTable::default());
         let h = loomgui_stage_new(fp.as_ptr() as *const u8, fplen, 100.0, 50.0);
@@ -722,9 +722,9 @@ mod abi_tests {
         use loomgui_core::style::{resolved::ResolvedStyle, dynamic::DynamicRuleTable};
         let (fp, fplen) = font_path();
         let entries = vec![
-            (None, NodeKind::Container, ResolvedStyle::default(), Vec::new(), None),
-            (Some(0), NodeKind::Button, ResolvedStyle::default(), Vec::new(), Some("ok".to_string())),
-            (Some(1), NodeKind::Text { content: "OK".into() }, ResolvedStyle::default(), Vec::new(), None),
+            (None, NodeKind::Container, ResolvedStyle::default(), Vec::new(), None, false),
+            (Some(0), NodeKind::Button, ResolvedStyle::default(), Vec::new(), Some("ok".to_string()), false),
+            (Some(1), NodeKind::Text { content: "OK".into() }, ResolvedStyle::default(), Vec::new(), None, false),
         ];
         let pkg = write_package(&Scene::build(&entries), (100.0, 50.0), &AtlasSection::default(), &DynamicRuleTable::default());
         let h = loomgui_stage_new(fp.as_ptr() as *const u8, fplen, 100.0, 50.0);
@@ -745,21 +745,21 @@ mod abi_tests {
         loomgui_stage_free(h);
     }
 
-    /// v1c.4：version 字符串 == "v1c.4"（raw pointer 扫到 NUL 读 C 串）。
+    /// v1d.1：version 字符串 == "v1d.1"。
     #[test]
-    fn version_is_v1c_4() {
+    fn version_is_v1d_1() {
         let p = loomgui_version();
         let len = (0..).take_while(|&i| unsafe { *p.add(i) != 0 }).count();
         let s = std::str::from_utf8(unsafe { std::slice::from_raw_parts(p, len) }).unwrap();
-        assert_eq!(s, "v1c.4");
+        assert_eq!(s, "v1d.1");
     }
 
-    /// v1c.4：EventRecord 仍 20B（click_count 复用 pad[0]）、PointerEvent 16B 不变、Canceled=3。
+    /// v1d.1：EventRecord 仍 20B（drag/longpress 复用 event_type 空位 6-9）、PointerEvent 16B、Canceled=3。
     #[test]
     fn event_record_and_pointer_event_sizes_unchanged() {
         use loomgui_core::input::{EventRecord, PointerEvent, PointerKind};
         use std::mem::size_of;
-        assert_eq!(size_of::<EventRecord>(), 20, "EventRecord 20B（click_count 复用 pad）");
+        assert_eq!(size_of::<EventRecord>(), 20, "EventRecord 20B（drag/longpress 复用 event_type）");
         assert_eq!(size_of::<PointerEvent>(), 16, "PointerEvent 16B 不变");
         assert_eq!(PointerKind::Canceled as u8, 3, "Canceled=3");
     }
@@ -789,6 +789,59 @@ mod abi_tests {
         let recs = unsafe { std::slice::from_raw_parts(p as *const loomgui_core::input::EventRecord, len) };
         assert!(!recs.iter().any(|e| e.event_type == EVT_CLICK), "cancel_click → 无 Click");
         assert!(recs.iter().any(|e| e.event_type == EVT_UP), "Up 仍发");
+        loomgui_stage_free(h);
+    }
+
+    /// v1d.1：EVT 常量值锁（6/7/8/9）+ drag 端到端：draggable btn Down+Move>阈值 → borrow_events 含 DragStart。
+    #[cfg(feature = "parse")]
+    #[test]
+    fn drag_start_round_trip() {
+        use loomgui_core::input::{PointerEvent, PointerKind, EVT_DRAG_START};
+        let (fp, fplen) = font_path();
+        let h = loomgui_stage_new(fp.as_ptr() as *const u8, fplen, 200.0, 100.0);
+        assert!(!h.is_null());
+        let html = b"<button class=\"btn\" draggable=\"true\">OK</button>";
+        let css = b".btn{width:100px;height:50px;}";
+        loomgui_stage_load_html(h, html.as_ptr() as *const u8, html.len(), css.as_ptr() as *const u8, css.len());
+        // EVT 常量值
+        assert_eq!(loomgui_core::input::EVT_DRAG_START, 6);
+        assert_eq!(loomgui_core::input::EVT_DRAG_MOVE, 7);
+        assert_eq!(loomgui_core::input::EVT_DRAG_END, 8);
+        assert_eq!(loomgui_core::input::EVT_LONG_PRESS, 9);
+        // Down@btn + Move dx=5>mouse阈值2 → DragStart
+        loomgui_stage_set_input(h, [
+            PointerEvent { kind: PointerKind::Down, x: 50.0, y: 25.0, button: 0, pad: [0, 0], touch_id: -1 },
+            PointerEvent { kind: PointerKind::Move, x: 55.0, y: 25.0, button: 0, pad: [0, 0], touch_id: -1 },
+        ].as_ptr(), 2);
+        loomgui_stage_tick(h, 0.0);
+        let mut len = 0usize;
+        let p = loomgui_stage_borrow_events(h, &mut len);
+        let recs = unsafe { std::slice::from_raw_parts(p as *const loomgui_core::input::EventRecord, len) };
+        assert!(recs.iter().any(|e| e.event_type == EVT_DRAG_START), "draggable btn Down+Move → DragStart");
+        loomgui_stage_free(h);
+    }
+
+    /// v1d.1：longpress 端到端——Down@btn + tick dt 累积 1.5s → LongPress。
+    #[cfg(feature = "parse")]
+    #[test]
+    fn long_press_round_trip() {
+        use loomgui_core::input::{PointerEvent, PointerKind, EVT_LONG_PRESS};
+        let (fp, fplen) = font_path();
+        let h = loomgui_stage_new(fp.as_ptr() as *const u8, fplen, 200.0, 100.0);
+        assert!(!h.is_null());
+        let html = b"<button class=\"btn\">OK</button>";
+        let css = b".btn{width:100px;height:50px;}";
+        loomgui_stage_load_html(h, html.as_ptr() as *const u8, html.len(), css.as_ptr() as *const u8, css.len());
+        // frame1: Down@btn（tick dt=0）
+        loomgui_stage_set_input(h, [PointerEvent { kind: PointerKind::Down, x: 50.0, y: 25.0, button: 0, pad: [0, 0], touch_id: -1 }].as_ptr(), 1);
+        loomgui_stage_tick(h, 0.0);
+        // frame2: 空输入 + tick dt=1.5 → time_s 累积 1.5 → LongPress
+        loomgui_stage_set_input(h, std::ptr::null(), 0);
+        loomgui_stage_tick(h, 1.5);
+        let mut len = 0usize;
+        let p = loomgui_stage_borrow_events(h, &mut len);
+        let recs = unsafe { std::slice::from_raw_parts(p as *const loomgui_core::input::EventRecord, len) };
+        assert!(recs.iter().any(|e| e.event_type == EVT_LONG_PRESS), "按住 1.5s → LongPress");
         loomgui_stage_free(h);
     }
 }
