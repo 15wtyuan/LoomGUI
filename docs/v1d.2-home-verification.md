@@ -42,9 +42,10 @@ git fetch origin && git checkout main && git pull origin main
 
 - Unity Hub 打开 `loomgui_unity`（Unity 6.5）
 - `.dll` 已 commit（`Assets/Plugins/LoomGUI/loomgui_ffi_c.dll`），无需重编
-- **新 FFI 函数**（`loomgui_stage_set_key_input` / `loomgui_stage_request_focus` / `loomgui_stage_focused_node`）+ **新 struct**（`KeyEvent`）→ csbindgen reimport 时 **regen `LoomGUIBindings.cs`**
-  - 若 csbindgen 报找不到（KeyEvent / 新 fn 缺）：**删 `LoomGUIBindings.cs` 触发 reimport**
+- **新 FFI 函数**（`loomgui_stage_set_key_input` / `loomgui_stage_request_focus` / `loomgui_stage_focused_node`）→ csbindgen reimport 时 **regen `LoomGUIBindings.cs`**（仅 FFI 函数签名）
+  - 若 csbindgen 报找不到新 fn：**删 `LoomGUIBindings.cs` 触发 reimport**
   - 确认 `.dll` 是 v1d.2（`md5sum` / 文件大小对比 commit）
+- **`KeyEvent` struct 是手补的**（`Assets/Plugins/LoomGUI/Bindings/LoomGUIKeyEvent.cs`，已 commit + `.cs.meta` 已含 fresh GUID）—— csbindgen **不** emit struct stub，reimport 不动它。若报 `KeyEvent` 缺失，先查此文件是否在仓库（非重 import）
 - 等 Unity reimport 完
 
 ## 4. EditMode 测试（Test Runner）— ⚠️ 先填 font_path
@@ -150,7 +151,8 @@ Native.loomgui_stage_request_focus((StageHandle*)stagePtr, targetId);
 
 | 风险 | 排查 |
 |---|---|
-| **csbindgen 报 `KeyEvent` / 新 FFI 找不到** | 删 `LoomGUIBindings.cs` 触发 reimport；确认 `.dll` 是 v1d.2（`md5sum` / 大小对比 commit） |
+| **csbindgen 报新 FFI 找不到**（`set_key_input`/`request_focus`/`focused_node`） | 删 `LoomGUIBindings.cs` 触发 reimport——reimport **只 regen FFI 函数签名**，不 emit struct stub；确认 `.dll` 是 v1d.2（`md5sum` / 大小对比 commit） |
+| **csbindgen 报 `KeyEvent` struct 找不到** | `KeyEvent` **手补在 `Assets/Plugins/LoomGUI/Bindings/LoomGUIKeyEvent.cs`**（`LoomGUI.Bindings` namespace，已 commit；csbindgen 不为 use-imported `#[repr(C)]` struct 生成 stub——同 `LoomGUIPointerEvent.cs` 模式）。reimport **不会** regen 它。若仍报缺失：查 `LoomGUIKeyEvent.cs` + `.cs.meta` 在仓库、GUID 不与 `LoomGUIPointerEvent.cs.meta` 撞（.meta 家里机 import 时自动生成） |
 | **Tab 不触发导航** | `CollectKeys` 未调（`LoomStage.LateUpdate` 漏 `loomgui_stage_set_key_input`）；或 `ENABLE_INPUT_SYSTEM` 宏下 `Keyboard.current` null |
 | **keydown 永不发** | 无焦点（先 click-to-focus 或 `request_focus`）；或键不在 KeyList 白名单；或 Tab 被导航消费（非 bug） |
 | **`:focus` 不生效** | rematch 未跑（tick 管线）；或 `.btn:focus` 规则没进 dynamic（`extract_dynamic_rules` 漏 `pseudo_focus`） |
