@@ -177,6 +177,18 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 - **Stage tick 管线**：solve→process（多槽，各槽 last_hit）→rematch→render。`cur_hit` 单值字段删（is_pointer_on_ui 改读各槽 last_hit，任一活跃槽命中非根）。Stationary 不刷新 hover（照 fgui 局限，defer v1c.4）。
 - **两机约束（v1c.3 执行）**：core+ffi `cargo test --workspace` 180 测全绿；C# 本机写未编译（无 Unity），家里机 EditMode（capture 测骨架补 handle）+ PlayMode（多指/capture demo/鼠标回归）。subagent-driven 6 task 全 Approved + final review Ready（opus）。spec `docs/superpowers/specs/2026-06-23-v1c.3-multi-touch-design.md`、plan `docs/superpowers/plans/2026-06-23-v1c.3-multi-touch.md`、验收 `docs/v1c.3-home-verification.md`。踩坑：PointerKind repr(C) 4B 判别（坑 34）、csbindgen 不生 use-imported struct stub（坑 35）、set_input PointerEvent* 须 fixed-pin（坑 36）。
 
+### 2.18 click 增强（v1c.4，§10.3）— 收尾 v1c
+- **click 全对齐 fgui（core input.rs，照 TouchInfo/ClickTest/End/Move）**：`click_test` 取代 v1c.2 `slot_click_ok`——Click 目标 = **down_targets[0]（按下叶，非当前 hit）**，照 fgui「点按缩放」语义（光标漂移到相邻元素仍 click 按下叶）；down_targets[0] 失效（索引越界/重建移除）沿当前 hit 祖先链兜底找首个在 down_targets 内的存活祖先。位移 **per-axis** `|dx|>t || |dy|>t`（非 v1c.2 euclidean）；阈值 **mouse 10 / touch 50**（`click_threshold(touch_id)`，固定像素**无缩放**——「缩放容忍」是伪需求，fgui `_clickTestThreshold` 不乘 scaleFactor）。
+- **双击 clickCount 1→2→1**（照 fgui End @1745）：`bump_click_count(slot, button, time_s)` 查 350ms + per-axis 位置 + 同键 → 1→2→1 循环（不到 3），否 1。click_test 返 None（位移超阈值/cancelled）→ reset `last_click_time=0`/`click_count=1`（照 fgui cancel 分支）。EventRecord `pad[0]`→**`click_count:u8`**（offset 5，20B 不变）→ C# `LoomEvent.clickCount` → `EventContext.clickCount`/`isDoubleClick`。**统一核心 350ms**（不依赖 Unity tapCount，跨引擎一致）。
+- **Move>50 取消**（照 fgui Move @1705 硬编码 50，mouse+touch 通用）：`is_down && (|dx|>50|||dy|>50)` → `slot.click_cancelled=true` → 下个 Up 的 click_test 返 None。
+- **Canceled（偏离 fgui quirk）**：`PointerKind::Canceled=3`（repr(u8)，PointerEvent 16B）→ process `Up|Canceled` 合并臂（Canceled 仅置 `click_cancelled`）= **隐式 CancelClick**。fgui quirk 是 Canceled 仍跑 End clickCount 累加但跳 ClickTest；LoomGUI 改为置 click_cancelled → 不发 Click + reset，更干净（spec §0.6 用户确认）。Up 仍发（onTouchEnd），mouse 路径无 Canceled。C# `LoomInputCollector` 两路径（新 InputSystem / 旧 UnityEngine）`TouchPhase.Canceled`→kind=3。
+- **CancelClick API**：`PointerState::cancel_click(touch_id)`（slot 查找同 add_touch_monitor）→ Stage → FFI `loomgui_stage_cancel_click(h, touch_id:i32)` → C# `LoomEventHandler.CancelTouch(int)`。业务用例：拖拽开始取消待 click。
+- **stopImmediatePropagation（纯 C#，W3C，fgui 无）**：`EventContext` +`_stopsImmediatePropagation` + `StopImmediatePropagation()`（设两 flag）；`EventBridge.CallBubble/CallCapture` 改 `GetInvocationList()` 逐回调 + immediate break（**null-safe** `ctx != null &&`，保既有 `CallBubble(null)` 测）；BubbleRoute 节点循环已有 `_stopsPropagation` break（immediate 也断冒泡）；capture 节点循环照 fgui 不查 stop。
+- **Stationary hover 跟随（fgui 改进）**：v1c.3「Stationary 不刷新」（§2.17 defer 项）→ v1c.4 `process` 头部对**本帧无事件**的活跃槽 re-hit-test `last_pos` + `hover_diff_slot`（静止光标下元素动画移入 → :hover/RollOver/Out 刷新；fgui 依赖 Move 事件无此）。判定纯读 `touch_id`（`used_touch_ids` 集合，**无 find_or_alloc 副作用**）。
+- **time_s 复用 tick(dt)**（零新 FFI 参数）：FFI `loomgui_stage_tick(h, dt)`（C# 改传 `Time.unscaledDeltaTime`，照 fgui unscaledTime）→ `Stage::advance_time(dt)`（**tick_and_render 前调**，签名不改）→ `PointerState.time_s += dt`。process 顶部 `let time_s = self.time_s;` 本地化（避 `&mut self` 与 `&mut slot` E0502）。
+- **FFI/version**：+`cancel_click`（常驻不 gate）；version v1c.3→v1c.4。EventRecord 20B / PointerEvent 16B / PointerKind repr(u8) 全不变（click_count 复用 pad）。
+- **两机约束（v1c.4 执行）**：core+ffi cargo test 全绿（core 162 + ffi 28）；C# 本机写未编译（无 Unity），家里机 EditMode（16 测，BuildStage helper 须填 font_path）+ PlayMode（双击 isDoubleClick / 拖拽>50 取消 / 触摸 Canceled / stationary hover / CancelTouch）。subagent-driven 8 task 全 Approved + final review Ready（opus）。spec `docs/superpowers/specs/2026-06-24-v1c.4-click-design.md`、plan `docs/superpowers/plans/2026-06-24-v1c.4-click.md`、验收 `docs/v1c.4-home-verification.md`。踩坑：borrow_events out_len 是 count 非 bytes（坑 39）、Assert.IsNotNull 对指针装箱 no-op（坑 40）。
+
 ## 3. 依赖 API 适配踩坑（v0 最大教训）
 
 > **plan/brief 写的 API 草稿常与实际 crate 版本不符**。遇编译错按本节对照，**勿硬改依赖版本**，按 crate 实际源码（`~/.cargo/registry/src/<crate>-<ver>/src/`）调。
@@ -501,6 +513,20 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 **解决**：新/旧输入路径**全限定**——新 `UnityEngine.InputSystem.TouchPhase`，旧 `UnityEngine.TouchPhase`（不同枚举显式区分）。
 **教训**：Unity InputSystem API 路径随版本变，查包源定 namespace（`Library/PackageCache/com.unity.inputsystem@*/InputSystem/Devices/Touchscreen.cs`），别信草稿/记忆。**C# 本机不编译家里机才暴露**（坑 28/35 同源）——同 using 下两 namespace 同名类型须全限定。
 
+### 坑 39：borrow_events 的 out_len 是记录 COUNT 非 bytes（v1c.4）
+
+**症状**：cancel_click abi_test 切 borrow_events 返回 slice 用 `len / size_of::<EventRecord>()` → `1/20=0` 记录 → 空 slice → 「Up 仍发」断言失败。
+**根因**：`loomgui_stage_borrow_events(h, *mut out_len)` 写入的是 `events.len()`（记录**条数**）非字节数；brief/测草稿误以为字节。
+**解决**：直接用 `len` 作记录数切 `from_raw_parts(ptr, len)`（同既有 `set_input_borrow_events_round_trip` 测用 `len * rec_size` 取字节的反向印证）。
+**教训**：两个 borrow 的 out_len 语义**不同**——`borrow_events`=**记录 count**（EventRecord 条数），`borrow_frame`=**字节**（blob 字节）。测/消费代码勿混用。
+
+### 坑 40：Assert.IsNotNull(ptr) 对非托管指针装箱恒非 null（no-op）（v1c.4）
+
+**症状**：BuildStage guard `Assert.IsNotNull(stagePtr, ...)`（`stagePtr` 是 `StageHandle*`）——`stage_new` 返 null（font_path 占位未填）时 guard **仍过** → `load_html(null)` 触 FFI 崩溃，非干净测失败。
+**根因**：NUnit `Assert.IsNotNull(object)` **装箱**参数；非托管指针（`T*`/`IntPtr`）装箱成含值 0 的**非 null** 对象 → 恒过。
+**解决**：指针用真比较——raw `T*` 用 `Assert.IsTrue(stagePtr != null, ...)`（unsafe 上下文产 bool）；`IntPtr` 用 `Assert.AreNotEqual(IntPtr.Zero, stage, ...)`。
+**教训**：NUnit Null 断言只对**引用类型**有效；值类型/裸指针/IntPtr 须显式 `!= null`/`!= IntPtr.Zero` 比较。C# 测 guard 裸指针/句柄首查此项。
+
 ## 6. 调试/验证技巧
 
 - **★ 实现 v1+ 后端/渲染/对象模型前，先参考 `temp/FairyGUI-unity/` 源码**（对照机制、避免走歪——本 session 因没先看 fgui 的 sortingOrder/rect-mask/MaterialManager，初版设计走了弯路：误用 z 排序、误以为 rect mask 要独立 GO、把绘制序想复杂）。
@@ -587,13 +613,17 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 
 **v1c.2 ✅ 完成（v1c.2 branch，待家里机验）**：事件路由完整化（方向 A）——核心 `hover_diff` 祖先链 diff（点1，修坑 29 嵌套多发，`last_hovered_chain`+`ancestor_chain`）+ FFI `node_parent`（C# 路由沿链，sentinel 0xFFFFFFFF）+ C# `LoomEventHandler` 重写（bubble/capture 两阶段照 fgui BubbleEvent + stop + EventContext 对象池 + 多 callback + 委托 remove + RollOver/Out 直派）+ 主设计 §10.2/§6.3/§15 修订（路由降级业务侧，删 `Node.listeners`）。**EventRecord/event blob/frame blob/.pkg.bin/MirrorPool/shader 零改**。spec `docs/superpowers/specs/2026-06-23-v1c.2-event-bubbling-design.md`、plan `docs/superpowers/plans/2026-06-23-v1c.2-event-bubbling.md`、验收文档 `docs/v1c.2-home-verification.md`。**两机约束**：core cargo test 本机 164 测全绿；C# 本机写未编译（无 Unity），家里机 EditMode（4 路由测骨架补 handle）+ PlayMode 5 条待验。subagent-driven 6 task 全 Approved + final review Ready。踩坑：brief 测断言过强（坑 31）、implementer 改实现适配测超 scope（坑 32）、EventBridge internal 测不可见（坑 33）。
 
-**v1c.2 defer**：~~CaptureTouch/多触摸槽（v1c.3）~~（v1c.3 ✅）、click downTargets 链兜底+双击（v1c.4）、stopImmediatePropagation、broadcast 子树广播（v1.x）、onKeyDown/Up/onMouseWheel 路由（v1d+）、AncestorChain 池化（Move 热路径，fgui 池 callChain，v1c.2 YAGNI 未池）、transform world_to_local 命中（v1d）。
+**v1c.2 defer**：~~CaptureTouch/多触摸槽（v1c.3）~~（v1c.3 ✅）、~~click downTargets 链兜底+双击+Move 超阈值取消+Canceled+CancelClick~~（v1c.4 ✅）、~~stopImmediatePropagation~~（v1c.4 ✅）、broadcast 子树广播（v1.x）、onKeyDown/Up/onMouseWheel 路由（v1d+）、AncestorChain 池化（Move 热路径，fgui 池 callChain，v1c.2 YAGNI 未池）、transform world_to_local 命中（v1d）。
 
 **v1c.3 ✅ 完成（main @ 2beb6e7，待家里机验）**：多触摸 + CaptureTouch——核心 `PointerState` 单指针 → 5 槽 `TouchSlot`（slot0 鼠标 -1 + slot1-4 触摸，鼠标+触摸共存）+ EventRecord/PointerEvent 加 `touch_id`（EventRecord 20B/PointerEvent 16B，**PointerKind `repr(u8)`** 坑34）+ active/hovered 全局 union recompute（删 set_*_chain，修 v1c.2 多指互清 bug）+ CaptureTouch/touch monitor（照 fgui 消费即清，cap/bub 各加一，add/remove_touch_monitor FFI）+ Move 对齐 fgui（无 monitor 不产，v1c.2 鼠标 Move 沿链 bubble 行为废止）+ Up 去重 + Unity `LoomInputCollector` 多指采集（fixed-pin 坑36）。click 沿用 v1c.2。**frame blob/MirrorPool/.pkg.bin v3 零改**（EventRecord 不进 blob）。spec `docs/superpowers/specs/2026-06-23-v1c.3-multi-touch-design.md`、plan `docs/superpowers/plans/2026-06-23-v1c.3-multi-touch.md`、验收 `docs/v1c.3-home-verification.md`。**两机约束**：core+ffi `cargo test --workspace` 180 测全绿；C# 本机写未编译（无 Unity），家里机 EditMode（capture 测骨架补 handle）+ PlayMode（多指/capture/鼠标回归）。subagent-driven 6 task 全 Approved + final review Ready（opus）。踩坑：PointerKind repr(C) 4B（坑 34）、csbindgen 不生 use-imported struct stub 手补镜像漏（坑 35）、set_input PointerEvent* 须 fixed-pin（坑 36）。brainstorm 阶段 subagent 审核 + 二次 fgui 实证核实修正 4 个 Critical（touch_id 哨兵撤销/capture cap+bub/Up 去重/active 双写）。
 
 **v1c.3 defer（→ v1c.4 click 增强，正交）**：双击（350ms 窗口+位置+同键）、downTargets 链兜底（down 目标被移除沿祖先找，照 fgui ClickTest）、缩放容忍、Move 中超阈值取消 click、Canceled 跳过 click、Stationary hover 跟随（元素动后刷新，照 fgui 局限）。其余同 v1c.2 defer（stopImmediate/broadcast/键盘/transform 命中）。
 
 **v1c review ✅ 修复（main @ e262d26）**：review v1c.2/.3 发现并修 3 类——① disabled-active 回归（§4.4，recompute_active 漏 disabled 门控 + Text 子击中漏判祖先链，坑 37，链遍历逐节点查 disabled 截断）；② v1c.2/.3 C# 编译错（C# 本机不编译家里机暴露）：`TouchPhase` 1.19 命名空间+歧义（坑 38，双路径全限定）、`EventContext.Get/Return` internal→public（坑 33 同模式重现）；③ `find_node_by_id` enabler（`Scene::find_by_id_attr`+FFI+C# 包装，替代硬编码 build-id）+ interact 禁用按钮加 id + demo find+set_node_disabled（原仅 CSS opacity 视觉、Node.disabled 未设）。.dll 重编 + pkg 重打。**PlayMode 验**：按住禁用按钮不变红（含 Text 子击中）。core 150+ffi 25 测全绿。**C# 路由测仍多 Assert.Ignore 骨架**（家里机手验未回填真断言）——v1c.4 前可补 BuildStage helper un-ignore。
+
+**v1c.4 ✅ 完成（main @ db33b24，待家里机验）**：click 全对齐 fgui + v1c 收尾——core `click_test`（Click 目标=down_targets[0] 按下叶非当前 hit，照 fgui ClickTest；per-axis 阈值 mouse10/touch50 固定像素无缩放；down_leaf 失效沿祖先兜底）+ 双击 clickCount 1→2→1（350ms+per-axis+同键，`bump_click_count`；EventRecord pad[0]→`click_count:u8` offset5 20B 不变）+ Move>50 取消（硬编码）+ **Canceled**（`PointerKind::Canceled=3`，偏离 fgui quirk=隐式 CancelClick：置 click_cancelled→不发 Click+reset，spec §0.6 用户确认）+ CancelClick API（`cancel_click` FFI + C# CancelTouch）+ **stopImmediatePropagation**（纯 C# W3C，EventBridge GetInvocationList 逐回调 break null-safe）+ **Stationary hover 跟随**（v1c.3 defer 项落地：process 头部无事件活跃槽 re-hit-test，fgui 改进）+ time_s 复用 tick(dt)（C# unscaledDeltaTime → Stage::advance_time，零新 FFI 参数）。**frame blob/MirrorPool/.pkg.bin 零改**（EventRecord 不进 blob，click_count 复用 pad）。spec `docs/superpowers/specs/2026-06-24-v1c.4-click-design.md`、plan `docs/superpowers/plans/2026-06-24-v1c.4-click.md`、验收 `docs/v1c.4-home-verification.md`。**两机约束**：core+ffi cargo test 全绿（core 162+ffi 28）；C# 本机写未编译（无 Unity），家里机 EditMode（16 测，**BuildStage helper 须填 font_path**，否则 stagePtr!=null guard 失败）+ PlayMode（双击 isDoubleClick / 拖拽>50 取消 / 触摸 Canceled / stationary hover / CancelTouch / StopImmediate）。subagent-driven 8 task 全 Approved + final review Ready（opus，6 跨 task 集成点全清）。踩坑：borrow_events out_len 是 count 非 bytes（坑 39）、Assert.IsNotNull 对指针装箱 no-op（坑 40）。
+
+**v1c.4 defer（→ v1d+）**：broadcast 子树广播（v1.x）、onKeyDown/Up/onMouseWheel 路由（v1d+）、transform world_to_local 命中（v1d）、AncestorChain 池化（Move 热路径，v1e perf）、长按 onLongPress（fgui holdTime/downFrame）、invalidation set 伪类重匹配优化（v1e 撞墙）。click 已全 fgui 对齐（缩放容忍证伪删除）。
 
 **v1 其余 defer（v0 起，未动）**：
 - v1b 全收尾（A/B/C/mesh/CJK ✅）+ v1c.1 最小交互闭环 ✅ + v1c.2 路由完整化 ✅ + **v1c.3 多触摸+CaptureTouch ✅（待家里机验）**。
