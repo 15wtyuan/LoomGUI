@@ -32,7 +32,9 @@ namespace LoomGUI.Tests
                 stagePtr = Native.loomgui_stage_new(fp, (nuint)(fontPathBytes?.Length ?? 0), 200f, 200f);
             }
             // 家里机：若 stagePtr == null，说明 font_path 占位未补——补真路径后重试。
-            Assert.IsNotNull(stagePtr, "BuildStage: stage_new 返 null（font_path 占位未补？家里机填真路径）");
+            // 注意：不能用 Assert.IsNotNull(stagePtr, ...) —— 指针装箱后恒非 null（boxed 0 也是对象），
+            // 是 no-op；stagePtr 是 StageHandle*，用 != null 真比较。
+            Assert.IsTrue(stagePtr != null, "BuildStage: stage_new 返 null（font_path 占位未补？家里机填真路径）");
 
             string html = "<div class=\"root\"><div class=\"parent\"><div class=\"child\"></div></div></div>";
             string css = ".root{width:200px;height:200px;}.parent{width:100px;height:100px;}.child{width:50px;height:50px;}";
