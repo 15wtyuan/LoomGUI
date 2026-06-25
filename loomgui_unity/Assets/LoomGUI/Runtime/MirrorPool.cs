@@ -30,6 +30,9 @@ namespace LoomGUI
         public readonly List<Vector2> UvList = new();
         public readonly List<Color> CList = new();
         public readonly List<int> IList = new();
+        // §v1d.3: cached MaterialPropertyBlock for per-renderer _ObjectMatrix (M1 fix).
+        // Lazy-init in non-pure-translation path; avoids shared material overwrite.
+        public MaterialPropertyBlock Mpb;
     }
 
     public sealed class MirrorPool
@@ -131,7 +134,18 @@ namespace LoomGUI
                         var m = Matrix4x4.identity;
                         m[0, 0] = blob.Ma(i); m[0, 1] = blob.Mc(i); m[0, 3] = blob.Mtx(i);
                         m[1, 0] = blob.Mb(i); m[1, 1] = blob.Md(i); m[1, 3] = blob.Mty(i);
-                        mat.SetMatrix("_ObjectMatrix", m);
+                        // M1 fix: MaterialPropertyBlock avoids shared material _ObjectMatrix overwrite
+                        // when two non-pure-translation nodes share the same material key.
+                        ro.Mpb ??= new MaterialPropertyBlock();
+                        ro.Mpb.SetMatrix("_ObjectMatrix", m);
+                        ro.Mr.SetPropertyBlock(ro.Mpb);
+                        // I1 fix: translate bounds to world position for frustum culling.
+                        // Vertices are box-local (0,0)-(w,h); _ObjectMatrix moves rendering to world.
+                        // GO transform=identity → renderer.bounds = Mesh.bounds; culling uses renderer.bounds.
+                        // Rotation/scale AABB expansion deferred to v1.x.
+                        var b = ro.Mesh.bounds;
+                        b.center = new Vector3(blob.Mtx(i) + b.center.x, blob.Mty(i) + b.center.y, 0);
+                        ro.Mesh.bounds = b;
                     }
                     ro.Mr.sharedMaterial = mat;
                 }
@@ -157,7 +171,17 @@ namespace LoomGUI
                             var m = Matrix4x4.identity;
                             m[0, 0] = blob.Ma(i); m[0, 1] = blob.Mc(i); m[0, 3] = blob.Mtx(i);
                             m[1, 0] = blob.Mb(i); m[1, 1] = blob.Md(i); m[1, 3] = blob.Mty(i);
-                            tmat.SetMatrix("_ObjectMatrix", m);
+                            // M1 fix: MaterialPropertyBlock avoids shared material _ObjectMatrix overwrite.
+                            ro.Mpb ??= new MaterialPropertyBlock();
+                            ro.Mpb.SetMatrix("_ObjectMatrix", m);
+                            ro.Mr.SetPropertyBlock(ro.Mpb);
+                            // I1 fix: translate bounds to world position for frustum culling.
+                            // RecalculateBounds every frame for non-pure text (translation may change
+                            // without glyph rebuild), then translate to world center.
+                            ro.Mesh.RecalculateBounds();
+                            var b = ro.Mesh.bounds;
+                            b.center = new Vector3(blob.Mtx(i) + b.center.x, blob.Mty(i) + b.center.y, 0);
+                            ro.Mesh.bounds = b;
                         }
                         ro.Mr.sharedMaterial = tmat;
                     }
