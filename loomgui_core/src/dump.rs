@@ -57,7 +57,7 @@ mod tests {
         n.id_attr = Some("root".into());
         n.classes = vec!["main".into()];
         n.layout_rect = Rect { x: 1.0, y: 2.0, w: 3.0, h: 4.0 };
-        let s = Scene { roots: vec![NodeId(0)], nodes: vec![n], dynamic_rules: Default::default(), focused_node: None, world_transforms: Vec::new() };
+        let s = Scene { roots: vec![NodeId(0)], nodes: vec![n], dynamic_rules: Default::default(), focused_node: None, world_transforms: Vec::new(), anim: Default::default() };
         let json = dump_scene_json(&s);
         assert!(json.contains(r#""id":"root""#), "含 id");
         assert!(json.contains(r#""classes":"main""#), "含 classes");
@@ -72,7 +72,7 @@ mod tests {
         let mut n = Node::default();
         n.id = NodeId(0);
         n.id_attr = Some("a\"b".into());
-        let s = Scene { roots: vec![NodeId(0)], nodes: vec![n], dynamic_rules: Default::default(), focused_node: None, world_transforms: Vec::new() };
+        let s = Scene { roots: vec![NodeId(0)], nodes: vec![n], dynamic_rules: Default::default(), focused_node: None, world_transforms: Vec::new(), anim: Default::default() };
         let json = dump_scene_json(&s);
         assert!(json.contains(r#""id":"a\"b""#), "id 中的引号被转义：{}", json);
     }

@@ -100,6 +100,65 @@ impl Default for Node {
     }
 }
 
+/// 单节点动画 override（replace-override：Some 覆盖 ResolvedStyle 对应字段，None 退回 CSS）。
+/// 全 None = 无动画。由 TweenManager.update 写，由 compute_world_transforms / build_render_nodes 读。
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct NodeAnim {
+    pub opacity: Option<f32>,
+    pub transform: Option<crate::transform::Affine2>, // 覆盖 style.transform.matrix
+    pub bg_color: Option<[f32; 4]>,
+    pub text_color: Option<[f32; 4]>,
+}
+
+impl NodeAnim {
+    pub fn is_empty(&self) -> bool {
+        self.opacity.is_none()
+            && self.transform.is_none()
+            && self.bg_color.is_none()
+            && self.text_color.is_none()
+    }
+}
+
+/// 每节点动画 override 表（index = NodeId.0）。运行时态，不进 pkg（同 world_transforms）。
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct AnimTable(pub Vec<NodeAnim>);
+
+impl AnimTable {
+    pub fn get(&self, node: NodeId) -> Option<&NodeAnim> {
+        self.0.get(node.0).filter(|a| !a.is_empty())
+    }
+
+    /// 增长到 n 并返回可变切片（update 调，确保 node_id 可索引）。
+    pub fn ensure(&mut self, n: usize) -> &mut [NodeAnim] {
+        if self.0.len() < n {
+            self.0.resize(n, NodeAnim::default());
+        }
+        &mut self.0
+    }
+
+    /// 清该节点所有通道（回 CSS）。
+    pub fn clear_node(&mut self, node: NodeId) {
+        if let Some(a) = self.0.get_mut(node.0) {
+            *a = NodeAnim::default();
+        }
+    }
+
+    /// 清该节点某 prop 对应通道（Translate/Scale/Rotation 都映射到 transform 通道）。
+    pub fn clear_prop(&mut self, node: NodeId, prop: crate::tween::TweenProp) {
+        let a = match self.0.get_mut(node.0) {
+            Some(a) => a,
+            None => return,
+        };
+        use crate::tween::TweenProp;
+        match prop {
+            TweenProp::Opacity => a.opacity = None,
+            TweenProp::Translate | TweenProp::Scale | TweenProp::Rotation => a.transform = None,
+            TweenProp::BgColor => a.bg_color = None,
+            TweenProp::TextColor => a.text_color = None,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Scene {
     pub roots: Vec<NodeId>,
@@ -110,6 +169,8 @@ pub struct Scene {
     pub focused_node: Option<NodeId>,
     /// v1d.3：每节点累计世界矩阵（compute_world_transforms 填）。index = NodeId.0。运行时态，不进 pkg。
     pub world_transforms: Vec<crate::transform::Affine2>,
+    /// v1d.4：每节点动画 override（TweenManager.update 填）。index = NodeId.0。运行时态，不进 pkg。
+    pub anim: AnimTable,
 }
 
 impl Scene {
@@ -123,7 +184,7 @@ impl Scene {
             nodes: Vec::new(),
             dynamic_rules: crate::style::dynamic::DynamicRuleTable::default(),
             focused_node: None,
-            world_transforms: Vec::new(),
+            world_transforms: Vec::new(), anim: Default::default(),
         };
         for (i, (parent_idx, kind, style, classes, id_attr, draggable, tabindex)) in entries.iter().enumerate() {
             scene.nodes.push(Node {
@@ -291,7 +352,7 @@ mod tests {
             nodes: vec![],
             dynamic_rules: Default::default(),
             focused_node: None,
-            world_transforms: Vec::new(),
+            world_transforms: Vec::new(), anim: Default::default(),
         };
         assert!(
             s.dynamic_rules.rules.is_empty(),
@@ -313,7 +374,7 @@ mod tests {
             nodes: vec![],
             dynamic_rules: Default::default(),
             focused_node: None,
-            world_transforms: Vec::new(),
+            world_transforms: Vec::new(), anim: Default::default(),
         };
         assert_eq!(s.focused_node, None, "Scene 默认 focused_node=None");
     }
@@ -362,6 +423,31 @@ mod tests {
         of.overflow_hidden = true;
         let scene2 = Scene::build(&[(None, NodeKind::Container, of, Vec::new(), None, false, None)]);
         assert!(scene2.nodes[0].clip_rect.is_some(), "overflow_hidden=true → clip slot");
+    }
+
+    #[test]
+    fn animtable_get_returns_none_for_empty_or_unset() {
+        let mut t = AnimTable::default();
+        t.ensure(3);
+        // 全默认（None）→ get 返 None（is_empty 过滤）
+        assert!(t.get(NodeId(0)).is_none());
+        assert!(t.get(NodeId(5)).is_none(), "越界 → None");
+    }
+
+    #[test]
+    fn animtable_clear_prop_transform_channel_shared() {
+        let mut t = AnimTable::default();
+        t.ensure(2);
+        t.0[1].transform = Some(crate::transform::from_scale(2.0, 2.0));
+        // Translate/Scale/Rotation 都清 transform 通道
+        t.clear_prop(NodeId(1), crate::tween::TweenProp::Scale);
+        assert!(t.0[1].transform.is_none(), "clear Scale → transform 通道 None");
+    }
+
+    #[test]
+    fn nodeanim_is_empty_default_true() {
+        assert!(NodeAnim::default().is_empty());
+        assert!(!NodeAnim { opacity: Some(0.5), ..Default::default() }.is_empty());
     }
 }
 

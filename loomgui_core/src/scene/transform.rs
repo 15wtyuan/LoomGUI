@@ -56,7 +56,7 @@ mod tests {
 
     fn scene_with(nodes: Vec<Node>) -> Scene {
         let roots = nodes.iter().find(|n| n.parent.is_none()).map(|n| n.id).into_iter().collect();
-        Scene { roots, nodes, dynamic_rules: Default::default(), focused_node: None, world_transforms: Vec::new() }
+        Scene { roots, nodes, dynamic_rules: Default::default(), focused_node: None, world_transforms: Vec::new(), anim: Default::default() }
     }
 
     #[test]
