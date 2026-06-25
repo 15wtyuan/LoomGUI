@@ -14,6 +14,21 @@ pub enum TweenProp {
     TextColor = 5,
 }
 
+impl TweenProp {
+    /// u32 → TweenProp（FFI 校验用）。越界 → None。判别值与 C# enum / FFI u32 对齐。
+    pub fn try_from(v: u32) -> Option<Self> {
+        match v {
+            0 => Some(Self::Opacity),
+            1 => Some(Self::Translate),
+            2 => Some(Self::Scale),
+            3 => Some(Self::Rotation),
+            4 => Some(Self::BgColor),
+            5 => Some(Self::TextColor),
+            _ => None,
+        }
+    }
+}
+
 /// 每个 prop 的 lerp 分量数（start/end [f32;4] 取前 N 个）。
 pub fn prop_value_size(prop: TweenProp) -> u8 {
     match prop {
@@ -37,6 +52,25 @@ pub enum Ease {
     BackIn = 7,
     BackOut = 8,
     BackInOut = 9,
+}
+
+impl Ease {
+    /// u32 → Ease（FFI 校验用）。越界 → None。判别值与 C# enum / FFI u32 对齐。
+    pub fn try_from(v: u32) -> Option<Self> {
+        match v {
+            0 => Some(Self::Linear),
+            1 => Some(Self::QuadIn),
+            2 => Some(Self::QuadOut),
+            3 => Some(Self::QuadInOut),
+            4 => Some(Self::CubicIn),
+            5 => Some(Self::CubicOut),
+            6 => Some(Self::CubicInOut),
+            7 => Some(Self::BackIn),
+            8 => Some(Self::BackOut),
+            9 => Some(Self::BackInOut),
+            _ => None,
+        }
+    }
 }
 
 const OVERSHOOT: f32 = 1.70158;
