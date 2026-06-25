@@ -4,32 +4,32 @@ using UnityEngine;
 
 namespace LoomGUI.Tests
 {
-    /// MirrorPool 的 EditMode 行为测试（Task 7）。
-    /// 手搓 1 节点 mesh blob（镜像 loomgui_ffi_c/src/blob.rs::build_blob 布局，
+    /// MirrorPool 的 EditMode 行为测试（Task 7/8）。
+    /// 手搓 1 节点 mesh blob（镜像 loomgui_ffi_c/src/blob.rs::build_blob v4 布局，
     /// 同 FrameBlobTests）→ 验 stale-flag diff 的 Create / Reuse / Destroy 三端。
     public class MirrorPoolTests
     {
         /// 构造一个 1 节点 Mesh blob：visible=1, payload_kind=1, parent=-1,
         /// 4 顶点 quad mesh（顶点=(0,0)(w,0)(w,h)(0,h)，已 re-base 到本地）。
-        /// v3 布局（14 列含 tex_id + mesh/text/clip 三 arena header；text 空、clip 仅 count=0）。
+        /// v4 布局（18 列含 world matrix + mesh/text/clip 三 arena header；text 空、clip 仅 count=0）。
         /// 用于驱动 MirrorPool.Sync 的 diff 逻辑。
         static byte[] OneMeshNodeBlob(
             uint id, float x, float y, float w, float h, uint sortKey)
         {
             var b = new List<byte>();
 
-            // header: magic, version=3, node_count=1
+            // header: magic, version=4, node_count=1
             b.AddRange(System.BitConverter.GetBytes(0x4D4F4F4Cu));
-            b.AddRange(System.BitConverter.GetBytes(3u));
+            b.AddRange(System.BitConverter.GetBytes(4u));
             b.AddRange(System.BitConverter.GetBytes(1u));
 
-            // header 总长 = 3*4 + 14*4 + 6*4 = 92。列 offset 从此起按 elemSize 递进。
-            const int HeaderLen = 12 + 14 * 4 + 2 * 4 + 2 * 4 + 2 * 4; // = 92
+            // header 总长 = 3*4 + 18*4 + 6*4 = 108。列 offset 从此起按 elemSize 递进。
+            const int HeaderLen = 12 + 18 * 4 + 2 * 4 + 2 * 4 + 2 * 4; // = 108
             int colOff = HeaderLen;
-            int[] offs = new int[14];
-            // 元素字节数顺序同 blob.rs columns（v3 +tex_id 列 13）。
-            int[] elemSize = { 4, 4, 1, 4, 4, 4, 4, 4, 1, 4, 4, 4, 4, 4 };
-            for (int i = 0; i < 14; i++) { offs[i] = colOff; colOff += elemSize[i]; }
+            int[] offs = new int[18];
+            // v4 18 列 elemSize（镜像 blob.rs columns）
+            int[] elemSize = { 4, 4, 1, 4, 4, 4, 4, 4, 4, 4, 4, 4, 1, 4, 4, 4, 4, 4 };
+            for (int i = 0; i < 18; i++) { offs[i] = colOff; colOff += elemSize[i]; }
             int arenaOff = colOff;
 
             // mesh arena：1 mesh，4 verts / 6 idx。顶点已 re-base 到本地：(0,0)(w,0)(w,h)(0,h)。
@@ -64,7 +64,7 @@ namespace LoomGUI.Tests
             arena.AddRange(System.BitConverter.GetBytes(3u));
             int arenaLen = arena.Count - arenaStart;
 
-            // 14 列 offset + mesh/text/clip 三 arena off+len
+            // 18 列 offset + mesh/text/clip 三 arena off+len
             foreach (var o in offs) b.AddRange(System.BitConverter.GetBytes(o));
             b.AddRange(System.BitConverter.GetBytes(arenaOff));              // mesh_arena_off
             b.AddRange(System.BitConverter.GetBytes(arenaLen));              // mesh_arena_len
@@ -74,21 +74,25 @@ namespace LoomGUI.Tests
             b.AddRange(System.BitConverter.GetBytes(clipOff));               // clip_table_off
             b.AddRange(System.BitConverter.GetBytes(4u));                    // clip_table_len（仅 clip_count）
 
-            // 列数据（node 0）。
-            b.AddRange(System.BitConverter.GetBytes(id));        // node_id
-            b.AddRange(System.BitConverter.GetBytes(-1));        // parent_id（无父）
-            b.Add(1);                                            // visible
-            b.AddRange(System.BitConverter.GetBytes(1f));        // alpha
-            b.AddRange(System.BitConverter.GetBytes(sortKey));   // sort_key
-            b.AddRange(System.BitConverter.GetBytes(x));         // local_x
-            b.AddRange(System.BitConverter.GetBytes(y));         // local_y
-            b.AddRange(System.BitConverter.GetBytes(0u));        // mask_context
-            b.Add(1);                                            // payload_kind = Mesh
-            b.AddRange(System.BitConverter.GetBytes(0u));        // mesh_off（相对 arena 起始）
-            b.AddRange(System.BitConverter.GetBytes((uint)arenaLen)); // mesh_len
-            b.AddRange(System.BitConverter.GetBytes(0u));        // text_off（T1 占位）
-            b.AddRange(System.BitConverter.GetBytes(0u));        // text_len（T1 占位）
-            b.AddRange(System.BitConverter.GetBytes(0u));        // tex_id（v3 新增；本测 Mesh 占位 0）
+            // 列数据（node 0，纯平移 world matrix）
+            b.AddRange(System.BitConverter.GetBytes(id));        // col 0: node_id
+            b.AddRange(System.BitConverter.GetBytes(-1));        // col 1: parent_id（无父）
+            b.Add(1);                                            // col 2: visible
+            b.AddRange(System.BitConverter.GetBytes(1f));        // col 3: alpha
+            b.AddRange(System.BitConverter.GetBytes(sortKey));   // col 4: sort_key
+            b.AddRange(System.BitConverter.GetBytes(0u));        // col 5: mask_context
+            b.AddRange(System.BitConverter.GetBytes(1f));        // col 6: m_a
+            b.AddRange(System.BitConverter.GetBytes(0f));        // col 7: m_b
+            b.AddRange(System.BitConverter.GetBytes(0f));        // col 8: m_c
+            b.AddRange(System.BitConverter.GetBytes(1f));        // col 9: m_d
+            b.AddRange(System.BitConverter.GetBytes(x));         // col 10: m_tx
+            b.AddRange(System.BitConverter.GetBytes(y));         // col 11: m_ty
+            b.Add(1);                                            // col 12: payload_kind = Mesh
+            b.AddRange(System.BitConverter.GetBytes(0u));        // col 13: mesh_off（相对 arena 起始）
+            b.AddRange(System.BitConverter.GetBytes((uint)arenaLen)); // col 14: mesh_len
+            b.AddRange(System.BitConverter.GetBytes(0u));        // col 15: text_off（T1 占位）
+            b.AddRange(System.BitConverter.GetBytes(0u));        // col 16: text_len（T1 占位）
+            b.AddRange(System.BitConverter.GetBytes(0u));        // col 17: tex_id
 
             b.AddRange(arena);
             // text_arena T1 空，跳过。
@@ -107,13 +111,13 @@ namespace LoomGUI.Tests
         {
             var b = new List<byte>();
             b.AddRange(System.BitConverter.GetBytes(0x4D4F4F4Cu)); // magic
-            b.AddRange(System.BitConverter.GetBytes(3u));          // version=3
+            b.AddRange(System.BitConverter.GetBytes(4u));          // version=4
             b.AddRange(System.BitConverter.GetBytes(0u));          // node_count = 0
-            // 即便 0 节点也写全 header（14 col offset + mesh/text/clip 三 arena off+len），避免越界读。
-            const int HeaderLen = 12 + 14 * 4 + 2 * 4 + 2 * 4 + 2 * 4; // = 92
+            // 即便 0 节点也写全 header（18 col offset + mesh/text/clip 三 arena off+len），避免越界读。
+            const int HeaderLen = 12 + 18 * 4 + 2 * 4 + 2 * 4 + 2 * 4; // = 108
             int colOff = HeaderLen;
-            int[] elemSize = { 4, 4, 1, 4, 4, 4, 4, 4, 1, 4, 4, 4, 4, 4 };
-            for (int i = 0; i < 14; i++)
+            int[] elemSize = { 4, 4, 1, 4, 4, 4, 4, 4, 4, 4, 4, 4, 1, 4, 4, 4, 4, 4 };
+            for (int i = 0; i < 18; i++)
             {
                 b.AddRange(System.BitConverter.GetBytes(colOff));
                 colOff += elemSize[i];
@@ -156,7 +160,8 @@ namespace LoomGUI.Tests
                 Assert.AreEqual(1, root.transform.childCount, "Create: root 应有 1 个直接子 GO");
                 var node = root.transform.GetChild(0);
                 Assert.AreEqual("loom_node", node.name, "Create: GO 名应为 loom_node");
-                Assert.AreEqual(new Vector3(10f, 20f, 0f), node.localPosition, "Create: localPosition=(local_x,local_y,0)");
+                // v4 纯平移：localPosition=(Mtx,Mty,0)
+                Assert.AreEqual(new Vector3(10f, 20f, 0f), node.localPosition, "Create: localPosition=(Mtx,Mty,0)");
                 Assert.AreEqual(Vector3.one, node.localScale, "Create: localScale=one");
 
                 var mr = node.GetComponent<MeshRenderer>();

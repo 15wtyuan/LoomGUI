@@ -3,31 +3,33 @@ using NUnit.Framework;
 
 namespace LoomGUI.Tests
 {
-    /// Blob v3 scaffold 校验（T1）。手搓最小 v3 header（镜像 loomgui_ffi_c/src/blob.rs v3 布局），
-    /// 验：magic+version 校验生效（IsValid）、Version==3、ClipCount==0（T1 占位）、单 Mesh 节点
+    /// Blob v4 scaffold 校验（T1/T8）。手搓最小 v4 header（镜像 loomgui_ffi_c/src/blob.rs v4 布局），
+    /// 验：magic+version 校验生效（IsValid）、Version==4、ClipCount==0（T1 占位）、单 Mesh 节点
     /// 经 ReadMesh 仍正确解析（mesh_arena header 偏移重算正确）。
     ///
-    /// 注意：Unity EditMode 在本任务环境无法 headless 执行；Rust blob.rs::TestView 的 v3 测试
+    /// 注意：Unity EditMode 在本任务环境无法 headless 执行；Rust blob.rs::TestView 的 v4 测试
     /// 是布局契约的权威自动门，本 C# 测试仅保证编译正确 + 逻辑（offset 计算）正确。
     public class FrameBlobV2Tests
     {
-        /// 构造最小合法 v3 blob：1 节点 Mesh（4 verts/6 idx，顶点已 re-base 到本地）。
-        /// layout 严格镜像 blob.rs::build_blob v3。
+        /// 构造最小合法 v4 blob：1 节点 Mesh（4 verts/6 idx，顶点已 re-base 到本地）。
+        /// layout 严格镜像 blob.rs::build_blob v4（18 列含 world matrix）。
         static byte[] BuildMinimalV2Blob()
         {
             var b = new List<byte>();
 
-            // header: magic, version=3, node_count=1
+            // header: magic, version=4, node_count=1
             b.AddRange(System.BitConverter.GetBytes(0x4D4F4F4Cu));
-            b.AddRange(System.BitConverter.GetBytes(3u));
+            b.AddRange(System.BitConverter.GetBytes(4u));
             b.AddRange(System.BitConverter.GetBytes(1u));
 
-            // header_len = 3*4 + 14*4 + 2*4 + 2*4 + 2*4 = 92
-            const int HeaderLen = 92;
+            // header_len = 3*4 + 18*4 + 2*4 + 2*4 + 2*4 = 108
+            const int HeaderLen = 108;
             int colOff = HeaderLen;
-            int[] offs = new int[14];
-            int[] elemSize = { 4, 4, 1, 4, 4, 4, 4, 4, 1, 4, 4, 4, 4, 4 };
-            for (int i = 0; i < 14; i++) { offs[i] = colOff; colOff += elemSize[i]; }
+            int[] offs = new int[18];
+            // v4 18 列 elemSize：node_id parent_id visible alpha sort_key mask_context
+            //   m_a m_b m_c m_d m_tx m_ty payload_kind mesh_off mesh_len text_off text_len tex_id
+            int[] elemSize = { 4, 4, 1, 4, 4, 4, 4, 4, 4, 4, 4, 4, 1, 4, 4, 4, 4, 4 };
+            for (int i = 0; i < 18; i++) { offs[i] = colOff; colOff += elemSize[i]; }
 
             // mesh arena：4 verts / 6 idx。顶点 (0,0)(1,0)(1,1)(0,1)（已 re-base）。
             var arena = new List<byte>();
@@ -42,7 +44,7 @@ namespace LoomGUI.Tests
             for (int k = 0; k < 6; k++) arena.AddRange(System.BitConverter.GetBytes(ix[k]));
             int arenaLen = arena.Count - arenaStart;
 
-            // 14 列 offset + mesh/text/clip 三 arena off+len
+            // 18 列 offset + mesh/text/clip 三 arena off+len
             foreach (var o in offs) b.AddRange(System.BitConverter.GetBytes(o));
             int meshArenaOff = colOff;
             b.AddRange(System.BitConverter.GetBytes(meshArenaOff));
@@ -55,21 +57,26 @@ namespace LoomGUI.Tests
             b.AddRange(System.BitConverter.GetBytes(4u));      // clip_table_len（仅 clip_count）
 
             // 列数据（node 0）：node_id=1, parent=-1, visible=1, alpha=1, sort_key=1,
-            // local=(5,6), mask=0, kind=1(Mesh), mesh_off=0, mesh_len=arenaLen, text_off=0, text_len=0
-            b.AddRange(System.BitConverter.GetBytes(1u));        // node_id
-            b.AddRange(System.BitConverter.GetBytes(-1));        // parent_id
-            b.Add(1);                                            // visible
-            b.AddRange(System.BitConverter.GetBytes(1f));        // alpha
-            b.AddRange(System.BitConverter.GetBytes(1u));        // sort_key
-            b.AddRange(System.BitConverter.GetBytes(5f));        // local_x
-            b.AddRange(System.BitConverter.GetBytes(6f));        // local_y
-            b.AddRange(System.BitConverter.GetBytes(0u));        // mask_context
-            b.Add(1);                                            // payload_kind = Mesh
-            b.AddRange(System.BitConverter.GetBytes(0u));        // mesh_off
-            b.AddRange(System.BitConverter.GetBytes((uint)arenaLen)); // mesh_len
-            b.AddRange(System.BitConverter.GetBytes(0u));        // text_off
-            b.AddRange(System.BitConverter.GetBytes(0u));        // text_len
-            b.AddRange(System.BitConverter.GetBytes(0u));        // tex_id（v1b.2，Mesh 占位 0）
+            // mask_context=0, m_a=1 m_b=0 m_c=0 m_d=1 m_tx=5 m_ty=6（纯平移 world matrix）,
+            // kind=1(Mesh), mesh_off=0, mesh_len=arenaLen, text_off=0, text_len=0, tex_id=0
+            b.AddRange(System.BitConverter.GetBytes(1u));        // col 0: node_id
+            b.AddRange(System.BitConverter.GetBytes(-1));        // col 1: parent_id
+            b.Add(1);                                            // col 2: visible
+            b.AddRange(System.BitConverter.GetBytes(1f));        // col 3: alpha
+            b.AddRange(System.BitConverter.GetBytes(1u));        // col 4: sort_key
+            b.AddRange(System.BitConverter.GetBytes(0u));        // col 5: mask_context
+            b.AddRange(System.BitConverter.GetBytes(1f));        // col 6: m_a
+            b.AddRange(System.BitConverter.GetBytes(0f));        // col 7: m_b
+            b.AddRange(System.BitConverter.GetBytes(0f));        // col 8: m_c
+            b.AddRange(System.BitConverter.GetBytes(1f));        // col 9: m_d
+            b.AddRange(System.BitConverter.GetBytes(5f));        // col 10: m_tx
+            b.AddRange(System.BitConverter.GetBytes(6f));        // col 11: m_ty
+            b.Add(1);                                            // col 12: payload_kind = Mesh
+            b.AddRange(System.BitConverter.GetBytes(0u));        // col 13: mesh_off
+            b.AddRange(System.BitConverter.GetBytes((uint)arenaLen)); // col 14: mesh_len
+            b.AddRange(System.BitConverter.GetBytes(0u));        // col 15: text_off
+            b.AddRange(System.BitConverter.GetBytes(0u));        // col 16: text_len
+            b.AddRange(System.BitConverter.GetBytes(0u));        // col 17: tex_id
 
             b.AddRange(arena);
             // text_arena T1 空，跳过。
@@ -82,8 +89,8 @@ namespace LoomGUI.Tests
         public void V2BlobIsValidAndHasExpectedHeader()
         {
             var blob = new FrameBlob(BuildMinimalV2Blob());
-            Assert.IsTrue(blob.IsValid, "v3 magic+version 应通过 IsValid");
-            Assert.AreEqual(3u, blob.Version, "Version==3");
+            Assert.IsTrue(blob.IsValid, "v4 magic+version 应通过 IsValid");
+            Assert.AreEqual(4u, blob.Version, "Version==4");
             Assert.AreEqual(1, blob.NodeCount);
         }
 
@@ -123,15 +130,16 @@ namespace LoomGUI.Tests
         {
             var b = new List<byte>();
             b.AddRange(System.BitConverter.GetBytes(0x4D4F4F4Cu));  // magic
-            b.AddRange(System.BitConverter.GetBytes(3u));           // version=3（v1b.2）
+            b.AddRange(System.BitConverter.GetBytes(4u));           // version=4
             b.AddRange(System.BitConverter.GetBytes(1u));           // node_count
 
-            // header_len = 3*4 + 14*4 + 2*4 + 2*4 + 2*4 = 92（v3：14 col + 三 arena 各 off+len）。
-            const int HeaderLen = 92;
+            // header_len = 3*4 + 18*4 + 2*4 + 2*4 + 2*4 = 108（v4：18 col + 三 arena 各 off+len）。
+            const int HeaderLen = 108;
             int colOff = HeaderLen;
-            int[] offs = new int[14];
-            int[] elemSize = { 4, 4, 1, 4, 4, 4, 4, 4, 1, 4, 4, 4, 4, 4 };
-            for (int i = 0; i < 14; i++) { offs[i] = colOff; colOff += elemSize[i]; }
+            int[] offs = new int[18];
+            // v4 18 列 elemSize
+            int[] elemSize = { 4, 4, 1, 4, 4, 4, 4, 4, 4, 4, 4, 4, 1, 4, 4, 4, 4, 4 };
+            for (int i = 0; i < 18; i++) { offs[i] = colOff; colOff += elemSize[i]; }
 
             // mesh arena：空（vc=0,ic=0），只为占位（本测不验 mesh）。
             var arena = new List<byte>();
@@ -152,20 +160,24 @@ namespace LoomGUI.Tests
 
             // 列（1 节点，mask_context=clips[0].ctx 仅占位）
             uint nodeCtx = clips.Length > 0 ? clips[0].ctx : 0u;
-            b.AddRange(System.BitConverter.GetBytes(1u));     // node_id
-            b.AddRange(System.BitConverter.GetBytes(-1));     // parent
-            b.Add(1);                                         // visible
-            b.AddRange(System.BitConverter.GetBytes(1f));     // alpha
-            b.AddRange(System.BitConverter.GetBytes(0u));     // sort_key
-            b.AddRange(System.BitConverter.GetBytes(0f));     // local_x
-            b.AddRange(System.BitConverter.GetBytes(0f));     // local_y
-            b.AddRange(System.BitConverter.GetBytes(nodeCtx));// mask_context
-            b.Add(0);                                         // payload_kind=Unchanged（跳渲染）
-            b.AddRange(System.BitConverter.GetBytes(0u));     // mesh_off
-            b.AddRange(System.BitConverter.GetBytes(0u));     // mesh_len
-            b.AddRange(System.BitConverter.GetBytes(0u));     // text_off
-            b.AddRange(System.BitConverter.GetBytes(0u));     // text_len
-            b.AddRange(System.BitConverter.GetBytes(0u));     // tex_id（v1b.2，Unchanged=0）
+            b.AddRange(System.BitConverter.GetBytes(1u));     // col 0: node_id
+            b.AddRange(System.BitConverter.GetBytes(-1));     // col 1: parent
+            b.Add(1);                                         // col 2: visible
+            b.AddRange(System.BitConverter.GetBytes(1f));     // col 3: alpha
+            b.AddRange(System.BitConverter.GetBytes(0u));     // col 4: sort_key
+            b.AddRange(System.BitConverter.GetBytes(nodeCtx));// col 5: mask_context
+            b.AddRange(System.BitConverter.GetBytes(1f));     // col 6: m_a（identity）
+            b.AddRange(System.BitConverter.GetBytes(0f));     // col 7: m_b
+            b.AddRange(System.BitConverter.GetBytes(0f));     // col 8: m_c
+            b.AddRange(System.BitConverter.GetBytes(1f));     // col 9: m_d（identity）
+            b.AddRange(System.BitConverter.GetBytes(0f));     // col 10: m_tx
+            b.AddRange(System.BitConverter.GetBytes(0f));     // col 11: m_ty
+            b.Add(0);                                         // col 12: payload_kind=Unchanged（跳渲染）
+            b.AddRange(System.BitConverter.GetBytes(0u));     // col 13: mesh_off
+            b.AddRange(System.BitConverter.GetBytes(0u));     // col 14: mesh_len
+            b.AddRange(System.BitConverter.GetBytes(0u));     // col 15: text_off
+            b.AddRange(System.BitConverter.GetBytes(0u));     // col 16: text_len
+            b.AddRange(System.BitConverter.GetBytes(0u));     // col 17: tex_id
 
             b.AddRange(arena);
             // clip 表

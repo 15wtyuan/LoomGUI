@@ -5,14 +5,14 @@ using UnityEngine;
 namespace LoomGUI.Tests
 {
     /// v1b.3：atlas 打包下同 atlas 多 sprite 共享 1 Texture2D + 各自子区 UV 烘焙。
-    /// 手搓 v3 双 Mesh 节点 blob（同 tex_id=1，不同 uv 子区）+ mock texMap{1→atlasTex}，
+    /// 手搓 v4 双 Mesh 节点 blob（同 tex_id=1，不同 uv 子区）+ mock texMap{1→atlasTex}，
     /// 断言两节点 Mr.sharedMaterial.mainTexture == atlasTex（同实例 → MaterialManager 命中同 key →
     /// 共享 Material → 可 batch）且各自 Mesh.uv 匹配其子区 4 角（per-vertex UV 由 blob 写，
     /// MirrorPool 直拷——T2/T4 已烘焙到 blob，MirrorPool 零改）。
     public class AtlasMirrorPoolTests
     {
-        /// 构造 v3 blob：N=2 Mesh 节点，同 tex_id=1，不同 uv 子区。
-        /// 布局镜像 FrameBlob.cs / MirrorPoolTexIdTests（header 92 / 14 列 SOA / mesh arena）。
+        /// 构造 v4 blob：N=2 Mesh 节点，同 tex_id=1，不同 uv 子区。
+        /// 布局镜像 FrameBlob.cs / MirrorPoolTexIdTests（header 108 / 18 列 SOA / mesh arena）。
         /// 关键差异（vs MirrorPoolTexIdTests 单节点）：
         ///   - node_count=2；每列段长 = 2 × elemSize[i]。
         ///   - mesh arena 含 2 个独立 segment（vert_count+idx_count+verts+uvs+colors+indices），
@@ -26,24 +26,18 @@ namespace LoomGUI.Tests
             const int N = 2;
             var b = new List<byte>();
             b.AddRange(System.BitConverter.GetBytes(0x4D4F4F4Cu)); // magic
-            b.AddRange(System.BitConverter.GetBytes(3u));           // version=3
+            b.AddRange(System.BitConverter.GetBytes(4u));           // version=4
             b.AddRange(System.BitConverter.GetBytes((uint)N));      // node_count=2
 
-            const int HeaderLen = 12 + 14 * 4 + 2 * 4 + 2 * 4 + 2 * 4; // = 92
-            // 14 列 elemSize（镜像 FrameBlob 列序）：node_id(u32) parent_id(i32) visible(u8)
-            // alpha(f32) sort_key(u32) local_x(f32) local_y(f32) mask_context(u32) payload_kind(u8)
-            // mesh_off(u32) mesh_len(u32) text_off(u32) text_len(u32) tex_id(u32)
-            int[] elemSize = { 4, 4, 1, 4, 4, 4, 4, 4, 1, 4, 4, 4, 4, 4 };
+            const int HeaderLen = 12 + 18 * 4 + 2 * 4 + 2 * 4 + 2 * 4; // = 108
+            // v4 18 列 elemSize（镜像 FrameBlob 列序）
+            int[] elemSize = { 4, 4, 1, 4, 4, 4, 4, 4, 4, 4, 4, 4, 1, 4, 4, 4, 4, 4 };
             int colOff = HeaderLen;
-            int[] offs = new int[14];
-            for (int i = 0; i < 14; i++) { offs[i] = colOff; colOff += N * elemSize[i]; }
+            int[] offs = new int[18];
+            for (int i = 0; i < 18; i++) { offs[i] = colOff; colOff += N * elemSize[i]; }
             int arenaOff = colOff;
 
             // mesh arena：2 个独立 segment（每节点一个）。
-            // segment 布局：vert_count(u32) idx_count(u32) verts[vc×2 f32] uvs[vc×2 f32]
-            //              colors[vc×4 f32] indices[idx_count u32]。
-            // 每节点：4 顶点 quad，6 索引（0,1,2,0,2,3）。
-            // verts：单位 quad（本地 0..5）；uvs：调用方给的子区 4 角；colors：白色不透明。
             var arena = new List<byte>();
             // segment 0
             int seg0Off = arena.Count;
@@ -55,7 +49,7 @@ namespace LoomGUI.Tests
             int seg1Len = arena.Count - seg1Off;
             int arenaLen = arena.Count;
 
-            // 14 列 col_offset
+            // 18 列 col_offset
             foreach (var o in offs) b.AddRange(System.BitConverter.GetBytes(o));
             b.AddRange(System.BitConverter.GetBytes(arenaOff));
             b.AddRange(System.BitConverter.GetBytes(arenaLen));
@@ -64,7 +58,7 @@ namespace LoomGUI.Tests
             b.AddRange(System.BitConverter.GetBytes(arenaOff + arenaLen)); // clip_table_off
             b.AddRange(System.BitConverter.GetBytes(4u));                  // clip_table_len（仅 clip_count u32）
 
-            // 列数据（SOA：每列 N 个节点连续）。
+            // 列数据（SOA：每列 N 个节点连续；纯平移 world matrix @ 各自位置）。
             // col 0: node_id (u32) × N
             b.AddRange(System.BitConverter.GetBytes(n0.id));
             b.AddRange(System.BitConverter.GetBytes(n1.id));
@@ -77,25 +71,33 @@ namespace LoomGUI.Tests
             b.AddRange(System.BitConverter.GetBytes(1f)); b.AddRange(System.BitConverter.GetBytes(1f));
             // col 4: sort_key (u32) × N
             b.AddRange(System.BitConverter.GetBytes(0u)); b.AddRange(System.BitConverter.GetBytes(0u));
-            // col 5: local_x (f32) × N（节点 0 在原点，节点 1 错开避免重叠）
-            b.AddRange(System.BitConverter.GetBytes(0f)); b.AddRange(System.BitConverter.GetBytes(10f));
-            // col 6: local_y (f32) × N
-            b.AddRange(System.BitConverter.GetBytes(0f)); b.AddRange(System.BitConverter.GetBytes(0f));
-            // col 7: mask_context (u32) × N（0 = 无裁剪）
+            // col 5: mask_context (u32) × N（0 = 无裁剪）
             b.AddRange(System.BitConverter.GetBytes(0u)); b.AddRange(System.BitConverter.GetBytes(0u));
-            // col 8: payload_kind (u8) × N（1 = Mesh）
+            // col 6: m_a (f32) × N（identity = 1）
+            b.AddRange(System.BitConverter.GetBytes(1f)); b.AddRange(System.BitConverter.GetBytes(1f));
+            // col 7: m_b (f32) × N（identity = 0）
+            b.AddRange(System.BitConverter.GetBytes(0f)); b.AddRange(System.BitConverter.GetBytes(0f));
+            // col 8: m_c (f32) × N（identity = 0）
+            b.AddRange(System.BitConverter.GetBytes(0f)); b.AddRange(System.BitConverter.GetBytes(0f));
+            // col 9: m_d (f32) × N（identity = 1）
+            b.AddRange(System.BitConverter.GetBytes(1f)); b.AddRange(System.BitConverter.GetBytes(1f));
+            // col 10: m_tx (f32) × N（节点 0 在原点，节点 1 错开避免重叠）
+            b.AddRange(System.BitConverter.GetBytes(0f)); b.AddRange(System.BitConverter.GetBytes(10f));
+            // col 11: m_ty (f32) × N
+            b.AddRange(System.BitConverter.GetBytes(0f)); b.AddRange(System.BitConverter.GetBytes(0f));
+            // col 12: payload_kind (u8) × N（1 = Mesh）
             b.Add(1); b.Add(1);
-            // col 9: mesh_off (u32) × N（arena 内字节偏移）
+            // col 13: mesh_off (u32) × N（arena 内字节偏移）
             b.AddRange(System.BitConverter.GetBytes((uint)seg0Off));
             b.AddRange(System.BitConverter.GetBytes((uint)seg1Off));
-            // col 10: mesh_len (u32) × N
+            // col 14: mesh_len (u32) × N
             b.AddRange(System.BitConverter.GetBytes((uint)seg0Len));
             b.AddRange(System.BitConverter.GetBytes((uint)seg1Len));
-            // col 11: text_off (u32) × N（Mesh 节点无 text）
+            // col 15: text_off (u32) × N（Mesh 节点无 text）
             b.AddRange(System.BitConverter.GetBytes(0u)); b.AddRange(System.BitConverter.GetBytes(0u));
-            // col 12: text_len (u32) × N
+            // col 16: text_len (u32) × N
             b.AddRange(System.BitConverter.GetBytes(0u)); b.AddRange(System.BitConverter.GetBytes(0u));
-            // col 13: tex_id (u32) × N（两节点同 atlas → tex_id=1）
+            // col 17: tex_id (u32) × N（两节点同 atlas → tex_id=1）
             b.AddRange(System.BitConverter.GetBytes(n0.texId));
             b.AddRange(System.BitConverter.GetBytes(n1.texId));
 
@@ -107,11 +109,6 @@ namespace LoomGUI.Tests
         }
 
         /// 追加 1 个 quad mesh segment 到 arena（4 顶点 + 6 索引）。
-        /// verts：本地 quad（0,0)-(5,0)-(5,5)-(0,5)，顶点序 TL→TR→BR→BL（design y-down，镜像
-        /// Rust `render::mesh::quad`）。uvs：按 Rust 同序 TL→TR→BR→BL 配对——
-        /// TL→(u0,v0) TR→(u1,v0) BR→(u1,v1) BL→(u0,v1)（即 uv[0]=uv_min、uv[2]=uv_max，
-        /// 与 `render::mesh::quad` 的 `let uvs = vec![[umin,vmin],[umax,vmin],[umax,vmax],[umin,vmax]]` 字节级一致）。
-        /// colors：白色不透明。indices：0,1,2,0,2,3（两个三角形）。
         static void AppendQuadSegment(List<byte> arena, float u0, float v0, float u1, float v1)
         {
             arena.AddRange(System.BitConverter.GetBytes(4)); // vert_count
@@ -123,7 +120,6 @@ namespace LoomGUI.Tests
                 arena.AddRange(System.BitConverter.GetBytes(v.Item2));
             }
             // uvs（与 verts 同序 TL→TR→BR→BL：TL=(u0,v0) TR=(u1,v0) BR=(u1,v1) BL=(u0,v1)）。
-            // 镜像 Rust render::mesh::quad（blob 字节契约——UV 不做 y-flip，core 烘焙什么 C# 读什么）。
             foreach (var uv in new[] { (u0, v0), (u1, v0), (u1, v1), (u0, v1) })
             {
                 arena.AddRange(System.BitConverter.GetBytes(uv.Item1));
@@ -156,9 +152,6 @@ namespace LoomGUI.Tests
             var pool = new MirrorPool();
 
             // mock atlas：1 张 64×64 atlas.png，tex_id=1。
-            // 两节点同 tex_id=1（同 atlas），不同 uv 子区（uv_min→uv_max）：
-            //   节点 A：uv_min=(0,0)   uv_max=(0.5,0.5)（atlas 左上 1/4）
-            //   节点 B：uv_min=(0.5,0) uv_max=(1,0.5)  （atlas 右上 1/4）
             var atlasTex = new Texture2D(64, 64);
             var texMap = new Dictionary<uint, Texture2D> { { 1u, atlasTex } };
 
@@ -167,7 +160,7 @@ namespace LoomGUI.Tests
                 var blob = new FrameBlob(TwoMeshBlobSameAtlas(
                     n0: (id: 100u, texId: 1u, u0: 0f,   v0: 0f, u1: 0.5f, v1: 0.5f),
                     n1: (id: 200u, texId: 1u, u0: 0.5f, v0: 0f, u1: 1f,   v1: 0.5f)));
-                Assert.IsTrue(blob.IsValid, "v3 blob 应 IsValid");
+                Assert.IsTrue(blob.IsValid, "v4 blob 应 IsValid");
                 Assert.AreEqual(2, blob.NodeCount, "blob 应含 2 节点");
                 pool.Sync(blob, root.transform, mm, texMap, Texture2D.whiteTexture, null);
 
@@ -188,7 +181,7 @@ namespace LoomGUI.Tests
                 Assert.AreSame(atlasTex, mrB.sharedMaterial.mainTexture,
                     "节点 B tex_id=1 → 应绑同一 atlasTex（同实例）");
 
-                // 关键断言：两节点同 atlas → MaterialManager key=(0, atlasTex, 0) 命中 →
+                // 关键断言：两节点同 atlas → MaterialManager key=(0, atlasTex, 0, false) 命中 →
                 // sharedMaterial 是**同一 Material 实例**（batchable）。
                 Assert.AreSame(mrA.sharedMaterial, mrB.sharedMaterial,
                     "同 atlas 两节点应共享同一 Material 实例（MaterialManager key 命中 → 可 batch）");

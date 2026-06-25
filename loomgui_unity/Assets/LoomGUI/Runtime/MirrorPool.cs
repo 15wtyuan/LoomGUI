@@ -4,9 +4,8 @@ using UnityEngine;
 namespace LoomGUI
 {
     /// 渲染树 → GameObject 镜像 diff（§14.6）。每帧 O(n)：标 stale → 遍历命中清 stale/更新 → 余销毁。
-    /// flatten：所有 GO 挂 root（§4.2）；localPosition=(local_x,local_y) 绝对 design；sortingOrder=sort_key。
-    /// blob local_x/local_y 是绝对 design（layout/mod.rs::write_back 递归累加父 origin）→
-    /// 巢状 + 绝对 localPosition 会双计父；flatten 后 world = root(绝对) = 正确，与 clip（绝对 design→root）一致。
+    /// flatten：所有 GO 挂 root（§4.2）；纯平移节点 localPosition=(Mtx,Mty) 绝对 design；非纯平移节点
+    /// GO transform=identity + _ObjectMatrix uniform；sortingOrder=sort_key。
     /// parent_id 仍在 blob 列但 Phase 2 渲染不用（v1c 事件再用）。
     /// Mesh 顶点已由 Rust（blob.rs）re-base 到节点本地空间，此处按 (x,y,0) 上传。
     /// Phase 2：渲染 payload_kind=1（Mesh）+ 2（Text）；Unchanged(0) 跳过。
@@ -47,7 +46,7 @@ namespace LoomGUI
         public void Sync(FrameBlob blob, Transform root, MaterialManager mm,
                          Dictionary<uint, Texture2D> texMap, Texture fallback, Font font)
         {
-            // 防御：陈旧/非 v3 blob 直接早退（§4.1 magic+version 校验）。不做清理——上一帧的 GO
+            // 防御：陈旧/非 v4 blob 直接早退（§4.1 magic+version 校验）。不做清理——上一帧的 GO
             // 维持不动比误销毁更安全；调用方应自检 IsValid 再 Sync。
             if (!blob.IsValid) return;
 
@@ -78,11 +77,24 @@ namespace LoomGUI
                 ro.Stale = false;
                 ro.IsText = kind == 2;
 
-                // flatten（§4.2）：所有节点挂 root，localPosition=绝对 design（避免巢状双计父）。
-                // blob local_x/local_y 是绝对 design 坐标；root scale=(sf,-sf,sf) 映射 design→world。
+                // flatten（§4.2）：所有节点挂 root（避免巢状双计父）。
+                // v4：world matrix Affine2 双路径——
+                //   纯平移（IsPureTranslation）：GO localPosition=(Mtx,Mty) + identity rotation/scale。
+                //   非纯平移：GO transform=identity，blob matrix 进 _ObjectMatrix uniform（shader × matrix）。
                 ro.Go.transform.SetParent(root, false);
-                ro.Go.transform.localPosition = new Vector3(blob.LocalX(i), blob.LocalY(i), 0f);
-                ro.Go.transform.localScale = Vector3.one;
+                bool pure = blob.IsPureTranslation(i);
+                if (pure)
+                {
+                    ro.Go.transform.localPosition = new Vector3(blob.Mtx(i), blob.Mty(i), 0f);
+                    ro.Go.transform.localRotation = Quaternion.identity;
+                    ro.Go.transform.localScale = Vector3.one;
+                }
+                else
+                {
+                    ro.Go.transform.localPosition = Vector3.zero;
+                    ro.Go.transform.localRotation = Quaternion.identity;
+                    ro.Go.transform.localScale = Vector3.one;
+                }
 
                 ro.Mr.sortingOrder = (int)blob.SortKey(i);
 
@@ -113,7 +125,15 @@ namespace LoomGUI
                     // v1b.2：按 tex_id 从 texMap 绑真纹理；0/缺失 → fallback（白占位）。
                     uint tid = blob.TexId(i);
                     Texture tex = (tid != 0 && texMap.TryGetValue(tid, out var t)) ? (Texture)t : fallback;
-                    ro.Mr.sharedMaterial = mm.Get(program: 0, tex, maskCtx, false);
+                    var mat = mm.Get(program: 0, tex, maskCtx, !pure);
+                    if (!pure)
+                    {
+                        var m = Matrix4x4.identity;
+                        m[0, 0] = blob.Ma(i); m[0, 1] = blob.Mc(i); m[0, 3] = blob.Mtx(i);
+                        m[1, 0] = blob.Mb(i); m[1, 1] = blob.Md(i); m[1, 3] = blob.Mty(i);
+                        mat.SetMatrix("_ObjectMatrix", m);
+                    }
+                    ro.Mr.sharedMaterial = mat;
                 }
                 else  // kind == 2 (Text)
                 {
@@ -130,7 +150,17 @@ namespace LoomGUI
                     // text program=1，texture=font atlas。font.material.mainTexture（atlas rebuild 后引用更新）。
                     // font 可能为 null（caller 未注入）→ 跳材质以免 NRE；测试用 BuildMesh 直接验。
                     if (font != null)
-                        ro.Mr.sharedMaterial = mm.Get(program: 1, font.material.mainTexture, maskCtx, false);
+                    {
+                        var tmat = mm.Get(program: 1, font.material.mainTexture, maskCtx, !pure);
+                        if (!pure)
+                        {
+                            var m = Matrix4x4.identity;
+                            m[0, 0] = blob.Ma(i); m[0, 1] = blob.Mc(i); m[0, 3] = blob.Mtx(i);
+                            m[1, 0] = blob.Mb(i); m[1, 1] = blob.Md(i); m[1, 3] = blob.Mty(i);
+                            tmat.SetMatrix("_ObjectMatrix", m);
+                        }
+                        ro.Mr.sharedMaterial = tmat;
+                    }
                 }
             }
 

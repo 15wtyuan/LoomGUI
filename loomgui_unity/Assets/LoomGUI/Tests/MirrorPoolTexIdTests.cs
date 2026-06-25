@@ -5,7 +5,7 @@ using UnityEngine;
 namespace LoomGUI.Tests
 {
     /// v1b.2：MirrorPool 按 blob 的 tex_id 从 texMap 绑对 Texture2D。
-    /// 手搓 v3 单节点 Mesh blob（tex_id=7）+ mock texMap{7→红 Texture2D}，
+    /// 手搓 v4 单节点 Mesh blob（tex_id=7）+ mock texMap{7→红 Texture2D}，
     /// 断言该节点 Mr.sharedMaterial.mainTexture == 红贴图（非 whiteTexture）。
     public class MirrorPoolTexIdTests
     {
@@ -13,14 +13,15 @@ namespace LoomGUI.Tests
         {
             var b = new List<byte>();
             b.AddRange(System.BitConverter.GetBytes(0x4D4F4F4Cu)); // magic
-            b.AddRange(System.BitConverter.GetBytes(3u));           // version=3
+            b.AddRange(System.BitConverter.GetBytes(4u));           // version=4
             b.AddRange(System.BitConverter.GetBytes(1u));           // node_count=1
 
-            const int HeaderLen = 12 + 14 * 4 + 2 * 4 + 2 * 4 + 2 * 4; // = 92
-            int[] elemSize = { 4, 4, 1, 4, 4, 4, 4, 4, 1, 4, 4, 4, 4, 4 }; // 14 列
+            const int HeaderLen = 12 + 18 * 4 + 2 * 4 + 2 * 4 + 2 * 4; // = 108
+            // v4 18 列 elemSize
+            int[] elemSize = { 4, 4, 1, 4, 4, 4, 4, 4, 4, 4, 4, 4, 1, 4, 4, 4, 4, 4 };
             int colOff = HeaderLen;
-            int[] offs = new int[14];
-            for (int i = 0; i < 14; i++) { offs[i] = colOff; colOff += 1 * elemSize[i]; }
+            int[] offs = new int[18];
+            for (int i = 0; i < 18; i++) { offs[i] = colOff; colOff += 1 * elemSize[i]; }
             int arenaOff = colOff;
 
             // mesh arena：1 quad
@@ -62,21 +63,25 @@ namespace LoomGUI.Tests
             b.AddRange(System.BitConverter.GetBytes(arenaOff + arenaLen)); // clip_table_off
             b.AddRange(System.BitConverter.GetBytes(4u));                  // clip_table_len
 
-            // 列数据（单节点，SOA≡AoS）
-            b.AddRange(System.BitConverter.GetBytes(nodeId)); // node_id
-            b.AddRange(System.BitConverter.GetBytes(-1));     // parent_id
-            b.Add(1);                                         // visible
-            b.AddRange(System.BitConverter.GetBytes(1f));     // alpha
-            b.AddRange(System.BitConverter.GetBytes(0u));     // sort_key
-            b.AddRange(System.BitConverter.GetBytes(0f));     // local_x
-            b.AddRange(System.BitConverter.GetBytes(0f));     // local_y
-            b.AddRange(System.BitConverter.GetBytes(0u));     // mask_context
-            b.Add(1);                                         // payload_kind=Mesh
-            b.AddRange(System.BitConverter.GetBytes((uint)0));        // mesh_off
-            b.AddRange(System.BitConverter.GetBytes((uint)arenaLen)); // mesh_len
-            b.AddRange(System.BitConverter.GetBytes(0u));     // text_off
-            b.AddRange(System.BitConverter.GetBytes(0u));     // text_len
-            b.AddRange(System.BitConverter.GetBytes(texId));  // tex_id（列 13）
+            // 列数据（单节点，SOA≡AoS；纯平移 world matrix）
+            b.AddRange(System.BitConverter.GetBytes(nodeId)); // col 0: node_id
+            b.AddRange(System.BitConverter.GetBytes(-1));     // col 1: parent_id
+            b.Add(1);                                         // col 2: visible
+            b.AddRange(System.BitConverter.GetBytes(1f));     // col 3: alpha
+            b.AddRange(System.BitConverter.GetBytes(0u));     // col 4: sort_key
+            b.AddRange(System.BitConverter.GetBytes(0u));     // col 5: mask_context
+            b.AddRange(System.BitConverter.GetBytes(1f));     // col 6: m_a
+            b.AddRange(System.BitConverter.GetBytes(0f));     // col 7: m_b
+            b.AddRange(System.BitConverter.GetBytes(0f));     // col 8: m_c
+            b.AddRange(System.BitConverter.GetBytes(1f));     // col 9: m_d
+            b.AddRange(System.BitConverter.GetBytes(0f));     // col 10: m_tx
+            b.AddRange(System.BitConverter.GetBytes(0f));     // col 11: m_ty
+            b.Add(1);                                         // col 12: payload_kind=Mesh
+            b.AddRange(System.BitConverter.GetBytes((uint)0));        // col 13: mesh_off
+            b.AddRange(System.BitConverter.GetBytes((uint)arenaLen)); // col 14: mesh_len
+            b.AddRange(System.BitConverter.GetBytes(0u));     // col 15: text_off
+            b.AddRange(System.BitConverter.GetBytes(0u));     // col 16: text_len
+            b.AddRange(System.BitConverter.GetBytes(texId));  // col 17: tex_id
 
             b.AddRange(arena);
             b.AddRange(System.BitConverter.GetBytes(0u));     // clip_count=0
@@ -99,7 +104,7 @@ namespace LoomGUI.Tests
             try
             {
                 var blob = new FrameBlob(SingleMeshBlobWithTexId(1u, 7u));
-                Assert.IsTrue(blob.IsValid, "v3 blob 应 IsValid");
+                Assert.IsTrue(blob.IsValid, "v4 blob 应 IsValid");
                 pool.Sync(blob, root.transform, mm, texMap, Texture2D.whiteTexture, null);
 
                 // 找到唯一 loom_node，断言其 material.mainTexture 是红贴图（非 whiteTexture）。

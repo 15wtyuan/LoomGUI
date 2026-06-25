@@ -4,10 +4,10 @@ using UnityEngine;
 
 namespace LoomGUI.Tests
 {
-    /// MirrorPool flatten 坐标契约测试（Task 2，§4.2）。
+    /// MirrorPool flatten 坐标契约测试（Task 2/8，§4.2）。
     ///
-    /// 验：blob local_x/local_y 是**绝对 design 坐标**（layout/mod.rs::write_back 递归累加父 origin）。
-    /// 故所有渲染 GO 必须**挂根 GO**（flatten），localPosition = 绝对值；
+    /// 验：v4 blob 的 world matrix m_tx/m_ty 是**绝对 design 坐标**（layout/mod.rs::write_back 递归累加父 origin）。
+    /// 故所有渲染 GO 必须**挂根 GO**（flatten），纯平移节点 localPosition = (Mtx,Mty) 绝对值；
     /// 否则巢状 + 绝对 localPosition 会把父坐标**双计**（Phase 1 单节点 pid=-1 未暴露此 bug）。
     ///
     /// 约定：root scale=(1,-1,1) pos=(0,0,0)（简化断言；design→world 即 (dx,-dy,0)）。
@@ -17,7 +17,7 @@ namespace LoomGUI.Tests
     /// 故本测试的**断言数值必须手算可证**——见类内注释的 hand-computation。
     public class MirrorPoolFlattenTests
     {
-        /// 构造一个 2 节点 Mesh blob（v3）。
+        /// 构造一个 2 节点 Mesh blob（v4，纯平移 world matrix）。
         /// node[0]=parent：visible=1, payload_kind=1, parent_id=-1, design=(100,200), mesh quad (0,0)(w,0)(w,h)(0,h)。
         /// node[1]=child：visible=1, payload_kind=1, parent_id=parent.id, design=(50,50), mesh quad 同尺寸。
         /// 同一 mesh arena，两个 mesh entry 紧挨；node 0 mesh_off=0，node 1 mesh_off=meshLen。
@@ -28,19 +28,19 @@ namespace LoomGUI.Tests
         {
             var b = new List<byte>();
 
-            // header: magic, version=3, node_count=2
+            // header: magic, version=4, node_count=2
             b.AddRange(System.BitConverter.GetBytes(0x4D4F4F4Cu));
-            b.AddRange(System.BitConverter.GetBytes(3u));
+            b.AddRange(System.BitConverter.GetBytes(4u));
             b.AddRange(System.BitConverter.GetBytes(2u));
 
-            const int HeaderLen = 12 + 14 * 4 + 2 * 4 + 2 * 4 + 2 * 4; // = 92
+            const int HeaderLen = 12 + 18 * 4 + 2 * 4 + 2 * 4 + 2 * 4; // = 108
             const int NodeCount = 2;
             int colOff = HeaderLen;
-            int[] offs = new int[14];
-            int[] elemSize = { 4, 4, 1, 4, 4, 4, 4, 4, 1, 4, 4, 4, 4, 4 };
+            int[] offs = new int[18];
+            // v4 18 列 elemSize
+            int[] elemSize = { 4, 4, 1, 4, 4, 4, 4, 4, 4, 4, 4, 4, 1, 4, 4, 4, 4, 4 };
             // SOA（列优先，镜像 blob.rs/FrameBlob）：每列跨 NodeCount×elemSize 字节，列内 node0/node1 紧挨。
-            // 旧版按 1 节点 elemSize 递进 + AoS 写数据 → 多节点读串列（SetTriangles idx 错），已修。
-            for (int i = 0; i < 14; i++) { offs[i] = colOff; colOff += NodeCount * elemSize[i]; }
+            for (int i = 0; i < 18; i++) { offs[i] = colOff; colOff += NodeCount * elemSize[i]; }
             int arenaOff = colOff;
 
             // mesh arena：2 个 mesh，每个 4 verts / 6 idx（顶点 re-base 到本地：(0,0)(w,0)(w,h)(0,h)）。
@@ -81,7 +81,7 @@ namespace LoomGUI.Tests
             int childMeshLen = (arena.Count - arenaStart) - childMeshOff;
             int arenaLen = arena.Count - arenaStart;
 
-            // 14 列 offset + mesh/text/clip 三 arena off+len
+            // 18 列 offset + mesh/text/clip 三 arena off+len
             foreach (var o in offs) b.AddRange(System.BitConverter.GetBytes(o));
             b.AddRange(System.BitConverter.GetBytes(arenaOff));              // mesh_arena_off
             b.AddRange(System.BitConverter.GetBytes(arenaLen));              // mesh_arena_len
@@ -91,7 +91,7 @@ namespace LoomGUI.Tests
             b.AddRange(System.BitConverter.GetBytes(clipOff));               // clip_table_off
             b.AddRange(System.BitConverter.GetBytes(4u));                    // clip_table_len（仅 clip_count）
 
-            // 列数据 SOA（列优先，镜像 blob.rs/FrameBlob）：每列先 node0 再 node1。列序同 elemSize。
+            // 列数据 SOA（列优先，镜像 blob.rs/FrameBlob）：每列先 node0 再 node1。
             // col 0 node_id
             b.AddRange(System.BitConverter.GetBytes(parentId));              // node0
             b.AddRange(System.BitConverter.GetBytes(childId));               // node1
@@ -106,30 +106,42 @@ namespace LoomGUI.Tests
             // col 4 sort_key
             b.AddRange(System.BitConverter.GetBytes(sortKey));
             b.AddRange(System.BitConverter.GetBytes(sortKey));
-            // col 5 local_x
+            // col 5 mask_context
+            b.AddRange(System.BitConverter.GetBytes(0u));                    // node0
+            b.AddRange(System.BitConverter.GetBytes(0u));                    // node1
+            // col 6 m_a（identity 2×2 = 1）
+            b.AddRange(System.BitConverter.GetBytes(1f));                    // node0
+            b.AddRange(System.BitConverter.GetBytes(1f));                    // node1
+            // col 7 m_b（identity = 0）
+            b.AddRange(System.BitConverter.GetBytes(0f));
+            b.AddRange(System.BitConverter.GetBytes(0f));
+            // col 8 m_c（identity = 0）
+            b.AddRange(System.BitConverter.GetBytes(0f));
+            b.AddRange(System.BitConverter.GetBytes(0f));
+            // col 9 m_d（identity = 1）
+            b.AddRange(System.BitConverter.GetBytes(1f));
+            b.AddRange(System.BitConverter.GetBytes(1f));
+            // col 10 m_tx（平移 x = 原绝对 design local_x）
             b.AddRange(System.BitConverter.GetBytes(px));                    // node0
             b.AddRange(System.BitConverter.GetBytes(cx));                    // node1
-            // col 6 local_y
+            // col 11 m_ty（平移 y = 原绝对 design local_y）
             b.AddRange(System.BitConverter.GetBytes(py));
             b.AddRange(System.BitConverter.GetBytes(cy));
-            // col 7 mask_context
-            b.AddRange(System.BitConverter.GetBytes(0u));
-            b.AddRange(System.BitConverter.GetBytes(0u));
-            // col 8 payload_kind
+            // col 12 payload_kind
             b.Add(1); b.Add(1);                                              // Mesh
-            // col 9 mesh_off
+            // col 13 mesh_off
             b.AddRange(System.BitConverter.GetBytes(0u));                    // node0
             b.AddRange(System.BitConverter.GetBytes((uint)childMeshOff));    // node1
-            // col 10 mesh_len
+            // col 14 mesh_len
             b.AddRange(System.BitConverter.GetBytes((uint)parentMeshLen));
             b.AddRange(System.BitConverter.GetBytes((uint)childMeshLen));
-            // col 11 text_off
+            // col 15 text_off
             b.AddRange(System.BitConverter.GetBytes(0u));
             b.AddRange(System.BitConverter.GetBytes(0u));
-            // col 12 text_len
+            // col 16 text_len
             b.AddRange(System.BitConverter.GetBytes(0u));
             b.AddRange(System.BitConverter.GetBytes(0u));
-            // col 13 tex_id（v3 新增，列优先：node0 再 node1；本测 0 占位）
+            // col 17 tex_id
             b.AddRange(System.BitConverter.GetBytes(0u));                    // node0
             b.AddRange(System.BitConverter.GetBytes(0u));                    // node1
 
@@ -184,7 +196,7 @@ namespace LoomGUI.Tests
                 {
                     var t = root.transform.GetChild(i);
                     // 无公开 API 直接查 node_id→GO；用 Sync 的两 GO 名都叫 loom_node，
-                    // 故按 localPosition 反查（parent design (100,200)→local (100,200,0)；child (50,50,0)）。
+                    // 故按 localPosition 反查（v4 纯平移：parent design (100,200)→local (100,200,0)；child (50,50,0)）。
                     var lp = t.localPosition;
                     if (Mathf.Approximately(lp.x, 100f) && Mathf.Approximately(lp.y, 200f)) parentGo = t;
                     else if (Mathf.Approximately(lp.x, 50f) && Mathf.Approximately(lp.y, 50f)) childGo = t;
