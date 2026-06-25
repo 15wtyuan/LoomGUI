@@ -11,6 +11,7 @@ pub mod stage;
 pub mod style;
 pub mod text;
 pub mod transform;
+pub mod tween;
 
 pub use stage::Stage;
 
