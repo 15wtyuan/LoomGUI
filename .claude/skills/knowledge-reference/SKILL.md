@@ -101,7 +101,7 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 - `extern "C"` 薄包装 + opaque `*mut StageHandle`；csbindgen 扫 `src/lib.rs` 生成 C# `Native` 类。
 - ABI：`stage_new/free/load_html/tick/borrow_frame/shutdown`。string 走 UTF-8 `*const u8`+len；`borrow_frame(h, *mut usize) -> *const u8` 返 Rust 拥有的帧 blob（下 tick 失效；未 tick 返 null+len=0）。
 - `StageHandle{ stage, frame_blob: Vec<u8> }`——tick 时 `build_blob` 覆写 frame_blob。
-- `build_blob(&FrameData) -> Vec<u8>`（**v3**, version=3，v1b.2）：SOA 公共头 **14 列**（v2 的 13 + `tex_id:u32` 末列——Image→真 tex_id，其余=0）+ mesh arena + **text_arena**（per text 节点 `font_size:u32|color:f32×4|glyph_count:u32|glyphs[{codepoint,pen_x,pen_y}]`）+ **clip 表**（`context_id→design rect`，嵌套交集）。`num_col_offsets=columns.len()` 自动传播列数→header_len=92。magic+version 进 header，C# `FrameBlob.IsValid` 校验（防 stale v2 blob）。**mesh 顶点 re-base 到节点本地**（减 transform.x/y）。全 LE。改 blob 格式必重编+换 .dll（坑 10）+ C# fixture 同步（坑 17）。
+- `build_blob(&FrameData) -> Vec<u8>`（**v4**, version=4，v1d.3）：SOA 公共头 **18 列**（v3 的 14 + transform 列 `local_x/local_y`(2) → world matrix `m_a,m_b,m_c,m_d,m_tx,m_ty`(6)；列序 node_id@0,parent_id@1,visible@2,alpha@3,sort_key@4,mask_context@5,m_a@6..m_ty@11,payload_kind@12,mesh_off@13,mesh_len@14,text_off@15,text_len@16,tex_id@17）+ mesh arena + text_arena + clip 表。`num_col_offsets=columns.len()` 自动传播列数→header_len=12+18*4=84，arena Mesh@84/Text@92/Clip@100。magic+version 进 header，C# `FrameBlob.IsValid` 校验（防 stale v3 blob）。**mesh 顶点 re-base 两路径**（v1d.3 坑 49）：identity/merge 节点减 tx,ty→top-local；非纯平移节点不减（顶点已 box 本地）。全 LE。改 blob 格式必重编+换 .dll（坑 10）+ C# fixture 同步（坑 17）。
 - v1b.3 FFI（常驻不 gate）：**删** v1b.2 的 `register_texture`/`image_src_count`/`image_src_at`（loose 散图模型被 atlas 取代）；**加** `atlas_count(h)->usize` / `atlas_info(h,i,*out_tex_id,*out_w,*out_h,*out_src_len)->*const u8`（返 atlas filename 无尾 NUL 串 + len，`*out_tex_id=(i+1)`，坑 16 len-based 读）。version 串 v1b.3。
 
 ### 2.9 Unity 后端（loomgui_unity，主文档 §14，v1a Phase 1）
@@ -206,6 +206,18 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 - **tick 管线（§15，v1d.2 增 ⓪+②）**：⓪消费 pending_focus_request(`focus_node`) → ①solve → process(含 click-to-focus) → ②`process_keys`(keydown/up+Tab) → last_events= → rematch → render。`:focus` 靠 `Compound.pseudo_focus`（dynamic.rs 单一定义，selector.rs `pub use` 重导出）+ `compound_matches_with_state` 门控 `node.focused` + `extract_dynamic_rules` 纳入 `:focus` 规则，rematch 每帧跑自动吃焦点变化。
 - **FFI/version**：version v1d.1→v1d.2；**3 新常驻 FFI**（`set_key_input`/`request_focus`/`focused_node`，csbindgen reimport regen）+ `KeyEvent` struct。.dll 重编（1694720→1709056B）。C# `EventType`+4(12-15)/`LoomEvent.modifiers`@6/`EventContext.keyCode`(uint touch_id)+`modifiers`/`DispatchPending`+4 BubbleRoute/`LoomInputCollector.CollectKeys`(新旧输入系统+KeyList 白名单+CurrentModifiers)/`LoomStage` LateUpdate 调 CollectKeys。
 - **两机约束（v1d.2 执行）**：core+ffi cargo test 全绿（core 206 + ffi 35 = 241）；C# 本机写未编译（无 Unity），家里机 EditMode（LoomEventHandlerTests 20 测含 T7 KeyDown/FocusIn bubble，BuildStage helper 须填 font_path）+ PlayMode（tabindex opt-in/click-to-focus/Tab 导航 wrap/keydown 需焦点+Tab 消费不发/:focus 伪类/request_focus 下 tick 生效）。subagent-driven 7 task 全 Approved + final review Ready（opus，C1 Critical 修：C# KeyEvent struct 漏手补，坑 35 复发）。spec `docs/superpowers/specs/2026-06-24-v1d.2-keyboard-focus-design.md`、plan `docs/superpowers/plans/2026-06-24-v1d.2-keyboard-focus.md`、验收 `docs/v1d.2-home-verification.md`。踩坑：csbindgen struct stub 复发（坑 35 强化）、Scene 加字段 plan 漏枚举构造点（坑 43）。
+
+### 2.21 transform 命中渲染 + NativeHost-lite（v1d.3，§10.3）
+- **transform = core 算累计世界矩阵，后端扁平**（spec §3）：`Affine2=[a,b,c,d,tx,ty]`（列主序 `x'=a·x+c·y+tx`，新 `loomgui_core/src/transform.rs`）+ free fn（`IDENTITY`/`from_translate/from_rotate/from_scale/mul(&m,&n)=m∘n`/`inverse`/`apply_point`/`is_pure_translation`）+ `Affine2Ext` trait（链式 by-value，Copy 类型按值地道）。`compute_world_transforms` 每 frame DFS：`local = T(rel)∘T(pivot)∘transform.matrix∘T(-pivot)`（**pivot=box center 固定**，rel=layout_rect.xy−父.xy，root rel=自身 xy）；`world=parent.world∘local`。借用安全：DFS 算局部 `worlds:Vec` 纯读 nodes，末尾 `scene.world_transforms=worlds`（避 &mut/& 冲突）。
+- **LocalTransform 存 Affine2 非 TRS 分解**（关键，spec §2.1 修订）：单节点 `scale(2,1) rotate(45deg)` 复合 = 剪切矩阵，存分解字段（tx/rot/scale）会在提取时**丢剪切**。故 `LocalTransform{matrix:Affine2}` 解析期 `mul` 累积。CSS 解析（mapping.rs `parse_transform`）：`translate(px,px)/rotate(deg)/scale(num[,num])` 左乘累积（最左最外层）；`skew/matrix()/%` 静默跳过；`iter_transform_funcs` 拆函数（无嵌套括号支持）。
+- **渲染两路径**（spec §3.5/§3.6，关键正确性）：**identity/merge 节点**走现有 TRS（顶点绝对 layout_rect + blob re-base 减 tx,ty→top-local + GO localPosition=tx,ty + 现有 material，**零回归**）；**非纯平移节点** break merge + 走 matrix shader（顶点 box 本地 (0,0,w,h) + blob 不 re-base + GO transform=identity + `_ObjectMatrix` uniform + shader `OBJECT_MATRIX` variant 顶点 `mul(_ObjectMatrix,float4(pos.xy,0,1))`→world）。两路径判断都用 `is_pure_translation(wm)`（a≈1&&b≈0&&c≈0&&d≈1，epsilon 1e-6，Rust↔C# 对齐）。剪切（任意仿射含非均匀缩放∘旋转）matrix 天然支持。
+- **命中 world_to_local**（spec §3.4）：`local_point = inverse(world).apply_point(point)` → 判本地 box `(0,0,w,h)`（top-left 原点，不用 layout_rect.x/y）。仿射逆含剪切可逆（det≠0）。clip 门控不变（世界 AABB，clip **不随 transform 旋转**，spec 决策 5 保守留 v1.x）。
+- **blob v3→v4 + pkg v5→v6**：frame blob transform 列 `local_x/local_y`(2) → world matrix `m_a,m_b,m_c,m_d,m_tx,m_ty`(6)（列序 node_id@0,parent_id@1,visible@2,alpha@3,sort_key@4,mask_context@5,m_a@6..m_ty@11,payload_kind@12,mesh_off@13,mesh_len@14,text_off@15,text_len@16,tex_id@17，**18 列**，header_len=12+18*4=84，arena Mesh@84/Text@92/Clip@100）。pkg `ResolvedStyle`+transform → bincode 变 → formatVersion 5→6。**两套 version 独立**（pkg v6 Rust-internal / blob v4 FFI 跨语言，C# IsValid 校验拒 v3）。version 串 v1d.2→v1d.3。
+- **NativeHost-lite（后端纯 C#，core 零改）**（spec §3.7）：HTML 普通 `<div id>` 占位（core 不认新 kind，当 Container 算 world matrix）；`NativeHostManager`（Runtime/）`Dictionary<uint,GameObject>` + `Bind(uint|string via FindNodeById)/Unbind/Clear/Sync(blob)`。Sync 每帧 node_id→i 扫，从 world matrix **TRS 分解**（rot=atan2(b,a),sx=√(a²+b²),sy=√(c²+d²),pos=(tx,ty,0)；剪切降级）设外部 GO + sort_key→Renderer.sortingOrder + node 消失 SetActive(false)。**复用既有 `find_node_by_id` FFI**（不新增）；零新渲染 FFI。
+- **调试 dump**（spec §3.8）：新 `loomgui_stage_dump_scene(h,*len)->*const u8` FFI（StageHandle 加 `dump_blob:CString`，下 tick 失效）+ core `dump_scene_json`（整树 JSON：node_id/parent/tag/id/classes/kind/layout/world_matrix/visible，id/classes **JSON 转义**）。C# `LoomStage.DumpScene()`（null-stage guard）。
+- **Unity 后端**：shader 加 `multi_compile _ OBJECT_MATRIX`（×CLIPPED 4 variant）+ `_ObjectMatrix` Matrix property/CBUFFER；`MaterialManager.Key` +`matrixFlag:bool`；`FrameBlob` v4 列读取（Ma..Mty/IsPureTranslation）；`MirrorPool.Sync` 双路径。**非纯平移 _ObjectMatrix 用 MaterialPropertyBlock**（不污染共享 material，坑 47）+ bounds 平移到世界（坑 48）。
+- **FFI/version**：version v1d.2→v1d.3；1 新常驻 FFI（`dump_scene`，csbindgen regen）+ StageHandle+dump_blob。.dll 重编（1709056→1733120B）。
+- **两机约束（v1d.3 执行）**：core+ffi cargo test 全绿（core 230 + ffi 37 + snapshot 3 = 270）；C# 本机写未编译（无 Unity），家里机 PlayMode（旋转/剪切/缩放容器视觉+子跟随/剪切走 matrix shader/命中 world_to_local/identity 不回归/NativeHost cube 跟随+显隐/DumpScene 日志/500 节点 stress）。subagent-driven 11 task 全 Approved + final review Ready（opus，跨语言矩阵契约全链核实正确，无 Critical；I1 culling+M1 MPB fix）。spec `docs/superpowers/specs/2026-06-25-v1d.3-transform-nativehost-design.md`、plan `docs/superpowers/plans/2026-06-25-v1d.3-transform-nativehost.md`。踩坑：Affine2 type/mod 同名 namespace 冲突（坑 46）、matrix shader GO identity 致 Mesh.bounds 剔除错位（坑 48）、共享 material _ObjectMatrix 覆盖（坑 47）。
 
 ## 3. 依赖 API 适配踩坑（v0 最大教训）
 
@@ -581,6 +593,34 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 **解决**：`CollectKeys` 统一 `Input.GetKeyDown/GetUp(KeyCode)`（工程 Both 模式可用），KeyCode 直对 core `key_code=(uint)KeyCode` 零转换；撤 #if 分支 + 映射函数。指针 `Collect` 仍双路径（多触摸要 InputSystem）。
 **教训**：输入采集**按需选 API**——多触摸/高级特性才上 InputSystem，键盘/鼠标按钮旧 `Input.GetKey(KeyCode)` 够；别因「新 API」一刀切套同模型。
 
+### 坑 46：`pub type Affine2` 与 `pub mod Affine2` 同名 type namespace 冲突（v1d.3-T1 plan self-review）
+
+**症状**：plan 初稿想用 `pub type Affine2=[f32;6]` + `pub mod Affine2 { pub const IDENTITY... }`（测试写 `Affine2::IDENTITY`）→ 编译错「conflicting definitions」。
+**根因**：Rust type namespace 同时容纳 type alias 和 module，同名冲突（value namespace 才允许 fn/const 同名 type）。
+**解决**：删 `mod Affine2`，用 free fn（`pub const IDENTITY`/`pub fn from_translate`）+ `Affine2Ext` trait（链式方法），测试 `use super::*` 直接 `IDENTITY`/`from_translate(...)`。
+**教训**：type alias 别想同名建 mod 提供常量；free fn + trait 是 Rust 惯用替代。plan 写代码也要 self-review 编译可行性。
+
+### 坑 47：matrix shader 节点共享 material 的 `_ObjectMatrix` 被覆盖（v1d.3 final review M1）
+
+**症状**：两个非纯平移节点同 (program,texture,maskContext) → `MaterialManager` 返同一 material 实例 → `mat.SetMatrix("_ObjectMatrix", m)` 最后写者胜出，除最后一节点外渲染错矩阵。
+**根因**：material key 含 `matrixFlag:bool` 不含矩阵值；直接 `mat.SetMatrix` 改的是**共享 material**（per-material 非 per-renderer）。
+**解决**：非纯平移节点 `_ObjectMatrix` 用 **MaterialPropertyBlock**（per-renderer，不污染缓存），`mpb.SetMatrix` + `Mr.SetPropertyBlock`。RenderObj 缓存 MPB lazy-init。
+**教训**：共享 material 缓存下，per-instance uniform 必走 MaterialPropertyBlock，别 SetMatrix 共享 material。spec §3.6 脚注「MPB 优于 SetMatrix」首版偷懒 Acceptable 但 final review 会要修。
+
+### 坑 48：matrix shader GO transform=identity 致 `Mesh.bounds` 视锥剔除错位（v1d.3 final review I1）
+
+**症状**：非纯平移节点 GO transform=identity + 顶点 box 本地 (0,0)(w,h) + shader `_ObjectMatrix` 移顶点到世界。`Mesh.RecalculateBounds()` 算 box 本地 bounds（原点附近小盒），Unity MeshRenderer 按它（经 GO identity）剔除 → 认为网格在原点而非真实世界位 → 旋转/剪切容器靠近屏幕边时**错误剔除/闪烁**。
+**根因**：Renderer 剔除用 `Mesh.bounds`（local，经 GO transform）；matrix 路径 GO transform=identity，bounds 不反映 `_ObjectMatrix` 世界变换。
+**解决**：`RecalculateBounds()` 后平移 `bounds.center` 到世界 `(tx+w/2, ty+h/2, 0)`（缩放 extents 可选；旋转 AABB 扩展留 v1.x）。
+**教训**：shader 变换顶点（绕过 GO Transform）时，Mesh.bounds 不会自动跟随——须手动同步 bounds 到世界范围，否则剔除/拾取错位。fgui vertexMatrix 也需留意（fgui 可能用别的剔除策略）。
+
+### 坑 49：matrix shader 渲染须分顶点 re-base 两路径（v1d.3-T4 核心正确性）
+
+**症状**：若所有节点统一 blob re-base 减 transform.x/y，非纯平移节点 world top-left≠layout top-left（旋转后偏移），re-base 错 → 顶点飞。
+**根因**：blob 的 `local_x/local_y`（现 world matrix tx/ty）双用：GO 定位 + mesh re-base。identity 时两值同（layout top-left=world top-left），非 identity 时 world top-left≠layout top-left，统一减 tx,ty 对非 identity 错。
+**解决**：render + blob 按纯平移分两路径——**identity**：render 产绝对顶点 + blob re-base 减 tx,ty → top-local + GO position=tx,ty（现状零改）；**非纯平移**：render 产 box 本地 (0..w)（减 layout_rect.xy）+ blob **不 re-base** + GO transform=identity + shader matrix。两处判断一致（同 `is_pure_translation`）。
+**教训**：blob transform 列语义从「layout 绝对」变「world 累计」时，re-base 基准必须分路径（identity 走 layout top-left，非 identity 走 box 本地）。这是 transform 渲染最易藏 bug 处，需跨 render/mod.rs + blob.rs 一致。
+
 ## 6. 调试/验证技巧
 
 - **★ 实现 v1+ 后端/渲染/对象模型前，先参考 `temp/FairyGUI-unity/` 源码**（对照机制、避免走歪——本 session 因没先看 fgui 的 sortingOrder/rect-mask/MaterialManager，初版设计走了弯路：误用 z 排序、误以为 rect mask 要独立 GO、把绘制序想复杂）。
@@ -691,10 +731,14 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 
 **v1d.2 defer（→ v1d.3+ / v1.x）**：IME/character（随 TextInput v1.x）、TextInput 控件（v1.x）、`:focus-visible`（区分键盘/鼠标聚焦成因，v1.x）、Tab preventDefault（业务拦 Tab，v1.x）、Tab 链缓存（每 Tab O(N) 即时构造，UI 规模可接受，v1e perf）。
 
+**v1d.3 ✅ 完成（main @ f431cb3，待家里机验）**：transform 命中渲染 + NativeHost-lite + 整树 dump，检测/矩阵全 core（transform.rs/scene/transform.rs），机制镜像 fgui vertexMatrix（已核实源码）。**transform**（`Affine2=[a,b,c,d,tx,ty]` 列主序 + free fn + Affine2Ext trait；`LocalTransform{matrix:Affine2}` **存矩阵非 TRS 分解**——剪切复合 `scale(2,1) rotate(45deg)` 在解析期 mul 累积不丢；`compute_world_transforms` 每 frame DFS `local=T(rel)∘T(pivot)∘matrix∘T(-pivot)` pivot=box center，`world=parent.world∘local`；`Scene.world_transforms:Vec<Affine2>`）+ **渲染两路径**（identity/merge 走 TRS 零回归；非纯平移 break merge 走 matrix shader `OBJECT_MATRIX` variant 顶点 `mul(_ObjectMatrix,pos)`，剪切天然支持；顶点 re-base 两路径坑 49）+ **命中 world_to_local**（inverse(affine 含剪切可逆)·point → 本地 box (0,0,w,h)）+ **clip 不旋转**（保守留 v1.x）+ **blob v3→v4**（transform 列 local_x/y(2)→world matrix m_a..m_ty(6)，18 列 header_len=84）+ **pkg v5→v6**（ResolvedStyle+transform bincode）+ **NativeHost-lite**（后端纯 C#，div 占位 + BindNativeHost(uint|string)，TRS 分解跟随 world matrix + 显隐 + sort_key→sortingOrder；复用既有 find_node_by_id，core 零改）+ **dump_scene**（FFI 整树 JSON，id/classes 转义）。version v1d.3；1 新常驻 FFI（dump_scene）+ StageHandle+dump_blob；.dll 重编（1709056→1733120B）。spec `docs/superpowers/specs/2026-06-25-v1d.3-transform-nativehost-design.md`、plan `docs/superpowers/plans/2026-06-25-v1d.3-transform-nativehost.md`。**两机约束**：core+ffi cargo test 全绿（core 230+ffi 37+snapshot 3=270）；C# 本机写未编译，家里机 PlayMode（旋转/剪切/缩放容器视觉+子跟随/剪切走 matrix shader/命中 world_to_local/identity 不回归/NativeHost cube 跟随+显隐/DumpScene 日志/500 节点 stress）。subagent-driven 11 task 全 Approved + final review Ready（opus，**跨语言矩阵契约全链核实正确无 Critical**；I1 culling+M1 MPB fix）。踩坑：Affine2 type/mod namespace 冲突（坑 46）、共享 material _ObjectMatrix 覆盖（坑 47）、matrix shader GO identity 致 Mesh.bounds 剔除错位（坑 48）、顶点 re-base 两路径（坑 49）。**drag 跟手**（v1d.1 defer）现可落地（transform.translate 已支持）。
+
+**v1d.3 defer（→ v1.x）**：transform-origin 自定义（固定 center）、旋转 clip box / shape mask（clip 不旋转保守）、CSS skew()/matrix() 解析（剪切已由 scale∘rotate 复合支持，skew() 函数本身）、translate % 单位、非均匀缩放∘旋转的 Mesh.bounds 旋转 AABB 扩展（剔除平移已修，旋转留 v1.x）、NativeHost 完整版（layout 测量/size push/hit/clip/所有权/Godot）、动态 UI/panel/实例化（独立子项目）、UI 树可视化 editor（dump 文本已支持）。
+
 **v1 其余 defer（v0 起，未动）**：
-- v1b 全收尾（A/B/C/mesh/CJK ✅）+ v1c.1 最小交互闭环 ✅ + v1c.2 路由完整化 ✅ + v1c.3 多触摸+CaptureTouch ✅ + v1c.4 click 增强 ✅ + v1d.1 拖拽+长按+safe-area ✅（家里机 PlayMode 验，main @ 013b96f，修坑 44/45）+ **v1d.2 键盘+焦点+Tab+:focus ✅（家里机 PlayMode 验）**。
-- **下一个**：v1d.3 transform（命中 world_to_local + drag 跟手落地 transform.translate）/ v1d.4 GTween / v1d.5 ScrollPane+滚轮+手势仲裁（关验收 #2，消费 v1d.1 drag）/ v1e perf。
-- NativeHost/virtualization/shape mask：v1.x。
+- v1b 全收尾（A/B/C/mesh/CJK ✅）+ v1c.1 最小交互闭环 ✅ + v1c.2 路由完整化 ✅ + v1c.3 多触摸+CaptureTouch ✅ + v1c.4 click 增强 ✅ + v1d.1 拖拽+长按+safe-area ✅（家里机 PlayMode 验，main @ 013b96f，修坑 44/45）+ v1d.2 键盘+焦点+Tab+:focus ✅（家里机 PlayMode 验）+ **v1d.3 transform+NativeHost-lite ✅（家里机 PlayMode 验）**。
+- **下一个**：v1d.4 GTween（transform 已支持，tween 能动 rotate/scale 更值）/ v1d.5 ScrollPane+滚轮+手势仲裁（关验收 #2，消费 v1d.1 drag）/ 动态 UI/panel 子项目（独立 spec）/ v1e perf。
+- virtualization/shape mask/NativeHost 完整版：v1.x。
 
 完整 defer 表见各 spec §7；v1a Phase 1 实现 ledger 见 `.git/sdd/progress.md`。
 
