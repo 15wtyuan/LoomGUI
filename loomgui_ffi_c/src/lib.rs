@@ -8,7 +8,7 @@ use loomgui_core::input::{EventRecord, KeyEvent, PointerEvent};
 use loomgui_core::scene::NodeId;
 use loomgui_core::stage::Stage;
 
-/// 版本字符串（C null-terminated `b"v1d.2\0"`）。Task 1 工具链 round-trip 用。
+/// 版本字符串（C null-terminated `b"v1d.3\0"`）。Task 1 工具链 round-trip 用。
 ///
 /// 返回 `*const u8`（csbindgen 映射为 C# `byte*`）；CString::as_ptr 给的是
 /// `*const c_char`（i8），这里 cast 对齐签名。OnceLock 缓存，避免每次分配+泄漏。
@@ -16,7 +16,7 @@ use loomgui_core::stage::Stage;
 pub extern "C" fn loomgui_version() -> *const u8 {
     static VERSION: std::sync::OnceLock<CString> = std::sync::OnceLock::new();
     VERSION
-        .get_or_init(|| CString::new("v1d.2").unwrap())
+        .get_or_init(|| CString::new("v1d.3").unwrap())
         .as_ptr() as *const u8
 }
 
@@ -418,10 +418,10 @@ mod tests {
     use std::ffi::CStr;
 
     #[test]
-    fn version_returns_c_string_v1d2() {
+    fn version_returns_c_string_v1d3() {
         unsafe {
             let s = CStr::from_ptr(loomgui_version() as *const i8);
-            assert_eq!(s.to_str().unwrap(), "v1d.2");
+            assert_eq!(s.to_str().unwrap(), "v1d.3");
         }
     }
 }
@@ -785,13 +785,13 @@ mod abi_tests {
         loomgui_stage_free(h);
     }
 
-    /// v1d.2：version 字符串 == "v1d.2"。
+    /// v1d.3：version 字符串 == "v1d.3"。
     #[test]
-    fn version_is_v1d_2() {
+    fn version_is_v1d_3() {
         let p = loomgui_version();
         let len = (0..).take_while(|&i| unsafe { *p.add(i) != 0 }).count();
         let s = std::str::from_utf8(unsafe { std::slice::from_raw_parts(p, len) }).unwrap();
-        assert_eq!(s, "v1d.2");
+        assert_eq!(s, "v1d.3");
     }
 
     /// v1d.1：EventRecord 仍 20B（drag/longpress 复用 event_type 空位 6-9）、PointerEvent 16B、Canceled=3。

@@ -196,7 +196,7 @@ pub fn reorder_for_batching(scene: &Scene, nodes: &mut [RenderNode]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::render::node::{BlendMode, NodePayload, NodeTransform};
+    use crate::render::node::{BlendMode, NodePayload};
     use crate::scene::node::*;
 
     fn placeholder_rn(i: usize) -> RenderNode {
@@ -207,7 +207,7 @@ mod tests {
             alpha: 1.0,
             grayed: false,
             color_tint: [1.0; 4],
-            transform: NodeTransform::default(),
+            world_matrix: crate::transform::IDENTITY,
             blend: BlendMode::Normal,
             mask_context: MaskContext(0),
             sort_key: 0,
@@ -427,7 +427,7 @@ mod tests {
     }
 
     // —— v1b.4 T1：AABB 保序重排（reorder_unit / reorder_for_batching）——
-    // NodePayload / NodeTransform / MaskContext / BlendMode / Node / NodeKind / Rect / Scene
+    // NodePayload / MaskContext / BlendMode / Node / NodeKind / Rect / Scene
     // 已由上方 use 语句导入；以下测直接使用。
 
     /// 构造 program=0 Mesh RenderNode（给 reorder_unit 直接喂 unit 索引对应的 nodes）。
@@ -439,7 +439,7 @@ mod tests {
             alpha: 1.0,
             grayed: false,
             color_tint: [1.0; 4],
-            transform: NodeTransform::default(),
+            world_matrix: crate::transform::IDENTITY,
             blend: BlendMode::Normal,
             mask_context: MaskContext(mask),
             sort_key: 0,

@@ -4,7 +4,7 @@
 //! 前置：`batch::reorder_for_batching` 已把同 DrawState 不相交元素排到 sort_key 相邻。
 //! Text（program=1）/ 不同 DrawState / Unchanged 保持独立。
 
-use crate::render::node::{NodePayload, NodeTransform, RenderNode};
+use crate::render::node::{NodePayload, RenderNode};
 
 /// DrawState 键（texture, program, mask_context）。program=0 Mesh 才参与合并。
 fn mesh_key(rn: &RenderNode) -> Option<(u32, u32, u32)> {
@@ -86,7 +86,7 @@ fn merge_batch(nodes: &[RenderNode], batch: &[usize]) -> RenderNode {
         alpha: 1.0,
         grayed: false,
         color_tint: [1.0; 4],
-        transform: NodeTransform { x: 0.0, y: 0.0, ..NodeTransform::default() },
+        world_matrix: crate::transform::IDENTITY,
         blend: last.blend,
         mask_context: last.mask_context,
         sort_key: last.sort_key,
@@ -110,7 +110,7 @@ mod tests {
         RenderNode {
             node_id: id, parent_id: None, visible: true, alpha,
             grayed: false, color_tint: [1.0; 4],
-            transform: NodeTransform::default(),
+            world_matrix: crate::transform::IDENTITY,
             blend: BlendMode::Normal, mask_context: MaskContext(0), sort_key,
             payload: NodePayload::Mesh {
                 verts: vec![[rect_off, 0.0], [rect_off + 10.0, 0.0],
@@ -150,9 +150,8 @@ mod tests {
         }
         // 锚 node_id = min(5,3) = 3。
         assert_eq!(out[0].node_id, 3, "锚 = batch 内最小 node_id");
-        // merged transform=0 / alpha=1。
-        assert_eq!(out[0].transform.x, 0.0);
-        assert_eq!(out[0].transform.y, 0.0);
+        // merged world_matrix=IDENTITY / alpha=1。
+        assert!(crate::transform::is_identity(&out[0].world_matrix));
         assert!((out[0].alpha - 1.0).abs() < 1e-6);
     }
 

@@ -22,29 +22,6 @@ pub enum BlendMode {
     Normal,
 }
 
-/// 节点本地变换（相对父）。v0 仅平移 + 单位 scale（layout_rect 直填 x/y），
-/// scale/rotation 留给后续动效。
-#[derive(Debug, Clone, Copy, Serialize)]
-pub struct NodeTransform {
-    pub x: f32,
-    pub y: f32,
-    pub scale_x: f32,
-    pub scale_y: f32,
-    pub rotation: f32,
-}
-
-impl Default for NodeTransform {
-    fn default() -> Self {
-        Self {
-            x: 0.0,
-            y: 0.0,
-            scale_x: 1.0,
-            scale_y: 1.0,
-            rotation: 0.0,
-        }
-    }
-}
-
 /// 节点渲染载荷。
 ///
 /// - `Unchanged`：脏标志未置（v0 build_render_nodes 不产出，留作 stage 层 diff 结果）。
@@ -85,7 +62,7 @@ pub struct RenderNode {
     pub alpha: f32,
     pub grayed: bool,
     pub color_tint: [f32; 4],
-    pub transform: NodeTransform,
+    pub world_matrix: crate::transform::Affine2,
     pub blend: BlendMode,
     pub mask_context: MaskContext,
     pub sort_key: u32,
@@ -105,7 +82,7 @@ mod serde_smoke_tests {
             alpha: 1.0,
             grayed: false,
             color_tint: [1.0; 4],
-            transform: NodeTransform::default(),
+            world_matrix: crate::transform::IDENTITY,
             blend: BlendMode::Normal,
             mask_context: MaskContext(2),
             sort_key: 5,

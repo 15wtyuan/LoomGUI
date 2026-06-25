@@ -55,7 +55,7 @@ pub fn build_render_nodes(scene: &Scene, font: &Font, textures: &TextureRegistry
             alpha: 1.0,
             grayed: false,
             color_tint: [1.0, 1.0, 1.0, 1.0],
-            transform: NodeTransform::default(),
+            world_matrix: crate::transform::IDENTITY,
             blend: BlendMode::Normal,
             mask_context: MaskContext(0),
             sort_key: 0,
@@ -69,10 +69,17 @@ pub fn build_render_nodes(scene: &Scene, font: &Font, textures: &TextureRegistry
         rn.parent_id = n.parent.map(|p| p.0 as u32);
         rn.alpha = n.style.opacity;
         rn.color_tint = n.style.color;
-        rn.transform.x = n.layout_rect.x;
-        rn.transform.y = n.layout_rect.y;
+        let wm = scene.world_transforms[n.id.0];
+        rn.world_matrix = wm;
         rn.visible = true;
-        let rect = &n.layout_rect;
+        // v1d.3 §3.5b：纯平移（identity/merge）→ 绝对顶点（layout_rect，供 merge）；
+        // 非纯平移 → box 本地 (0,0,w,h)（供 matrix shader）。
+        let rect = if crate::transform::is_pure_translation(&wm) {
+            n.layout_rect
+        } else {
+            crate::scene::node::Rect { x: 0.0, y: 0.0, w: n.layout_rect.w, h: n.layout_rect.h }
+        };
+        let rect = &rect;
         match &n.kind {
             NodeKind::Container | NodeKind::Button => {
                 let color = n.style.background_color.unwrap_or([0.0, 0.0, 0.0, 0.0]);
@@ -219,6 +226,7 @@ mod tests {
             Some([1.0, 0.0, 0.0, 1.0]),
         ));
         let font = test_font().expect("need test font for build_render_nodes");
+        crate::scene::transform::compute_world_transforms(&mut scene);
         let frame = build_render_nodes(&scene, &font, &TextureRegistry::default());
         let rns = &frame.nodes;
         assert_eq!(rns.len(), 1);
@@ -241,9 +249,9 @@ mod tests {
             }
             _ => panic!("expected Mesh payload"),
         }
-        // transform 直填 layout_rect
-        assert_eq!(rns[0].transform.x, 1.0);
-        assert_eq!(rns[0].transform.y, 2.0);
+        // world_matrix 纯平移 → tx/ty = layout_rect x/y
+        assert_eq!(rns[0].world_matrix[4], 1.0);
+        assert_eq!(rns[0].world_matrix[5], 2.0);
     }
 
     #[test]
@@ -261,6 +269,7 @@ mod tests {
         let tid = { tex.insert("logo.png", TexMeta {
             tex_id: 1, uv_min: [0.25, 0.0], uv_max: [0.5, 1.0], width: 200, height: 100,
         }); 1 };
+        crate::scene::transform::compute_world_transforms(&mut scene);
         let frame = build_render_nodes(&scene, &font, &tex);
         match &frame.nodes[0].payload {
             NodePayload::Mesh { texture, uvs, .. } => {
@@ -285,6 +294,7 @@ mod tests {
 
         let font = test_font().expect("need test font");
         let tex = TextureRegistry::default(); // 未注册
+        crate::scene::transform::compute_world_transforms(&mut scene);
         let frame = build_render_nodes(&scene, &font, &tex);
         let got = match &frame.nodes[0].payload {
             NodePayload::Mesh { texture, .. } => *texture,
@@ -305,6 +315,7 @@ mod tests {
 
         let font = test_font().expect("need test font");
         let tex = TextureRegistry::default(); // 未注册
+        crate::scene::transform::compute_world_transforms(&mut scene);
         let frame = build_render_nodes(&scene, &font, &tex);
         match &frame.nodes[0].payload {
             NodePayload::Mesh { uvs, .. } => {
@@ -346,6 +357,7 @@ mod tests {
         };
         scene.nodes.push(n);
 
+        crate::scene::transform::compute_world_transforms(&mut scene);
         let frame = build_render_nodes(&scene, &font, &TextureRegistry::default());
         let rns = &frame.nodes;
         match &rns[0].payload {
@@ -409,6 +421,7 @@ mod tests {
         };
         scene.nodes.push(n);
 
+        crate::scene::transform::compute_world_transforms(&mut scene);
         let frame = build_render_nodes(&scene, &font, &TextureRegistry::default());
         let rns = &frame.nodes;
         match &rns[0].payload {
@@ -455,6 +468,7 @@ mod tests {
         scene.nodes.push(leaf);
 
         let font = test_font().expect("need test font");
+        crate::scene::transform::compute_world_transforms(&mut scene);
         let frame = build_render_nodes(&scene, &font, &TextureRegistry::default());
         let rns = &frame.nodes;
         // 3 个不同 mask_context → 不合并 → 保 3 节点；sort_key 经 reorder 重赋后仍单调。
@@ -499,6 +513,7 @@ mod tests {
             TexMeta { tex_id: 1, uv_min: [0.0, 0.0], uv_max: [1.0, 1.0], width: 10, height: 10 },
         );
 
+        crate::scene::transform::compute_world_transforms(&mut scene);
         let frame = build_render_nodes(&scene, &font, &tex);
         // root(Container, tex_id=0) + 1 merged(Image tex_id=1) = 2 节点（原 3）。
         let mesh_count = frame
@@ -507,15 +522,14 @@ mod tests {
             .filter(|n| matches!(&n.payload, NodePayload::Mesh { verts, .. } if verts.len() == 8))
             .count();
         assert_eq!(mesh_count, 1, "两同 atlas Image → 1 个 8-vert merged mesh");
-        // merged node 的 transform 应为 (0,0)（merge_batch 把锚 transform 置 0），
+        // merged node 的 world_matrix 应为 IDENTITY（merge_batch 把锚矩阵置 identity），
         // 顶点保持绝对 design 坐标。
         let merged = frame
             .nodes
             .iter()
             .find(|n| matches!(&n.payload, NodePayload::Mesh { verts, .. } if verts.len() == 8))
             .expect("merged node 存在");
-        assert_eq!(merged.transform.x, 0.0);
-        assert_eq!(merged.transform.y, 0.0);
+        assert!(crate::transform::is_identity(&merged.world_matrix));
         assert!((merged.alpha - 1.0).abs() < 1e-6, "merged alpha=1 防 blob 二次烤");
     }
 }

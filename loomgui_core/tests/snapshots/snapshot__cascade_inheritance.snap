@@ -16,13 +16,14 @@ expression: json
       0.0,
       1.0
     ],
-    "transform": {
-      "x": 0.0,
-      "y": 0.0,
-      "scale_x": 1.0,
-      "scale_y": 1.0,
-      "rotation": 0.0
-    },
+    "world_matrix": [
+      1.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0
+    ],
     "blend": "Normal",
     "mask_context": 0,
     "sort_key": 0,
@@ -115,13 +116,14 @@ expression: json
       0.0,
       1.0
     ],
-    "transform": {
-      "x": 0.0,
-      "y": 0.0,
-      "scale_x": 1.0,
-      "scale_y": 1.0,
-      "rotation": 0.0
-    },
+    "world_matrix": [
+      1.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0
+    ],
     "blend": "Normal",
     "mask_context": 0,
     "sort_key": 1,
