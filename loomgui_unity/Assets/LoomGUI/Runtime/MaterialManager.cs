@@ -15,9 +15,9 @@ namespace LoomGUI
 
         public MaterialManager(Shader shader) { _shader = shader; }
 
-        public Material Get(int program, Texture texture, uint maskContext)
+        public Material Get(int program, Texture texture, uint maskContext, bool matrixFlag)
         {
-            var key = new Key(program, texture, maskContext);
+            var key = new Key(program, texture, maskContext, matrixFlag);
             if (!_cache.TryGetValue(key, out var mat))
             {
                 mat = new Material(_shader);
@@ -34,6 +34,7 @@ namespace LoomGUI
                     if (_clipBoxByCtx.TryGetValue(maskContext, out var cb))
                         mat.SetVector("_ClipBox", cb);
                 }
+                if (matrixFlag) mat.EnableKeyword("OBJECT_MATRIX");
                 _cache[key] = mat;
             }
             return mat;
@@ -67,13 +68,15 @@ namespace LoomGUI
             readonly int _program;
             readonly Texture _tex;
             readonly uint _ctx;
-            public Key(int p, Texture t, uint c) { _program = p; _tex = t; _ctx = c; }
+            readonly bool _matrix;
+            public Key(int p, Texture t, uint c, bool m) { _program = p; _tex = t; _ctx = c; _matrix = m; }
             public uint Ctx => _ctx;   // SetClipBox 按 ctx 反查已缓存 material（独立于 program/tex）。
-            public override int GetHashCode() => System.HashCode.Combine(_program, _tex, (int)_ctx);
+            public override int GetHashCode() => System.HashCode.Combine(_program, _tex, (int)_ctx, _matrix);
             public override bool Equals(object o) => o is Key k
                 && k._program == _program
                 && k._tex == _tex
-                && k._ctx == _ctx;
+                && k._ctx == _ctx
+                && k._matrix == _matrix;
         }
     }
 }

@@ -6,6 +6,7 @@ Shader "LoomGUI/Unlit"
         _SrcFactor ("SrcFactor", Float) = 5   // SrcAlpha
         _DstFactor ("DstFactor", Float) = 10  // OneMinusSrcAlpha
         _ClipBox ("ClipBox", Vector) = (0,0,1,1)
+        _ObjectMatrix ("Object Matrix", Matrix) = (1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1)
     }
     SubShader
     {
@@ -20,6 +21,7 @@ Shader "LoomGUI/Unlit"
             #pragma vertex vert
             #pragma fragment frag
             #pragma multi_compile _ CLIPPED
+            #pragma multi_compile _ OBJECT_MATRIX
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
 
             struct Attr { float4 pos : POSITION; float4 color : COLOR; float2 uv : TEXCOORD0; };
@@ -29,16 +31,27 @@ Shader "LoomGUI/Unlit"
             CBUFFER_START(UnityPerMaterial)
                 float4 _MainTex_ST;
                 float4 _ClipBox;
+                float4x4 _ObjectMatrix;
             CBUFFER_END
             TEXTURE2D(_MainTex); SAMPLER(sampler_MainTex);
 
             Vary vert(Attr v) {
                 Vary o;
-                o.pos = TransformObjectToHClip(v.pos.xyz);
+#if defined(OBJECT_MATRIX)
+                // GO transform=identity：本地顶点 × _ObjectMatrix → design world；根 GO 处理 y-flip + 缩放
+                float3 worldPos = mul(_ObjectMatrix, float4(v.pos.xy, 0, 1)).xyz;
+                o.pos = TransformWorldToHClip(worldPos);
+                float2 clipWorldXY = worldPos.xy;
+#else
+                float3 worldPos = TransformObjectToWorld(v.pos.xyz);
+                o.pos = TransformWorldToHClip(worldPos);
+                float2 clipWorldXY = worldPos.xy;
+#endif
                 o.color = v.color;
                 o.uv = TRANSFORM_TEX(v.uv, _MainTex);
-                float2 worldXY = TransformObjectToWorld(v.pos.xyz).xy;
-                o.clipPos = worldXY * _ClipBox.zw + _ClipBox.xy;
+#if defined(CLIPPED)
+                o.clipPos = clipWorldXY * _ClipBox.zw + _ClipBox.xy;
+#endif
                 return o;
             }
             half4 frag(Vary i) : SV_Target {

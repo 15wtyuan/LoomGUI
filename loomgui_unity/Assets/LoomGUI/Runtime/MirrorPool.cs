@@ -113,7 +113,7 @@ namespace LoomGUI
                     // v1b.2：按 tex_id 从 texMap 绑真纹理；0/缺失 → fallback（白占位）。
                     uint tid = blob.TexId(i);
                     Texture tex = (tid != 0 && texMap.TryGetValue(tid, out var t)) ? (Texture)t : fallback;
-                    ro.Mr.sharedMaterial = mm.Get(program: 0, tex, maskCtx);
+                    ro.Mr.sharedMaterial = mm.Get(program: 0, tex, maskCtx, false);
                 }
                 else  // kind == 2 (Text)
                 {
@@ -130,7 +130,7 @@ namespace LoomGUI
                     // text program=1，texture=font atlas。font.material.mainTexture（atlas rebuild 后引用更新）。
                     // font 可能为 null（caller 未注入）→ 跳材质以免 NRE；测试用 BuildMesh 直接验。
                     if (font != null)
-                        ro.Mr.sharedMaterial = mm.Get(program: 1, font.material.mainTexture, maskCtx);
+                        ro.Mr.sharedMaterial = mm.Get(program: 1, font.material.mainTexture, maskCtx, false);
                 }
             }
 

@@ -10,8 +10,8 @@ namespace LoomGUI.Tests
         {
             var mm = new MaterialManager(Shader.Find("LoomGUI/Unlit"));
             var white = Texture2D.whiteTexture;
-            var a = mm.Get(program: 0, white, maskContext: 0);
-            var b = mm.Get(program: 0, white, maskContext: 0);
+            var a = mm.Get(program: 0, white, maskContext: 0, false);
+            var b = mm.Get(program: 0, white, maskContext: 0, false);
             Assert.AreSame(a, b);
         }
 
@@ -20,8 +20,8 @@ namespace LoomGUI.Tests
         {
             var mm = new MaterialManager(Shader.Find("LoomGUI/Unlit"));
             var white = Texture2D.whiteTexture;
-            var a = mm.Get(0, white, 0);
-            var b = mm.Get(0, white, 1);
+            var a = mm.Get(0, white, 0, false);
+            var b = mm.Get(0, white, 1, false);
             Assert.AreNotSame(a, b);
         }
 
@@ -31,8 +31,8 @@ namespace LoomGUI.Tests
         {
             var mm = new MaterialManager(Shader.Find("LoomGUI/Unlit"));
             var white = Texture2D.whiteTexture;
-            var m0 = mm.Get(0, white, 0);
-            var m1 = mm.Get(0, white, 1);
+            var m0 = mm.Get(0, white, 0, false);
+            var m1 = mm.Get(0, white, 1, false);
             Assert.IsFalse(m0.IsKeywordEnabled("CLIPPED"), "ctx=0: 不裁剪，无 CLIPPED keyword");
             Assert.IsTrue(m1.IsKeywordEnabled("CLIPPED"), "ctx>0: 启用 CLIPPED variant");
         }
@@ -44,7 +44,7 @@ namespace LoomGUI.Tests
         {
             var mm = new MaterialManager(Shader.Find("LoomGUI/Unlit"));
             var white = Texture2D.whiteTexture;
-            var m = mm.Get(0, white, 7);   // 建 ctx=7 material
+            var m = mm.Get(0, white, 7, false);   // 建 ctx=7 material
             var box = new Vector4(-1.5f, 2.5f, 0.01f, 0.02f);
             mm.SetClipBox(7, box);
             Assert.AreEqual(box, m.GetVector("_ClipBox"), "SetClipBox 应刷新已缓存 material 的 _ClipBox");
@@ -58,7 +58,7 @@ namespace LoomGUI.Tests
             var white = Texture2D.whiteTexture;
             var box = new Vector4(-2f, 2f, 0.01f, 0.01f);
             mm.SetClipBox(3, box);          // dict 先写
-            var m = mm.Get(0, white, 3);    // 建材质时应读取 dict
+            var m = mm.Get(0, white, 3, false);    // 建材质时应读取 dict
             Assert.AreEqual(box, m.GetVector("_ClipBox"), "首帧：SetClipBox 先于 Get，Get 建材质时带 box");
             Assert.IsTrue(m.IsKeywordEnabled("CLIPPED"));
         }
