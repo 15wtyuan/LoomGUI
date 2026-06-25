@@ -108,6 +108,8 @@ pub struct Scene {
     pub dynamic_rules: crate::style::dynamic::DynamicRuleTable,
     /// v1d.2：当前焦点节点（单一全局，照 fgui Stage.focus）。None=无焦点。
     pub focused_node: Option<NodeId>,
+    /// v1d.3：每节点累计世界矩阵（compute_world_transforms 填）。index = NodeId.0。运行时态，不进 pkg。
+    pub world_transforms: Vec<crate::transform::Affine2>,
 }
 
 impl Scene {
@@ -121,6 +123,7 @@ impl Scene {
             nodes: Vec::new(),
             dynamic_rules: crate::style::dynamic::DynamicRuleTable::default(),
             focused_node: None,
+            world_transforms: Vec::new(),
         };
         for (i, (parent_idx, kind, style, classes, id_attr, draggable, tabindex)) in entries.iter().enumerate() {
             scene.nodes.push(Node {
@@ -288,6 +291,7 @@ mod tests {
             nodes: vec![],
             dynamic_rules: Default::default(),
             focused_node: None,
+            world_transforms: Vec::new(),
         };
         assert!(
             s.dynamic_rules.rules.is_empty(),
@@ -309,6 +313,7 @@ mod tests {
             nodes: vec![],
             dynamic_rules: Default::default(),
             focused_node: None,
+            world_transforms: Vec::new(),
         };
         assert_eq!(s.focused_node, None, "Scene 默认 focused_node=None");
     }

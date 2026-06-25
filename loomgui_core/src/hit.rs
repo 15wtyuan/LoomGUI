@@ -79,6 +79,7 @@ mod tests {
             nodes: vec![root, a, b],
             dynamic_rules: Default::default(),
             focused_node: None,
+            world_transforms: Vec::new(),
         }
     }
 
@@ -89,6 +90,7 @@ mod tests {
             nodes: vec![],
             dynamic_rules: Default::default(),
             focused_node: None,
+            world_transforms: Vec::new(),
         };
         assert_eq!(hit_test(&s, (10.0, 10.0)), None);
     }

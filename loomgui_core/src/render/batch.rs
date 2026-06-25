@@ -222,6 +222,7 @@ mod tests {
             nodes: vec![],
             dynamic_rules: Default::default(),
             focused_node: None,
+            world_transforms: Vec::new(),
         };
         let mut root = Node::default();
         root.id = NodeId(0);
@@ -271,6 +272,7 @@ mod tests {
             nodes: vec![],
             dynamic_rules: Default::default(),
             focused_node: None,
+            world_transforms: Vec::new(),
         };
         let mut root = Node::default();
         root.id = NodeId(0);
@@ -298,6 +300,7 @@ mod tests {
             nodes: vec![],
             dynamic_rules: Default::default(),
             focused_node: None,
+            world_transforms: Vec::new(),
         };
         let mut root = Node::default();
         root.id = NodeId(0);
@@ -340,6 +343,7 @@ mod tests {
             nodes: vec![],
             dynamic_rules: Default::default(),
             focused_node: None,
+            world_transforms: Vec::new(),
         };
         let mut outer = Node::default();
         outer.id = NodeId(0);
@@ -391,6 +395,7 @@ mod tests {
             nodes: vec![],
             dynamic_rules: Default::default(),
             focused_node: None,
+            world_transforms: Vec::new(),
         };
         let mut outer = Node::default();
         outer.id = NodeId(0);
@@ -454,7 +459,7 @@ mod tests {
     fn reorder_unit_same_drawstate_disjoint_gathers() {
         // [A(tex1, x=0), B(tex2, x=100), C(tex1, x=200)] 全不相交 → C 前移到 A 旁。
         // scene.nodes 与 nodes vec 同序同长（reorder_unit 用 scene.nodes[idx].layout_rect 查 AABB）。
-        let mut scene = Scene { roots: vec![], nodes: vec![], dynamic_rules: Default::default(), focused_node: None };
+        let mut scene = Scene { roots: vec![], nodes: vec![], dynamic_rules: Default::default(), focused_node: None, world_transforms: Vec::new() };
         scene.nodes.push({ let mut n = Node::default(); n.layout_rect = Rect{x:0.0,y:0.0,w:10.0,h:10.0}; n });
         scene.nodes.push({ let mut n = Node::default(); n.layout_rect = Rect{x:100.0,y:0.0,w:10.0,h:10.0}; n });
         scene.nodes.push({ let mut n = Node::default(); n.layout_rect = Rect{x:200.0,y:0.0,w:10.0,h:10.0}; n });
@@ -475,7 +480,7 @@ mod tests {
         // 但不越过 A（保 A→C 绘制序，防遮挡）。B(tex2) 被推后。
         // 注：fgui DoFairyBatching 语义非「相交=不动」，而是「向后扫到首个相交即停，
         // 但 k 已在相交前按同 material 聚拢点算出」——同 material 相交仍聚拢到紧邻。
-        let mut scene = Scene { roots: vec![], nodes: vec![], dynamic_rules: Default::default(), focused_node: None };
+        let mut scene = Scene { roots: vec![], nodes: vec![], dynamic_rules: Default::default(), focused_node: None, world_transforms: Vec::new() };
         scene.nodes.push({ let mut n = Node::default(); n.layout_rect = Rect{x:0.0,y:0.0,w:50.0,h:50.0}; n });
         scene.nodes.push({ let mut n = Node::default(); n.layout_rect = Rect{x:100.0,y:0.0,w:10.0,h:10.0}; n });
         scene.nodes.push({ let mut n = Node::default(); n.layout_rect = Rect{x:10.0,y:10.0,w:50.0,h:50.0}; n });
@@ -510,7 +515,7 @@ mod tests {
     fn reorder_splits_at_text_break() {
         // root > [A(tex1), Text, B(tex1)]：AABB 全不相交。Text 断单元 →
         // A、B 分属两个单元，B 不能跨 Text 前移到 A 旁（保 Text 绘制序）。
-        let mut scene = Scene { roots: vec![NodeId(0)], nodes: vec![], dynamic_rules: Default::default(), focused_node: None };
+        let mut scene = Scene { roots: vec![NodeId(0)], nodes: vec![], dynamic_rules: Default::default(), focused_node: None, world_transforms: Vec::new() };
         let mut root = Node::default(); root.id = NodeId(0);
         root.children = vec![NodeId(1), NodeId(2), NodeId(3)];
         root.layout_rect = Rect { x: 0.0, y: 0.0, w: 300.0, h: 50.0 };
@@ -543,7 +548,7 @@ mod tests {
         // 两个 mask_context 的 Mesh 不跨边界重排（不同 DrawState）。
         // A(ctx0,tex1) B(ctx1,tex1) C(ctx0,tex1)：A、C 同 ctx0 但被 B(ctx1) 断开，
         // 且 AABB 不相交。C 不应跨 ctx 边界前移到 A 旁。
-        let mut scene = Scene { roots: vec![NodeId(0)], nodes: vec![], dynamic_rules: Default::default(), focused_node: None };
+        let mut scene = Scene { roots: vec![NodeId(0)], nodes: vec![], dynamic_rules: Default::default(), focused_node: None, world_transforms: Vec::new() };
         let mut root = Node::default(); root.id = NodeId(0);
         root.children = vec![NodeId(1), NodeId(2), NodeId(3)];
         scene.nodes.push(root);

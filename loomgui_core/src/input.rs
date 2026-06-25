@@ -803,6 +803,7 @@ mod tests {
             nodes: vec![root, btn],
             dynamic_rules: Default::default(),
             focused_node: None,
+            world_transforms: Vec::new(),
         }
     }
 
@@ -829,6 +830,7 @@ mod tests {
             nodes: vec![root, btn, txt],
             dynamic_rules: Default::default(),
             focused_node: None,
+            world_transforms: Vec::new(),
         }
     }
 
@@ -1026,7 +1028,7 @@ mod tests {
         child.layout_rect = Rect { x: 0.0, y: 0.0, w: 50.0, h: 50.0 };
         parent.children = vec![NodeId(2)];
         root.children = vec![NodeId(1)];
-        Scene { roots: vec![NodeId(0)], nodes: vec![root, parent, child], dynamic_rules: Default::default(), focused_node: None }
+        Scene { roots: vec![NodeId(0)], nodes: vec![root, parent, child], dynamic_rules: Default::default(), focused_node: None, world_transforms: Vec::new() }
     }
 
     #[test]
@@ -1054,7 +1056,7 @@ mod tests {
         b.id = NodeId(2); b.parent = Some(NodeId(0));
         b.layout_rect = Rect { x: 100.0, y: 100.0, w: 50.0, h: 50.0 };
         root.children = vec![NodeId(1), NodeId(2)];
-        let mut s = Scene { roots: vec![NodeId(0)], nodes: vec![root, a, b], dynamic_rules: Default::default(), focused_node: None };
+        let mut s = Scene { roots: vec![NodeId(0)], nodes: vec![root, a, b], dynamic_rules: Default::default(), focused_node: None, world_transforms: Vec::new() };
         let mut ps = PointerState::new();
         ps.process(&mut s, &[PointerEvent { kind: PointerKind::Move, x: 25.0, y: 25.0, button: 0, pad: [0, 0], touch_id: -1 }]);  // 命中 A
         let out = ps.process(&mut s, &[PointerEvent { kind: PointerKind::Move, x: 125.0, y: 125.0, button: 0, pad: [0, 0], touch_id: -1 }]);  // 命中 B
@@ -1112,7 +1114,7 @@ mod tests {
         let mut b = Node::default();
         b.id = NodeId(2); b.parent = Some(NodeId(0)); b.layout_rect = Rect { x: 100.0, y: 0.0, w: 50.0, h: 50.0 };
         root.children = vec![NodeId(1), NodeId(2)];
-        let mut s = Scene { roots: vec![NodeId(0)], nodes: vec![root, a, b], dynamic_rules: Default::default(), focused_node: None };
+        let mut s = Scene { roots: vec![NodeId(0)], nodes: vec![root, a, b], dynamic_rules: Default::default(), focused_node: None, world_transforms: Vec::new() };
         let mut ps = PointerState::new();
         // touch_id=1 Down 在 A，touch_id=2 Down 在 B（同帧）
         let out = ps.process(&mut s, &[
@@ -1128,7 +1130,7 @@ mod tests {
     fn touch_alloc_fourth_dropped() {
         let mut root = Node::default();
         root.id = NodeId(0); root.layout_rect = Rect { x: 0.0, y: 0.0, w: 200.0, h: 200.0 };
-        let mut s = Scene { roots: vec![NodeId(0)], nodes: vec![root], dynamic_rules: Default::default(), focused_node: None };
+        let mut s = Scene { roots: vec![NodeId(0)], nodes: vec![root], dynamic_rules: Default::default(), focused_node: None, world_transforms: Vec::new() };
         let mut ps = PointerState::new();
         // touch_id 1..5 全 Down（4 触摸槽 slot1-4，第 5 指应丢）
         let mut evs = Vec::new();
@@ -1171,7 +1173,7 @@ mod tests {
         let mut b = Node::default();
         b.id = NodeId(2); b.parent = Some(NodeId(0)); b.layout_rect = Rect { x: 100.0, y: 0.0, w: 50.0, h: 50.0 };
         root.children = vec![NodeId(1), NodeId(2)];
-        let mut s = Scene { roots: vec![NodeId(0)], nodes: vec![root, a, b], dynamic_rules: Default::default(), focused_node: None };
+        let mut s = Scene { roots: vec![NodeId(0)], nodes: vec![root, a, b], dynamic_rules: Default::default(), focused_node: None, world_transforms: Vec::new() };
         let mut ps = PointerState::new();
         ps.process(&mut s, &[
             PointerEvent { kind: PointerKind::Move, x: 25.0, y: 25.0, button: 0, pad: [0, 0], touch_id: 1 },  // 命中 A
@@ -1191,7 +1193,7 @@ mod tests {
         let mut b = Node::default();
         b.id = NodeId(2); b.parent = Some(NodeId(0)); b.kind = NodeKind::Button; b.layout_rect = Rect { x: 100.0, y: 0.0, w: 50.0, h: 50.0 };
         root.children = vec![NodeId(1), NodeId(2)];
-        let mut s = Scene { roots: vec![NodeId(0)], nodes: vec![root, a, b], dynamic_rules: Default::default(), focused_node: None };
+        let mut s = Scene { roots: vec![NodeId(0)], nodes: vec![root, a, b], dynamic_rules: Default::default(), focused_node: None, world_transforms: Vec::new() };
         let mut ps = PointerState::new();
         ps.process(&mut s, &[
             PointerEvent { kind: PointerKind::Down, x: 25.0, y: 25.0, button: 0, pad: [0, 0], touch_id: 1 },
@@ -1214,7 +1216,7 @@ mod tests {
         let mut b = Node::default();
         b.id = NodeId(2); b.parent = Some(NodeId(0)); b.layout_rect = Rect { x: 100.0, y: 0.0, w: 50.0, h: 50.0 };
         root.children = vec![NodeId(1), NodeId(2)];
-        let mut s = Scene { roots: vec![NodeId(0)], nodes: vec![root, a, b], dynamic_rules: Default::default(), focused_node: None };
+        let mut s = Scene { roots: vec![NodeId(0)], nodes: vec![root, a, b], dynamic_rules: Default::default(), focused_node: None, world_transforms: Vec::new() };
         let mut ps = PointerState::new();
         let out = ps.process(&mut s, &[
             PointerEvent { kind: PointerKind::Move, x: 25.0, y: 25.0, button: 0, pad: [0, 0], touch_id: 1 },
@@ -1358,14 +1360,14 @@ mod tests {
         child.id = NodeId(1); child.parent = Some(NodeId(0));
         child.layout_rect = Rect { x: 0.0, y: 0.0, w: 50.0, h: 50.0 };
         root.children = vec![NodeId(1)];
-        let mut s1 = Scene { roots: vec![NodeId(0)], nodes: vec![root, child], dynamic_rules: Default::default(), focused_node: None };
+        let mut s1 = Scene { roots: vec![NodeId(0)], nodes: vec![root, child], dynamic_rules: Default::default(), focused_node: None, world_transforms: Vec::new() };
         let mut ps = PointerState::new();
         // Down@(25,25)→child；down_targets=[child(1),root(0)]
         ps.process(&mut s1, &[PointerEvent { kind: PointerKind::Down, x: 25.0, y: 25.0, button: 0, pad: [0, 0], touch_id: -1 }]);
         // scene2: 仅 root（child 移除）——NodeId(1) 越界
         let mut root2 = Node::default();
         root2.id = NodeId(0); root2.layout_rect = Rect { x: 0.0, y: 0.0, w: 200.0, h: 200.0 };
-        let mut s2 = Scene { roots: vec![NodeId(0)], nodes: vec![root2], dynamic_rules: Default::default(), focused_node: None };
+        let mut s2 = Scene { roots: vec![NodeId(0)], nodes: vec![root2], dynamic_rules: Default::default(), focused_node: None, world_transforms: Vec::new() };
         let out = ps.process(&mut s2, &[PointerEvent { kind: PointerKind::Up, x: 25.0, y: 25.0, button: 0, pad: [0, 0], touch_id: -1 }]);
         // click_test：down_targets[0]=NodeId(1) 越界→走祖先；current_hit=root(0) in down_targets → Click@root
         assert!(out.iter().any(|e| e.event_type == EVT_CLICK && e.node_id == 0),
@@ -1494,7 +1496,7 @@ mod tests {
         btn2.id = NodeId(1); btn2.parent = Some(NodeId(0)); btn2.kind = NodeKind::Button;
         btn2.layout_rect = Rect { x: 150.0, y: 150.0, w: 100.0, h: 100.0 };
         root2.children = vec![NodeId(1)];
-        let mut s2 = Scene { roots: vec![NodeId(0)], nodes: vec![root2, btn2], dynamic_rules: Default::default(), focused_node: None };
+        let mut s2 = Scene { roots: vec![NodeId(0)], nodes: vec![root2, btn2], dynamic_rules: Default::default(), focused_node: None, world_transforms: Vec::new() };
         let out = ps.process(&mut s2, &[]);   // 空事件 → stationary follow
         assert!(out.iter().any(|e| e.event_type == EVT_ROLL_OUT && e.node_id == 1),
             "btn 移走（静止光标）→ RollOut(btn)");
@@ -1521,6 +1523,7 @@ mod tests {
             nodes: vec![root, btn],
             dynamic_rules: Default::default(),
             focused_node: None,
+            world_transforms: Vec::new(),
         }
     }
 
@@ -1735,7 +1738,7 @@ mod tests {
         b.tabindex = Some(0);
         b.layout_rect = Rect { x: 100.0, y: 0.0, w: 50.0, h: 50.0 };
         root.children = vec![NodeId(1), NodeId(2)];
-        Scene { roots: vec![NodeId(0)], nodes: vec![root, a, b], dynamic_rules: Default::default(), focused_node: None }
+        Scene { roots: vec![NodeId(0)], nodes: vec![root, a, b], dynamic_rules: Default::default(), focused_node: None, world_transforms: Vec::new() }
     }
 
     #[test]
@@ -1797,7 +1800,7 @@ mod tests {
         let e = mk(5, None, false);
         let f = mk(6, Some(0), true);   // disabled
         root.children = vec![NodeId(1), NodeId(2), NodeId(3), NodeId(4), NodeId(5), NodeId(6)];
-        Scene { roots: vec![NodeId(0)], nodes: vec![root, a, b, c, d, e, f], dynamic_rules: Default::default(), focused_node: None }
+        Scene { roots: vec![NodeId(0)], nodes: vec![root, a, b, c, d, e, f], dynamic_rules: Default::default(), focused_node: None, world_transforms: Vec::new() }
     }
 
     #[test]

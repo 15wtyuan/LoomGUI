@@ -262,6 +262,7 @@ mod tests {
             nodes: vec![root, btn],
             dynamic_rules: DynamicRuleTable::default(),
             focused_node: None,
+            world_transforms: Vec::new(),
         }
     }
 
@@ -375,6 +376,7 @@ mod tests {
             nodes: vec![root, child],
             dynamic_rules: DynamicRuleTable::default(),
             focused_node: None,
+            world_transforms: Vec::new(),
         };
         s.dynamic_rules
             .rules
@@ -485,6 +487,7 @@ mod tests {
             nodes: vec![root, child],
             dynamic_rules: DynamicRuleTable::default(),
             focused_node: None,
+            world_transforms: Vec::new(),
         };
         s.dynamic_rules
             .rules
