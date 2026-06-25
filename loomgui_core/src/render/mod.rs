@@ -65,10 +65,11 @@ pub fn build_render_nodes(scene: &Scene, font: &Font, textures: &TextureRegistry
 
     for n in &scene.nodes {
         let rn = &mut nodes[n.id.0];
+        let anim = scene.anim.get(n.id);   // v1d.4：None 或全空 → None（退回 CSS）
         rn.node_id = n.id.0 as u32;
         rn.parent_id = n.parent.map(|p| p.0 as u32);
-        rn.alpha = n.style.opacity;
-        rn.color_tint = n.style.color;
+        rn.alpha = anim.and_then(|a| a.opacity).unwrap_or(n.style.opacity);
+        rn.color_tint = anim.and_then(|a| a.text_color).unwrap_or(n.style.color);
         let wm = scene.world_transforms[n.id.0];
         rn.world_matrix = wm;
         rn.visible = true;
@@ -82,7 +83,7 @@ pub fn build_render_nodes(scene: &Scene, font: &Font, textures: &TextureRegistry
         let rect = &rect;
         match &n.kind {
             NodeKind::Container | NodeKind::Button => {
-                let color = n.style.background_color.unwrap_or([0.0, 0.0, 0.0, 0.0]);
+                let color = anim.and_then(|a| a.bg_color).unwrap_or(n.style.background_color.unwrap_or([0.0, 0.0, 0.0, 0.0]));
                 let (v, uvc, col, idx) =
                     crate::render::mesh::quad(rect, color, [0.0, 0.0], [1.0, 1.0]);
                 rn.payload = NodePayload::Mesh {
@@ -138,7 +139,7 @@ pub fn build_render_nodes(scene: &Scene, font: &Font, textures: &TextureRegistry
                 rn.payload = NodePayload::Text {
                     layout,
                     font_size: s.font_size,
-                    color: s.color,
+                    color: anim.and_then(|a| a.text_color).unwrap_or(s.color),
                     program: 1,
                 };
             }
@@ -531,5 +532,37 @@ mod tests {
             .expect("merged node 存在");
         assert!(crate::transform::is_identity(&merged.world_matrix));
         assert!((merged.alpha - 1.0).abs() < 1e-6, "merged alpha=1 防 blob 二次烤");
+    }
+
+    /// v1d.4：build_render_nodes 读 anim.opacity/bg_color override（replace-override）。
+    /// CSS opacity=1.0、bg=红；anim opacity=0.25、bg=蓝 → alpha=0.25、Mesh colors=蓝。
+    #[test]
+    fn build_reads_anim_opacity_and_bg_override() {
+        let mut scene = Scene {
+            roots: vec![NodeId(0)],
+            nodes: vec![],
+            dynamic_rules: Default::default(),
+            focused_node: None,
+            world_transforms: Vec::new(),
+            anim: Default::default(),
+        };
+        let mut n = container_node(0, None, Rect { x: 0.0, y: 0.0, w: 10.0, h: 10.0 }, Some([1.0, 0.0, 0.0, 1.0]));
+        n.style.opacity = 1.0;
+        scene.nodes.push(n);
+        // anim override：opacity=0.25、bg=蓝
+        scene.anim.ensure(1);
+        scene.anim.0[0].opacity = Some(0.25);
+        scene.anim.0[0].bg_color = Some([0.0, 0.0, 1.0, 1.0]);
+
+        let font = test_font().expect("need font");
+        crate::scene::transform::compute_world_transforms(&mut scene);
+        let frame = build_render_nodes(&scene, &font, &TextureRegistry::default());
+        assert!((frame.nodes[0].alpha - 0.25).abs() < 1e-5, "anim.opacity override → alpha=0.25");
+        match &frame.nodes[0].payload {
+            NodePayload::Mesh { colors, .. } => {
+                assert_eq!(*colors.first().unwrap(), [0.0, 0.0, 1.0, 1.0], "anim.bg_color override → 蓝");
+            }
+            _ => panic!("expected Mesh"),
+        }
     }
 }

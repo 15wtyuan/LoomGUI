@@ -2,7 +2,7 @@
 //! pivot = box center（w/2,h/2）；local = T(rel) ∘ T(pivot) ∘ transform ∘ T(-pivot)；
 //! world = parent.world ∘ local。
 
-use crate::scene::node::{NodeId, Scene};
+use crate::scene::node::{AnimTable, NodeId, Scene};
 use crate::transform::{self, Affine2};
 
 pub fn compute_world_transforms(scene: &mut Scene) {
@@ -10,12 +10,12 @@ pub fn compute_world_transforms(scene: &mut Scene) {
     let mut worlds: Vec<Affine2> = vec![transform::IDENTITY; n];
     let roots = scene.roots.clone();
     for root in roots {
-        rec(scene, root, transform::IDENTITY, &mut worlds);
+        rec(scene, &scene.anim, root, transform::IDENTITY, &mut worlds);
     }
     scene.world_transforms = worlds;
 }
 
-fn rec(scene: &Scene, id: NodeId, parent_world: Affine2, worlds: &mut [Affine2]) {
+fn rec(scene: &Scene, anim: &AnimTable, id: NodeId, parent_world: Affine2, worlds: &mut [Affine2]) {
     let node = &scene.nodes[id.0];
     let lr = node.layout_rect;
     let pivot = (lr.w / 2.0, lr.h / 2.0);
@@ -23,19 +23,24 @@ fn rec(scene: &Scene, id: NodeId, parent_world: Affine2, worlds: &mut [Affine2])
         Some(p) => (lr.x - scene.nodes[p.0].layout_rect.x, lr.y - scene.nodes[p.0].layout_rect.y),
         None => (lr.x, lr.y),
     };
-    // local = T(rel) ∘ T(pivot) ∘ transform.matrix ∘ T(-pivot)（free fn by ref，更显式）
+    // v1d.4：transform 矩阵源 = anim.transform override（replace-override）unwrap css matrix。
+    let m = anim
+        .get(id)
+        .and_then(|a| a.transform)
+        .unwrap_or(node.style.transform.matrix);
+    // local = T(rel) ∘ T(pivot) ∘ m ∘ T(-pivot)（free fn by ref，更显式）
     let local = transform::mul(
         &transform::from_translate(rel.0, rel.1),
         &transform::mul(
             &transform::from_translate(pivot.0, pivot.1),
-            &transform::mul(&node.style.transform.matrix, &transform::from_translate(-pivot.0, -pivot.1)),
+            &transform::mul(&m, &transform::from_translate(-pivot.0, -pivot.1)),
         ),
     );
     let world = transform::mul(&parent_world, &local);
     worlds[id.0] = world;
     let kids = node.children.clone();
     for c in kids {
-        rec(scene, c, world, worlds);
+        rec(scene, anim, c, world, worlds);
     }
 }
 
@@ -116,5 +121,26 @@ mod tests {
         compute_world_transforms(&mut s);
         let (x, y) = s.world_transforms[1].apply_point(0.0, 0.0);
         assert!((x - 15.0).abs() < 1e-4 && y.abs() < 1e-4, "translate 叠 layout rel 不双计：rel(10)+t(5)=15");
+    }
+
+    #[test]
+    fn anim_transform_override_replaces_css_matrix() {
+        // node CSS transform=identity；anim.transform=scale(2,2) → world 非纯平移（吃 override）
+        let mut s = scene_with(vec![ node(0, None, Rect { x: 0.0, y: 0.0, w: 10.0, h: 10.0 }) ]);
+        s.anim.ensure(1);
+        s.anim.0[0].transform = Some(transform::from_scale(2.0, 2.0));
+        compute_world_transforms(&mut s);
+        assert!(!s.world_transforms[0].is_pure_translation(), "anim.transform override 生效（scale）");
+    }
+
+    #[test]
+    fn no_anim_falls_back_to_css_matrix_zero_regression() {
+        // anim 全 None → world == CSS（identity）纯平移到 layout 原点
+        let mut s = scene_with(vec![ node(0, None, Rect { x: 5.0, y: 7.0, w: 10.0, h: 10.0 }) ]);
+        // 不设 anim（全 None）
+        compute_world_transforms(&mut s);
+        let (x, y) = s.world_transforms[0].apply_point(0.0, 0.0);
+        assert!((x - 5.0).abs() < 1e-4 && (y - 7.0).abs() < 1e-4, "无 anim → CSS identity 纯平移");
+        assert!(s.world_transforms[0].is_pure_translation());
     }
 }
