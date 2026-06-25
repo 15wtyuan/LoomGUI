@@ -617,6 +617,8 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 
 ## 7. 已知问题/未完成（v0 ledger）
 
+> **验收文档已清理**：v1c.2-v1d.2 的 `docs/vX.Y-home-verification.md`（家里机验收清单）验完即删——验证场景已内联在各版本 ✅ ledger 行（EditMode/PlayMode 要点），历史文档可 `git log` 追。后续版本不再 commit 此类一次性清单。
+
 **v0 占位 → v1.x 优化**：
 - mask_context id = counter+1 不稳定（节点增删抖动）。
 - sort_key 无 FairyBatching AABB 重排（v0 保序）。
