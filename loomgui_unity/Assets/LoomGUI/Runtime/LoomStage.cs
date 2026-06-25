@@ -57,6 +57,7 @@ namespace LoomGUI
         StageHandle* _stage;
         MaterialManager _mm;
         MirrorPool _pool;
+        NativeHostManager _nhm;
         byte[] _frameBuf;
         // v1b.3：tex_id → Texture2D（LoadAtlas 填；Sync 按 blob.TexId 查此绑 atlas 纹理）。
         // 同 atlas 的多个 sprite 共享同一 Texture2D（atlas.png）→ MaterialManager key 命中同实例 → batchable。
@@ -101,6 +102,32 @@ namespace LoomGUI
         {
             if (_stage == null) return;
             Native.loomgui_stage_set_node_disabled(_stage, nodeId, disabled);
+        }
+
+        /// v1d.3-T10：绑定外部 GO 到 UI 节点（NativeHost-lite spec §3.7）。
+        /// 每帧 Sync 时自动同步 TRS + visible + sortingOrder。
+        public void BindNativeHost(uint nodeId, GameObject go) => _nhm.Bind(nodeId, go);
+
+        /// 按 CSS id 查 nodeId 后绑定外部 GO。
+        public void BindNativeHost(string id, GameObject go)
+        {
+            uint nodeId = FindNodeById(id);
+            if (nodeId == uint.MaxValue) { Debug.LogError($"[LoomGUI] NativeHost bind: id '{id}' not found"); return; }
+            _nhm.Bind(nodeId, go);
+        }
+
+        public void UnbindNativeHost(uint nodeId) => _nhm.Unbind(nodeId);
+
+        /// v1d.3-T10：dump 当前 scene 为 JSON（Rust 拥有，下 tick 失效）。
+        public string DumpScene()
+        {
+            unsafe
+            {
+                nuint len;
+                byte* p = Native.loomgui_stage_dump_scene(_stage, &len);
+                if (p == null) return "[]";
+                return Encoding.UTF8.GetString(p, (int)len);
+            }
         }
 
         void Awake()
@@ -162,6 +189,7 @@ namespace LoomGUI
             }
             _mm = new MaterialManager(shader);
             _pool = new MirrorPool();
+            _nhm = new NativeHostManager(); _nhm.Init(transform);
 
             // v1b.3：collect atlas（atlas_count/info）→ load atlas.png → _texMap[atlas_tex_id]。
             // 同 atlas 所有 sprite 共享 1 Texture2D（batchable）。inline 分支（_usePackage=false）
@@ -471,6 +499,7 @@ namespace LoomGUI
 
                 var blob = new FrameBlob(_frameBuf);
                 _pool.Sync(blob, transform, _mm, _texMap, Texture2D.whiteTexture, _font);
+                _nhm.Sync(blob);
             }
 
             // v1c.1：事件派发（tick 后——borrow_events 读本帧 last_events，下 tick 失效）。
@@ -488,6 +517,7 @@ namespace LoomGUI
             // 全局静态事件：Awake 注册过才解绑（Awake 失败早退则跳过）。
             Font.textureRebuilt -= TextRasterizer.OnRebuilt;
             _pool?.Clear();
+            _nhm?.Clear();
             _mm?.Clear();
             // v1b.2：Dispose 真纹理。ExecuteAlways 下 OnDestroy 在 Edit/Play 都会跑——
             // 必须按 Application.isPlaying 选 Destroy / DestroyImmediate（同 MirrorPool.TearDown 模式）。
