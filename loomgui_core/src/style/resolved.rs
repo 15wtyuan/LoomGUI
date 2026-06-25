@@ -2,6 +2,19 @@ use serde::{Deserialize, Serialize};
 use taffy::style::Style as TaffyStyle;
 use taffy::FlexDirection;
 
+/// CSS transform 解析产物。内部存 Affine2 矩阵（非分解字段）——这样单节点
+/// `scale(2,1) rotate(45deg)` 的复合剪切在解析期就保留，不因提取字段丢失。
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct LocalTransform {
+    pub matrix: crate::transform::Affine2,
+}
+impl Default for LocalTransform {
+    fn default() -> Self { Self { matrix: crate::transform::IDENTITY } }
+}
+impl LocalTransform {
+    pub fn is_identity(&self) -> bool { crate::transform::is_identity(&self.matrix) }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ResolvedStyle {
     /// taffy 布局字段（flex/padding/margin/size/min/max/gap/position 等）
@@ -25,6 +38,8 @@ pub struct ResolvedStyle {
     pub order: i32,
     /// pointer-events:auto=true / none=false（v1c.1 命中门控）。默认 true。
     pub touchable: bool,
+    /// v1d.3：CSS transform 解析产物（Affine2 矩阵，含多函数复合剪切）。默认 identity。
+    pub transform: crate::style::LocalTransform,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -59,6 +74,7 @@ impl Default for ResolvedStyle {
             white_space_nowrap: false,
             order: 0,
             touchable: true,
+            transform: LocalTransform::default(),
         }
     }
 }
@@ -116,5 +132,20 @@ mod tests {
         let back: ResolvedStyle = bincode::deserialize(&bytes).unwrap();
         assert_eq!(back.touchable, false);
         assert_eq!(back, s, "加字段后全字段 round-trip 仍相等");
+    }
+
+    #[test]
+    fn local_transform_default_is_identity_matrix() {
+        let t = LocalTransform::default();
+        assert!(t.is_identity(), "默认 transform = identity 矩阵");
+    }
+
+    #[test]
+    fn resolved_style_transform_bincode_roundtrip() {
+        let mut s = ResolvedStyle::default();
+        s.transform = LocalTransform { matrix: crate::transform::from_rotate(0.5) };
+        let bytes = bincode::serialize(&s).expect("serialize");
+        let back: ResolvedStyle = bincode::deserialize(&bytes).expect("deserialize");
+        assert_eq!(back.transform.matrix, s.transform.matrix, "transform 经 bincode round-trip");
     }
 }

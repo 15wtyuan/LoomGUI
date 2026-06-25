@@ -80,6 +80,70 @@ pub fn parse_color(s: &str) -> Option<[f32; 4]> {
     }
 }
 
+use crate::style::resolved::LocalTransform;
+use crate::transform::{self, Affine2};
+
+/// 解析 CSS `transform` 声明值为累积 Affine2 矩阵。
+/// 支持 translate(px,px)/rotate(deg)/scale(num[,num])；skew/matrix()/%/3D 静默跳过。
+/// 多函数从左到右 = 矩阵左乘累积（CSS 语义：最左函数最外层）。
+pub fn parse_transform(value: &str) -> LocalTransform {
+    let mut m = transform::IDENTITY;
+    for (name, args) in iter_transform_funcs(value.trim()) {
+        if let Some(fm) = func_to_matrix(name, args) {
+            m = transform::mul(&m, &fm);
+        }
+    }
+    LocalTransform { matrix: m }
+}
+
+/// 拆 "translate(10px,20px) rotate(45deg)" → [("translate","10px,20px"),("rotate","45deg")]。
+fn iter_transform_funcs(s: &str) -> Vec<(&str, &str)> {
+    let mut out = Vec::new();
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        // 跳空白
+        while i < bytes.len() && bytes[i].is_ascii_whitespace() { i += 1; }
+        if i >= bytes.len() { break; }
+        let name_start = i;
+        while i < bytes.len() && (bytes[i].is_ascii_alphabetic() || bytes[i] == b'-') { i += 1; }
+        let name = &s[name_start..i];
+        while i < bytes.len() && bytes[i].is_ascii_whitespace() { i += 1; }
+        if i >= bytes.len() || bytes[i] != b'(' { break; }
+        i += 1; // skip '('
+        let args_start = i;
+        while i < bytes.len() && bytes[i] != b')' { i += 1; }
+        let args = &s[args_start..i];
+        if i < bytes.len() { i += 1; } // skip ')'
+        if !name.is_empty() { out.push((name, args)); }
+    }
+    out
+}
+
+/// 单函数 → Affine2。围栏外函数返 None（跳过）。
+fn func_to_matrix(name: &str, args: &str) -> Option<Affine2> {
+    let parts: Vec<&str> = args.split(',').map(|p| p.trim()).collect();
+    match name {
+        "translate" => {
+            // v1d.3 只 px，拒 %
+            let x = parse_px(parts.first().copied().unwrap_or("0"))?;
+            let y = parse_px(parts.get(1).copied().unwrap_or("0"))?;
+            Some(transform::from_translate(x, y))
+        }
+        "rotate" => {
+            let deg = parts.first().copied().unwrap_or("0");
+            let deg = deg.trim_end_matches("deg").trim().parse::<f32>().ok()?;
+            Some(transform::from_rotate(deg.to_radians()))
+        }
+        "scale" => {
+            let sx = parts.first().copied().unwrap_or("1").parse::<f32>().ok()?;
+            let sy = parts.get(1).copied().unwrap_or(&sx.to_string()).parse::<f32>().ok()?;
+            Some(transform::from_scale(sx, sy))
+        }
+        _ => None, // skew/matrix3d/... 围栏外
+    }
+}
+
 /// 把一条 declaration 应用到 style（覆盖对应字段）。返回是否被识别。
 pub fn apply_decl(style: &mut ResolvedStyle, prop: &str, value: &str) -> bool {
     let ts = &mut style.taffy_style;
@@ -275,13 +339,19 @@ pub fn apply_decl(style: &mut ResolvedStyle, prop: &str, value: &str) -> bool {
             style.touchable = value.trim() != "none";
             true
         }
+        "transform" => {
+            style.transform = parse_transform(value);
+            true
+        }
         _ => false, // 装饰属性静默忽略（§4.1）
     }
 }
 
+/// "10px" → 10.0；"10%" → None（v1d.3 拒 %）；"10" → 10.0（容错无单位）。
 fn parse_px(s: &str) -> Option<f32> {
-    let s = s.trim().trim_end_matches("px").trim();
-    s.parse::<f32>().ok()
+    let s = s.trim();
+    if s.ends_with('%') { return None; }
+    s.trim_end_matches("px").trim().parse::<f32>().ok()
 }
 
 fn parse_justify(v: &str) -> taffy::JustifyContent {
@@ -359,5 +429,56 @@ mod tests {
         let mut s = ResolvedStyle::default();
         assert!(apply_decl(&mut s, "pointer-events", "auto"));
         assert!(s.touchable, "pointer-events:auto → touchable=true");
+    }
+
+    use super::parse_transform;
+    use crate::transform::Affine2Ext;
+
+    #[test]
+    fn parse_single_translate() {
+        let t = parse_transform("translate(10px, 20px)");
+        let (x, y) = t.matrix.apply_point(0.0, 0.0);
+        assert_eq!((x, y), (10.0, 20.0));
+        assert!(t.matrix.is_pure_translation(), "纯 translate 是纯平移");
+    }
+
+    #[test]
+    fn parse_single_rotate_radians() {
+        let t = parse_transform("rotate(90deg)");
+        // 90° 旋转：(1,0) → (0,1)
+        let (x, y) = t.matrix.apply_point(1.0, 0.0);
+        assert!(x.abs() < 1e-5 && (y - 1.0).abs() < 1e-5, "90deg rotate (1,0)→(0,1)");
+    }
+
+    #[test]
+    fn parse_single_scale_uniform() {
+        let t = parse_transform("scale(2)");
+        let (x, y) = t.matrix.apply_point(1.0, 1.0);
+        assert_eq!((x, y), (2.0, 2.0), "scale(2) 双轴");
+    }
+
+    #[test]
+    fn parse_scale_non_uniform_compose_with_rotate_is_skew() {
+        // scale(2,1) rotate(45deg)：复合矩阵非纯平移（剪切）
+        let t = parse_transform("scale(2, 1) rotate(45deg)");
+        assert!(!t.matrix.is_pure_translation(), "非均匀缩放∘旋转 = 剪切，非纯平移");
+    }
+
+    #[test]
+    fn parse_unknown_functions_silently_skipped() {
+        // skew/matrix() 围栏外 → 静默跳过；translate 仍生效
+        let t = parse_transform("translate(5px, 0px) skew(10deg)");
+        let (x, y) = t.matrix.apply_point(0.0, 0.0);
+        assert_eq!((x, y), (5.0, 0.0), "skew 被跳过，translate 生效");
+    }
+
+    #[test]
+    fn apply_decl_transform_sets_style() {
+        use crate::style::resolved::ResolvedStyle;
+        use crate::transform::Affine2Ext;
+        let mut s = ResolvedStyle::default();
+        let applied = super::apply_decl(&mut s, "transform", "rotate(45deg)");
+        assert!(applied, "transform 被识别");
+        assert!(!s.transform.matrix.is_pure_translation(), "rotate 写进 style.transform");
     }
 }
