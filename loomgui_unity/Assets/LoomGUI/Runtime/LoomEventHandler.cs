@@ -24,6 +24,8 @@ namespace LoomGUI
         KeyUp = 13,
         FocusIn = 14,
         FocusOut = 15,
+        // v1d.4：tween 完成（core 产，C# 直派）。click_count 复用装 prop、touch_id 复用装 tag。
+        TweenComplete = 16,
     }
 
     /// C# 镜像 Rust loomgui_core::input::EventRecord（#[repr(C)]）。
@@ -183,6 +185,9 @@ namespace LoomGUI
                         DirectDispatch(evt); break;   // v1c.3：Move 改直派（核心算好的 monitor 目标）
                     case EventType.RollOver:
                     case EventType.RollOut:
+                        DirectDispatch(evt); break;
+                    // v1d.4：tween 完成 → 直派（target-specific，不 bubble；listener 读 ctx.clickCount=prop、ctx.touchId=tag）。
+                    case EventType.TweenComplete:
                         DirectDispatch(evt); break;
                 }
             }

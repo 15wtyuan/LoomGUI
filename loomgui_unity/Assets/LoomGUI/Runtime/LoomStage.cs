@@ -7,6 +7,11 @@ using UnityEngine;
 
 namespace LoomGUI
 {
+    /// v1d.4：与 Rust tween::TweenProp (u8) 对齐。
+    public enum TweenProp : byte { Opacity = 0, Translate = 1, Scale = 2, Rotation = 3, BgColor = 4, TextColor = 5 }
+    /// v1d.4：与 Rust tween::Ease (u8) 对齐。
+    public enum Ease : byte { Linear = 0, QuadIn = 1, QuadOut = 2, QuadInOut = 3, CubicIn = 4, CubicOut = 5, CubicInOut = 6, BackIn = 7, BackOut = 8, BackInOut = 9 }
+
     /// <summary>
     /// v1a Phase 1 集成入口（§14 驱动）：把 Rust Stage（tick→borrow_frame→blob）接到 Unity
     /// MirrorPool 渲染。挂场景即跑：Awake 建 stage+load_html+配置根/相机；LateUpdate 每帧
@@ -129,6 +134,36 @@ namespace LoomGUI
                 if (p == null) return "[]";
                 return Encoding.UTF8.GetString(p, (int)len);
             }
+        }
+
+        /// v1d.4：注册 tween。start/end 取前 value_size 个分量（prop 决定）。
+        /// 例：fade-in → Tween(id, TweenProp.Opacity, new[]{0f,0,0,0}, new[]{1f,0,0,0}, 0.3f, Ease.Linear, 0f, tag)。
+        public void Tween(uint nodeId, TweenProp prop, float[] start, float[] end, float duration, Ease ease, float delay, uint tag)
+        {
+            if (_stage == null) return;
+            unsafe
+            {
+                fixed (float* sp = start, ep = end)
+                    Native.loomgui_stage_tween(_stage, nodeId, (uint)prop, sp, ep, duration, (uint)ease, delay, tag);
+            }
+        }
+
+        public void KillTween(uint nodeId, TweenProp prop)
+        {
+            if (_stage == null) return;
+            Native.loomgui_stage_kill_tween(_stage, nodeId, (uint)prop);
+        }
+
+        public void ClearAnim(uint nodeId)
+        {
+            if (_stage == null) return;
+            Native.loomgui_stage_clear_anim(_stage, nodeId);
+        }
+
+        public void ClearAnimProp(uint nodeId, TweenProp prop)
+        {
+            if (_stage == null) return;
+            Native.loomgui_stage_clear_anim_prop(_stage, nodeId, (uint)prop);
         }
 
         void Awake()
