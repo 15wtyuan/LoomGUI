@@ -40,6 +40,10 @@ pub struct Stage {
     /// v1d.2：编程聚焦/清焦点请求（request_focus/blur tick 外调记，tick 最前消费）。
     /// 外层 Some=有请求；内层 Some(id)=聚焦某节点 / None=清焦点。
     pub pending_focus_request: Option<Option<NodeId>>,
+    /// v1d.4：tween 引擎（每 tick update 写 scene.anim + 产 complete 事件）。
+    pub tweens: crate::tween::TweenManager,
+    /// v1d.4：advance_time stash 的本帧 dt（tick_and_render 消费，喂 tweens.update）。
+    pub pending_dt: f32,
 }
 
 impl Stage {
@@ -57,6 +61,8 @@ impl Stage {
             last_events: Vec::new(),
             pending_keys: Vec::new(),
             pending_focus_request: None,
+            tweens: crate::tween::TweenManager::new(),
+            pending_dt: 0.0,
         })
     }
 
@@ -68,6 +74,7 @@ impl Stage {
         let tree = parse_html(html)?;
         let sheet = parse_css(css)?;
         let styles = resolve_styles(&tree, &sheet);
+        self.tweens.clear();   // v1d.4：旧 tween 指向失效 node_id，随 scene 重建清空
         self.scene = Some(build_scene(&tree, &styles));
         Ok(())
     }
@@ -82,6 +89,7 @@ impl Stage {
             crate::asset::read_package(bytes).map_err(|e| e.to_string())?;
         self.textures = crate::asset::build_registry(&atlas_section);
         self.atlases = atlas_section.atlases;
+        self.tweens.clear();   // v1d.4：旧 tween 指向失效 node_id，随 scene 重建清空
         self.scene = Some(scene);
         self.root_size = root_size;
         Ok(())
@@ -128,6 +136,7 @@ impl Stage {
     /// v1c.4：累积时间（C# 传 Time.unscaledDeltaTime；双击窗口用）。
     pub fn advance_time(&mut self, dt: f32) {
         self.pointer_state.time_s += dt;
+        self.pending_dt = dt;   // v1d.4：stash 给 tick_and_render 喂 tweens.update
     }
 
     /// v1c.4：外部取消待 click（照 fgui CancelClick）。FFI cancel_click 转发。
@@ -163,6 +172,36 @@ impl Stage {
         self.pending_focus_request = Some(None);
     }
 
+    /// v1d.4：注册 tween。start/end 取前 value_size 个分量（prop 决定 size）。
+    /// duration<=0 → update 首帧即结束并产 complete。无 scene / 越界 node → update 跳过（不报错）。
+    #[allow(clippy::too_many_arguments)]   // 参数与 C# FFI 签名 1:1 对齐（同 text/layout.rs 惯例）
+    pub fn tween(
+        &mut self, node: NodeId, prop: crate::tween::TweenProp,
+        start: [f32; 4], end: [f32; 4],
+        ease: crate::tween::Ease, delay: f32, duration: f32, tag: u32,
+    ) {
+        self.tweens.tween(node, prop, start, end, ease, delay, duration, tag);
+    }
+
+    /// v1d.4：停该节点该 prop 的 tween（override 保留末值）。
+    pub fn kill_tween(&mut self, node: NodeId, prop: crate::tween::TweenProp) {
+        self.tweens.kill(node, prop);
+    }
+
+    /// v1d.4：清该节点所有动画 override（回 CSS）。
+    pub fn clear_anim(&mut self, node: NodeId) {
+        if let Some(scene) = self.scene.as_mut() {
+            scene.anim.clear_node(node);
+        }
+    }
+
+    /// v1d.4：清该节点某 prop 对应通道（回 CSS）。
+    pub fn clear_anim_prop(&mut self, node: NodeId, prop: crate::tween::TweenProp) {
+        if let Some(scene) = self.scene.as_mut() {
+            scene.anim.clear_prop(node, prop);
+        }
+    }
+
     /// 本帧产出的事件（tick 后读；FFI borrow_events 用）。
     pub fn last_events(&self) -> &[EventRecord] {
         &self.last_events
@@ -183,6 +222,10 @@ impl Stage {
     pub fn tick_and_render(&mut self) -> FrameData {
         let scene = self.scene.as_mut().expect("load first");
         let mut out: Vec<EventRecord> = Vec::new();
+        // v1d.4：tween 推进（写 scene.anim + 产 complete 事件进 out）。须在 solve/compute_world_transforms 前。
+        let dt = self.pending_dt;
+        self.pending_dt = 0.0;
+        self.tweens.update(dt, scene, &mut out);
         // v1d.2：消费 pending_focus_request（编程聚焦/清焦点，tick 外 request_focus/blur 记）
         // 最前消费——下 tick 才生效，避免 R3（tick 覆写 last_events 丢请求事件）。
         if let Some(req) = self.pending_focus_request.take() {
@@ -310,5 +353,45 @@ mod tests {
         s.set_input(&[crate::input::PointerEvent { kind: crate::input::PointerKind::Move, x: 50.0, y: 50.0, button: 0, pad: [0, 0], touch_id: -1 }]);
         s.tick_and_render();
         assert!(!s.is_pointer_on_ui(), "空 scene → false");
+    }
+
+    /// v1d.4：tween 经 Stage 公共 API 注册 → advance_time stash dt → tick update 写 anim + 产 complete。
+    /// 注：.b 是 CSS class 不是 id 属性，find_node_by_id("b") 返 None。div.b 在 build 序为 NodeId(0)。
+    #[test]
+    fn stage_tween_advances_opacity_and_emits_complete() {
+        let font_path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/DejaVuSans.ttf");
+        let html = r#"<div class="b"></div>"#;
+        let css = ".b{width:100px;height:50px;}";
+        let mut s = Stage::new(font_path, (200.0, 100.0)).unwrap();
+        s.load_inline(html, css).unwrap();
+        // div.b 是 node 0（仅一个元素）；opacity 0→1，1s Linear，tag=99
+        s.tween(crate::scene::node::NodeId(0), crate::tween::TweenProp::Opacity,
+                [0.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0],
+                crate::tween::Ease::Linear, 0.0, 1.0, 99);
+        s.advance_time(0.5);
+        s.tick_and_render();
+        let op = s.scene.as_ref().unwrap().anim.0[0].opacity;
+        assert!((op.unwrap() - 0.5).abs() < 1e-4, "半程 opacity=0.5");
+        assert!(s.last_events().iter().all(|e| e.event_type != crate::input::EVT_TWEEN_COMPLETE), "未结束");
+        s.advance_time(0.5);
+        s.tick_and_render();
+        assert!(s.last_events().iter().any(|e| e.event_type == crate::input::EVT_TWEEN_COMPLETE
+            && e.touch_id == 99), "结束 → complete(tag=99)");
+    }
+
+    /// v1d.4：零回归门——直接 tick_and_render()（不 advance_time）→ pending_dt=0。
+    /// 用 delay=1.0 注册 tween：elapsed(0) < delay(1) → update 跳过 apply，opacity 保持 None。
+    /// 验证 tween 集成对「不 advance_time」的现有 stage 调用模式无副作用。
+    #[test]
+    fn stage_tick_without_advance_time_is_zero_regression() {
+        let font_path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/DejaVuSans.ttf");
+        let mut s = Stage::new(font_path, (200.0, 100.0)).unwrap();
+        s.load_inline(r#"<div class="b"></div>"#, ".b{width:100px;height:50px;}").unwrap();
+        // delay=1.0：dt=0 时 elapsed=0 < delay → 不 apply（若用 delay=0，update 会写 start 值）
+        s.tween(crate::scene::node::NodeId(0), crate::tween::TweenProp::Opacity,
+                [0.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0],
+                crate::tween::Ease::Linear, 1.0, 1.0, 0);
+        s.tick_and_render();   // 无 advance_time → dt=0 → elapsed < delay → 不推进
+        assert!(s.scene.as_ref().unwrap().anim.0[0].opacity.is_none(), "dt=0 不写 override");
     }
 }
