@@ -9,6 +9,7 @@ pub mod scene;
 pub mod stage;
 pub mod style;
 pub mod text;
+pub mod transform;
 
 pub use stage::Stage;
 
