@@ -73,6 +73,7 @@ pub const EVT_KEY_DOWN: u8 = 12;
 pub const EVT_KEY_UP: u8 = 13;
 pub const EVT_FOCUS_IN: u8 = 14;
 pub const EVT_FOCUS_OUT: u8 = 15;
+pub const EVT_TWEEN_COMPLETE: u8 = 16;
 
 const CLICK_THRESHOLD_MOUSE: f32 = 10.0;   // fgui _clickTestThreshold(mouse)，per-axis
 const CLICK_THRESHOLD_TOUCH: f32 = 50.0;   // fgui _clickTestThreshold(touch)
