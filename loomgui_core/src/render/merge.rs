@@ -9,7 +9,9 @@ use crate::render::node::{NodePayload, RenderNode};
 /// DrawState 键（texture, program, mask_context）。program=0 Mesh 才参与合并。
 fn mesh_key(rn: &RenderNode) -> Option<(u32, u32, u32)> {
     match &rn.payload {
-        NodePayload::Mesh { texture, program, .. } if *program == 0 => {
+        NodePayload::Mesh { texture, program, .. }
+            if *program == 0 && crate::transform::is_pure_translation(&rn.world_matrix) =>
+        {
             Some((*texture, *program, rn.mask_context.0))
         }
         _ => None,
@@ -177,6 +179,17 @@ mod tests {
         let nodes = vec![mesh_node(1, 1, 0, 1.0, 0.0), mesh_node(2, 2, 1, 1.0, 100.0)];
         let out = merge_meshes(nodes);
         assert_eq!(out.len(), 2, "不同 texture → 各自独立");
+    }
+
+    #[test]
+    fn non_pure_translation_node_does_not_merge() {
+        // 两同 DrawState Mesh，其一 world_matrix 非纯平移（旋转）→ 不合并
+        use crate::transform;
+        let mut a = mesh_node(1, 1, 0, 1.0, 0.0);
+        a.world_matrix = transform::from_rotate(0.5); // 非纯平移
+        let b = mesh_node(2, 1, 1, 1.0, 100.0); // 纯平移（IDENTITY）
+        let out = merge_meshes(vec![a, b]);
+        assert_eq!(out.len(), 2, "非纯平移节点 break merge");
     }
 
     #[test]
