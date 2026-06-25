@@ -24,6 +24,7 @@ pub extern "C" fn loomgui_version() -> *const u8 {
 pub struct StageHandle {
     stage: Stage,
     frame_blob: Vec<u8>, // borrow_frame 返回 &this[..]；tick 时被覆盖。
+    dump_blob: CString, // v1d.3：dump_scene 缓存（Rust 拥有）
 }
 
 /// 创建 Stage 句柄。`font_path` 为 UTF-8 字节（指针+len），失败返回 null。
@@ -49,6 +50,7 @@ pub extern "C" fn loomgui_stage_new(
     Box::into_raw(Box::new(StageHandle {
         stage,
         frame_blob: Vec::new(),
+        dump_blob: CString::new("").unwrap(),
     }))
 }
 
@@ -189,6 +191,21 @@ pub extern "C" fn loomgui_stage_borrow_frame(
         unsafe { *out_len = sh.frame_blob.len() };
     }
     sh.frame_blob.as_ptr()
+}
+
+/// v1d.3：dump 整树 JSON（调试）。返 Rust 拥有的 UTF-8 C 串 + len；下 tick 失效。
+#[no_mangle]
+pub extern "C" fn loomgui_stage_dump_scene(h: *mut StageHandle, out_len: *mut usize) -> *const u8 {
+    if h.is_null() || out_len.is_null() { return std::ptr::null(); }
+    let handle = unsafe { &mut *h };
+    let json = match &handle.stage.scene {
+        Some(scene) => loomgui_core::dump::dump_scene_json(scene),
+        None => String::from("[]"),
+    };
+    handle.dump_blob = CString::new(json).unwrap_or_else(|_| CString::new("[]").unwrap());
+    let bytes = handle.dump_blob.as_bytes_with_nul();
+    unsafe { *out_len = bytes.len(); }
+    handle.dump_blob.as_ptr() as *const u8
 }
 
 /// 注入本帧指针事件（扁平 PointerEvent 数组）。tick 前调。
@@ -971,6 +988,33 @@ mod abi_tests {
         assert_eq!(loomgui_stage_focused_node(h), 0xFFFF_FFFF, "request_focus 后未 tick → focused_node 仍 sentinel");
         loomgui_stage_tick(h, 0.0);
         assert_eq!(loomgui_stage_focused_node(h), ok_node, "tick 后焦点 = ok");
+        loomgui_stage_free(h);
+    }
+
+    /// v1d.3：dump_scene FFI round-trip——load_html → tick → dump_scene 返 JSON 数组（首字节 `[`）。
+    #[cfg(feature = "parse")]
+    #[test]
+    fn dump_scene_returns_json_array() {
+        let (fp, fplen) = font_path();
+        let h = loomgui_stage_new(fp.as_ptr() as *const u8, fplen, 200.0, 100.0);
+        assert!(!h.is_null());
+        let html = CString::new(r#"<div class="root"><button class="btn">OK</button></div>"#).unwrap();
+        let css = CString::new(r#".btn { width: 100px; height: 50px; }"#).unwrap();
+        loomgui_stage_load_html(
+            h,
+            html.as_ptr() as *const u8,
+            html.as_bytes().len(),
+            css.as_ptr() as *const u8,
+            css.as_bytes().len(),
+        );
+        loomgui_stage_tick(h, 0.0);
+        let mut len = 0usize;
+        let ptr = loomgui_stage_dump_scene(h, &mut len);
+        assert!(!ptr.is_null(), "dump_scene 应返非空指针");
+        assert!(len > 0, "out_len > 0");
+        unsafe {
+            assert_eq!(*ptr, b'[', "首字节应为 '['（JSON 数组）");
+        }
         loomgui_stage_free(h);
     }
 }
