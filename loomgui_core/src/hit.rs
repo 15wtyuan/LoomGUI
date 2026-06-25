@@ -46,9 +46,16 @@ fn hit_subtree(scene: &Scene, id: NodeId, point: (f32, f32)) -> Option<NodeId> {
             return Some(hit);
         }
     }
-    // 子都不命中 → 自身 fallback：touchable + AABB 含点
-    if node.touchable && point_in_rect(point, node.layout_rect) {
-        return Some(id);
+    // 子都不命中 → 自身 fallback：touchable + 点经 world matrix 逆投到本地 box
+    // v1d.3：world_to_local —— 点经 world matrix 逆投到本地，判本地 box (0,0,w,h)
+    if node.touchable {
+        let wm = scene.world_transforms[id.0];
+        let inv = crate::transform::inverse(&wm);
+        let (lx, ly) = crate::transform::apply_point(&inv, point.0, point.1);
+        let lr = node.layout_rect;
+        if lx >= 0.0 && lx <= lr.w && ly >= 0.0 && ly <= lr.h {
+            return Some(id);
+        }
     }
     None
 }
@@ -57,6 +64,10 @@ fn hit_subtree(scene: &Scene, id: NodeId, point: (f32, f32)) -> Option<NodeId> {
 mod tests {
     use super::*;
     use crate::scene::node::{Node, NodeId, Rect, Scene};
+    use crate::scene::transform::compute_world_transforms;
+    use crate::style::resolved::LocalTransform;
+    use crate::transform;
+    use crate::transform::Affine2Ext;
 
     /// 构造两兄弟子节点的 scene：root + child_a + child_b，都 100x100，
     /// child_a 在 (0,0)，child_b 在 (50,50)（与 a 重叠右下角）。
@@ -85,26 +96,29 @@ mod tests {
 
     #[test]
     fn hit_test_returns_none_on_empty_scene() {
-        let s = Scene {
+        let mut s = Scene {
             roots: vec![],
             nodes: vec![],
             dynamic_rules: Default::default(),
             focused_node: None,
             world_transforms: Vec::new(),
         };
+        compute_world_transforms(&mut s);
         assert_eq!(hit_test(&s, (10.0, 10.0)), None);
     }
 
     #[test]
     fn hit_test_hits_topmost_child() {
-        let s = overlap_scene();
+        let mut s = overlap_scene();
+        compute_world_transforms(&mut s);
         // 点 (75,75) 在 a 和 b 重叠区——b 顶层（后绘制）应命中
         assert_eq!(hit_test(&s, (75.0, 75.0)), Some(NodeId(2)));
     }
 
     #[test]
     fn hit_test_hits_only_child_when_no_overlap() {
-        let s = overlap_scene();
+        let mut s = overlap_scene();
+        compute_world_transforms(&mut s);
         // 点 (10,10) 只在 a 内
         assert_eq!(hit_test(&s, (10.0, 10.0)), Some(NodeId(1)));
     }
@@ -112,6 +126,7 @@ mod tests {
     #[test]
     fn hit_test_skips_pointer_events_none_but_tests_children() {
         let mut s = overlap_scene();
+        compute_world_transforms(&mut s);
         // root touchable=false，但子 a 仍应命中（CSS 语义：none 不挡子）
         s.nodes[0].touchable = false;
         // 点 (10,10) 在 a 内——root 不命中但子 a 命中
@@ -124,6 +139,7 @@ mod tests {
     #[test]
     fn hit_test_clip_rect_excludes_subtree() {
         let mut s = overlap_scene();
+        compute_world_transforms(&mut s);
         // root 加 clip_rect (0,0,80,80)——点 (90,90) 在 root AABB 但 clip 外
         s.nodes[0].clip_rect = Some(Rect { x: 0.0, y: 0.0, w: 80.0, h: 80.0 });
         // 点 (90,90) 在 b 的 AABB (50,50,100,100) 但在 root clip 外 → 子树不命中
@@ -135,6 +151,7 @@ mod tests {
     #[test]
     fn hit_test_respects_order() {
         let mut s = overlap_scene();
+        compute_world_transforms(&mut s);
         // a 设 order=2（顶层），b order=0——等效序 a 在前
         s.nodes[1].style.order = 2;
         s.nodes[2].style.order = 0;
@@ -146,8 +163,40 @@ mod tests {
     fn hit_test_disabled_node_still_target() {
         // §4.4：disabled 仍参与命中（active/click 抑制在状态机层，hit_test 只返回几何命中）
         let mut s = overlap_scene();
+        compute_world_transforms(&mut s);
         s.nodes[2].disabled = true; // b disabled
         // 点 (75,75) 在 b 内——b 仍命中（disabled 不跳过）
         assert_eq!(hit_test(&s, (75.0, 75.0)), Some(NodeId(2)));
+    }
+
+    #[test]
+    fn hit_rotated_parent_catches_child_via_world_to_local() {
+        // parent rotate(90°) at (0,0,100,100)；child identity at (0,0,10,10)。
+        // parent 绕 center(50,50) 转 90°：child(在 parent 左上角) 视觉转到 parent 右上区域。
+        // 命中点取 child 旋转后的中心附近。
+        let mut s = overlap_scene_rotated();
+        compute_world_transforms(&mut s);
+        // child world == parent world（identity 子继承）。parent 旋转后 child box 在新位置。
+        // 用 child box center 经 parent.world 变换得世界中心，命中应返 child。
+        let child_wm = s.world_transforms[2];
+        let (cx, cy) = child_wm.apply_point(5.0, 5.0); // child 本地中心
+        assert_eq!(hit_test(&s, (cx, cy)), Some(NodeId(2)), "点在旋转后 child 上 → 命中 child");
+    }
+
+    fn overlap_scene_rotated() -> Scene {
+        let mut root = Node::default();
+        root.id = NodeId(0);
+        root.layout_rect = Rect { x: 0.0, y: 0.0, w: 200.0, h: 200.0 };
+        let mut parent = Node::default();
+        parent.id = NodeId(1); parent.parent = Some(NodeId(0));
+        parent.layout_rect = Rect { x: 0.0, y: 0.0, w: 100.0, h: 100.0 };
+        parent.style.transform = LocalTransform { matrix: transform::from_rotate(std::f32::consts::FRAC_PI_2) };
+        let mut child = Node::default();
+        child.id = NodeId(2); child.parent = Some(NodeId(1));
+        child.layout_rect = Rect { x: 0.0, y: 0.0, w: 10.0, h: 10.0 };
+        root.children = vec![NodeId(1)];
+        parent.children = vec![NodeId(2)];
+        Scene { roots: vec![NodeId(0)], nodes: vec![root, parent, child],
+                dynamic_rules: Default::default(), focused_node: None, world_transforms: Vec::new() }
     }
 }
