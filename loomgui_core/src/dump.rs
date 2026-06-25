@@ -32,12 +32,19 @@ pub fn dump_scene_json(scene: &Scene) -> String {
         let id = json_escape(n.id_attr.as_deref().unwrap_or(""));
         let classes = n.classes.iter().map(|c| json_escape(c)).collect::<Vec<_>>().join(" ");
         let wm = if n.id.0 < scene.world_transforms.len() { &scene.world_transforms[n.id.0] } else { &crate::transform::IDENTITY };
+        // v1d.4 诊断：附 anim.transform 是否 Some + opacity 值，定位 tween 是否真写进 anim。
+        let (anim_tr, anim_op) = match scene.anim.0.get(n.id.0) {
+            Some(a) => (a.transform.is_some(), a.opacity),
+            None => (false, None),
+        };
+        let op_str = anim_op.map(|v| format!("{:.3}", v)).unwrap_or_else(|| "null".into());
         s.push_str(&format!(
-            r#"{{"node_id":{},"parent":{},"tag":"{}","id":"{}","classes":"{}","kind":"{}","layout":{{"x":{},"y":{},"w":{},"h":{}}},"world_matrix":[{},{},{},{},{},{}],"visible":{}}}"#,
+            r#"{{"node_id":{},"parent":{},"tag":"{}","id":"{}","classes":"{}","kind":"{}","layout":{{"x":{},"y":{},"w":{},"h":{}}},"world_matrix":[{},{},{},{},{},{}],"anim_tr":{},"anim_op":{},"visible":{}}}"#,
             n.id.0, n.parent.map(|p| p.0.to_string()).unwrap_or("-1".into()),
             tag, id, classes, kind_str,
             n.layout_rect.x, n.layout_rect.y, n.layout_rect.w, n.layout_rect.h,
             wm[0], wm[1], wm[2], wm[3], wm[4], wm[5],
+            anim_tr, op_str,
             true, // visible：v1 无独立 visible 字段，恒 true（clip/touchable 另列）
         ));
     }

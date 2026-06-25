@@ -1,0 +1,11 @@
+.root { width: 1080px; height: 1920px; }
+/* popup 初始 opacity=1/scale=1（CSS 静态值）；tween 从 0/0.8 动到 1/1.0 覆盖之。
+   BackOut scale 末段会略 >1 再回落（overshoot 特征），是 v1d.4 视觉看点。 */
+.popup {
+  width: 400px; height: 240px;
+  background-color: #2a6cc9;
+  color: #ffffff;
+  font-size: 32px;
+  text-align: center;
+  margin: 400px auto 0;
+}

@@ -276,6 +276,10 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 - **`HideFlags.DontSaveInEditor`**：`[ExecuteAlways]` 程序生成 GO 标之防被存进场景（否则 EditMode dirty 场景 + Play/Stop 累积残留，坑 11）。
 - **`Mesh.SetVertices(List)`/`SetUVs`/`SetColors`/`SetTriangles(List)` overload**：零 per-frame 数组 alloc（vs `SetVertices(Vector3[])`）。`List.Clear()` 保 Capacity，warm-up 后复用零 alloc。
 - **shader keyword**：`#pragma multi_compile _ CLIPPED`（两 variant 都编，`EnableKeyword` 切换生效）**非** `shader_feature`（未启用的 variant 会被 strip → clip 静默失效）。
+- **ShaderLab Properties 类型**：只 Float/Range/Int/Color/Vector/2D/3D/Cube，**无 Matrix**（坑 52）。per-renderer matrix uniform 放 `UnityPerMaterial` CBUFFER（无 Properties 对应）+ MPB.SetMatrix 覆盖。
+- **MaterialPropertyBlock 覆盖范围**：只覆盖 material property（Properties 或 `UnityPerMaterial` CBUFFER 字段）；CBUFFER 外全局 uniform MPB **不覆盖**（坑 52，静默失效）。per-renderer uniform 必须进 CBUFFER。
+- **TransformObjectToWorld = mul(unity_ObjectToWorld, pos)**：GO 是 root 子时 = root_ObjectToWorld（含 root transform sf/-sf/sf+rootPos）。core 算 design world，shader 桥接 design→Unity world 用它（坑 51）。GO transform=identity 时仍 = root transform（继承父）。
+- **Time.unscaledDeltaTime 首帧 spike**：PlayMode 首帧可达数秒（加载延迟，实测 2.07s），tween/动画别在 Start 自动播（坑 53，瞬间 complete 写末值）。
 
 ### 3.7 taffy 0.5.2 serde + bincode 1.x（style/resolved.rs + asset/mod.rs，v1b.1）
 - taffy 0.5.2 有 **`serde` feature**：`Style`（style/mod.rs:189）及全部字段类型（geometry/dimension/flex/grid/alignment）都 `#[cfg_attr(feature="serde", derive(Serialize,Deserialize))]` + `#[serde(default)]`；`Style` 还派生 `PartialEq`。开 `taffy = { version="0.5", features=["serde"] }` 后，含 `taffy_style: taffy::style::Style` 的 `ResolvedStyle` 能整体 `#[derive(Serialize,Deserialize,PartialEq)]`。
@@ -636,6 +640,27 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 **解决**：新增 Rust `#[no_mangle]` FFI 符号后 `cargo build` 自动再生 C# 绑定——**绝不手编 LoomGUIBindings.cs**。C# 侧只手写**应用层镜像**（非 FFI 类型的 enum 如 TweenProp/Ease、wrapper 方法、EventType 路由）。家里机/CI 须在含 Unity 目录的仓库根 `cargo build` 才再生绑定。
 **教训**：FFI 绑定是 csbindgen 单向产物（Rust→C#）；把"加 DllImport"当独立 C# 任务是错的——它是 Rust `#[no_mangle]` 任务的副产物。判断绑定文件是否手编：看 build.rs 是否 csbindgen 生成 + .gitignore 是否排除。
 
+### 坑 51：shader matrix 路径漏 root transform（design world 当 Unity world）（v1d.3 验收）
+
+**症状**：v1d.3 非纯平移节点（rotate/scale/skew）渲染位置/翻转/缩放全错，且与命中（design world matrix 逆投）不一致 → 点视觉位置点不到。
+**根因**：shader matrix 路径 `worldPos=mul(_ObjectMatrix, box-local)` = **design world**，直接 `TransformWorldToHClip(designWorld)` 把 design 坐标当 Unity world——漏了 root GO transform（`sf,-sf,sf`+rootPos）。TRS 路径 `TransformObjectToWorld(v.pos)` 自动经 GO+root 全链，matrix 路径跳过了。
+**解决**：matrix 路径 `worldPos=TransformObjectToWorld(designWorld)`（GO 是 root 子 + transform=identity → ObjectToWorld=root_ObjectToWorld，补回 design→Unity world）。两路径统一成 `root × design world`。
+**教训**：core 算 design world matrix，Unity 渲染要 Unity world——桥接靠 `TransformObjectToWorld`（含 root transform）。spec §3.6 漏写这步，实现期补。坑 42（render↔input 映射一致）同类。
+
+### 坑 52：ShaderLab Properties 无 Matrix 类型 + MPB 只覆盖 CBUFFER material property（v1d.3 验收）
+
+**症状**：① shader `_ObjectMatrix("...",Matrix)` parse error "unexpected TOK_MATRIX"；② 把 `_ObjectMatrix` 移 CBUFFER 外全局 uniform 防 SRP Batcher，`MPB.SetMatrix` 静默失效 → `_ObjectMatrix` 恒 0 → matrix 路径顶点塌缩（popup 飞掉看不见）。
+**根因**：① ShaderLab Properties 只 Float/Range/Int/Color/Vector/2D/3D/Cube，**无 Matrix**；② MaterialPropertyBlock 只覆盖 material property（Properties 或 `UnityPerMaterial` CBUFFER 字段），CBUFFER 外全局 uniform 不属 material → MPB **不覆盖**。
+**解决**：删 Properties Matrix 声明；`_ObjectMatrix` 放 `UnityPerMaterial` CBUFFER（无 Properties 对应），MPB 按 name 覆盖。代价：整 shader 丢 SRP Batcher（matrix 节点用 MPB 本不 batch；v1e instanced property 优化）。
+**教训**：MPB 传 per-renderer uniform 必须放 `UnityPerMaterial` CBUFFER（即使无 Properties 对应）；放全局 uniform MPB 静默失效。坑 47（MPB vs 共享 material）相关但不同——47 是 per-renderer vs material，本坑是 MPB 覆盖范围（CBUFFER 外不 cover）。
+
+### 坑 53：Unity PlayMode 首帧 Time.unscaledDeltaTime spike（tween 瞬间 complete）（v1d.4 验收）
+
+**症状**：v1d.4 demo Start 注册 tween，Play 后 popup 无动画（opacity/scale 直接末值），dump 显示 `anim_op=1.000`（非渐变）但 complete 事件出了。
+**根因**：Unity PlayMode 首帧 `Time.unscaledDeltaTime` 可达数秒（场景/library 加载延迟，实测 **dt=2.07s**）→ `advance_time(dt)` → tween `elapsed+=dt` 第一帧 `>=duration` → 瞬间 complete 写末值。dump_cdylib 固定 dt=0.15 渐变正常（证 core 对）。
+**解决**：demo 改按钮/Space 触发（Play 后 dt 稳定再注册 tween）；core 不 clamp dt（破坏 stage 测 + time_s 语义，YAGNI）。
+**教训**：Unity 首帧 unscaledDeltaTime spike 是通用陷阱；tween/动画别在 Start 自动播（首帧 dt 异常），用按钮/延迟/WaitEndOfFrame 触发。core time-based 逻辑（tween/longpress/双击）都对 dt spike 敏感——业务负责避开首帧。
+
 ## 6. 调试/验证技巧
 
 - **★ 实现 v1+ 后端/渲染/对象模型前，先参考 `temp/FairyGUI-unity/` 源码**（对照机制、避免走歪——本 session 因没先看 fgui 的 sortingOrder/rect-mask/MaterialManager，初版设计走了弯路：误用 z 排序、误以为 rect mask 要独立 GO、把绘制序想复杂）。
@@ -656,6 +681,7 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 - **bump blob version 清单**（v1b.2，坑 17）：① Rust `blob.rs` VERSION+COLUMNS+`num_col_offsets=columns.len()`（自动传播 header_len）；② C# `FrameBlob.cs` `ExpectedVersion` + 所有 arena offset 基准（`12+14*4` 非 `13*4`）；③ grep C# 测目录**所有** builder：`version=Nu`/`HeaderLen`/`elemSize = {`/`i < N`/末列写——逐个升，header 列数==data 列数；④ 重编+关 Unity 换 .dll。
 - **stale .dll 诊断**（v1b.2）：PlayMode 全不渲 + Console 干净 → `md5sum` 对比 fresh release .dll vs `Assets/Plugins/LoomGUI/`，committed .dll 应==release（坑 10）；committed .dll md5 记在 progress ledger 便于核对。
 - **stale .dll 诊断**：PlayMode **全不渲 + Console 干净** → `md5sum target/release/loomgui_ffi_c.dll loomgui_unity/Assets/Plugins/LoomGUI/loomgui_ffi_c.dll`，不等 = stale（Rust 改 blob/ABI 格式没换 .dll，坑 10）。
+- **stale .dll 行为验证**（坑 10 强化）：md5 对比只证文件版本，**行为验证**用 `libloading` 加载 Plugins .dll 跑 FFI（临时 `[dev-dependencies] libloading` + example 调 stage_new/tween/tick/dump_scene）对比 rlib example——cdylib 和 rlib 同源码同行为，若 rlib 对但 Unity 错 = **Unity 加载/调用问题**（md5 一致仍 stale，如 Unity 进程没重启加载旧 dll）。区分「.dll 坏」vs「Unity 没加载 fresh .dll」。
 - **T7 perf 基线**：500 节点静态 ~5-8ms/帧（120-200fps，无卡顿过 §9.3）。成本 = 朴素每帧全量重传（Rust 没 dirty/Unchanged 跳过 + `ReadMesh` per-frame alloc 数组）；优化（dirty 跳静态≈0 + ArrayPool 冷帧≤2ms）归 v1e。
 - PlayMode 验前 checklist：① Rust 改过 → 重编+换 .dll（关 Unity）② LoomStage `_font` 赋值 ③ Console 看红字 ④ Hierarchy 看 GO 不累积。
 - **删 pub API 必验 workspace**（v1b.3，坑 21）：`cargo test -p <crate>` 绿 ≠ workspace 绿——pub API 被 FFI/其他 crate 跨 crate 用时单 crate 测不覆盖。acceptance 写 `cargo test --workspace`。
@@ -746,12 +772,12 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 
 **v1d.2 defer（→ v1d.3+ / v1.x）**：IME/character（随 TextInput v1.x）、TextInput 控件（v1.x）、`:focus-visible`（区分键盘/鼠标聚焦成因，v1.x）、Tab preventDefault（业务拦 Tab，v1.x）、Tab 链缓存（每 Tab O(N) 即时构造，UI 规模可接受，v1e perf）。
 
-**v1d.3 ✅ 完成（main @ f431cb3，待家里机验）**：transform 命中渲染 + NativeHost-lite + 整树 dump，检测/矩阵全 core（transform.rs/scene/transform.rs），机制镜像 fgui vertexMatrix（已核实源码）。**transform**（`Affine2=[a,b,c,d,tx,ty]` 列主序 + free fn + Affine2Ext trait；`LocalTransform{matrix:Affine2}` **存矩阵非 TRS 分解**——剪切复合 `scale(2,1) rotate(45deg)` 在解析期 mul 累积不丢；`compute_world_transforms` 每 frame DFS `local=T(rel)∘T(pivot)∘matrix∘T(-pivot)` pivot=box center，`world=parent.world∘local`；`Scene.world_transforms:Vec<Affine2>`）+ **渲染两路径**（identity/merge 走 TRS 零回归；非纯平移 break merge 走 matrix shader `OBJECT_MATRIX` variant 顶点 `mul(_ObjectMatrix,pos)`，剪切天然支持；顶点 re-base 两路径坑 49）+ **命中 world_to_local**（inverse(affine 含剪切可逆)·point → 本地 box (0,0,w,h)）+ **clip 不旋转**（保守留 v1.x）+ **blob v3→v4**（transform 列 local_x/y(2)→world matrix m_a..m_ty(6)，18 列 header_len=84）+ **pkg v5→v6**（ResolvedStyle+transform bincode）+ **NativeHost-lite**（后端纯 C#，div 占位 + BindNativeHost(uint|string)，TRS 分解跟随 world matrix + 显隐 + sort_key→sortingOrder；复用既有 find_node_by_id，core 零改）+ **dump_scene**（FFI 整树 JSON，id/classes 转义）。version v1d.3；1 新常驻 FFI（dump_scene）+ StageHandle+dump_blob；.dll 重编（1709056→1733120B）。spec `docs/superpowers/specs/2026-06-25-v1d.3-transform-nativehost-design.md`、plan `docs/superpowers/plans/2026-06-25-v1d.3-transform-nativehost.md`。**两机约束**：core+ffi cargo test 全绿（core 230+ffi 37+snapshot 3=270）；C# 本机写未编译，家里机 PlayMode（旋转/剪切/缩放容器视觉+子跟随/剪切走 matrix shader/命中 world_to_local/identity 不回归/NativeHost cube 跟随+显隐/DumpScene 日志/500 节点 stress）。subagent-driven 11 task 全 Approved + final review Ready（opus，**跨语言矩阵契约全链核实正确无 Critical**；I1 culling+M1 MPB fix）。踩坑：Affine2 type/mod namespace 冲突（坑 46）、共享 material _ObjectMatrix 覆盖（坑 47）、matrix shader GO identity 致 Mesh.bounds 剔除错位（坑 48）、顶点 re-base 两路径（坑 49）。**drag 跟手**（v1d.1 defer）现可落地（transform.translate 已支持）。
+**v1d.3 ✅ 完成（main @ f431cb3，家里机 PlayMode 验，修坑 51/52）**：transform 命中渲染 + NativeHost-lite + 整树 dump，检测/矩阵全 core（transform.rs/scene/transform.rs），机制镜像 fgui vertexMatrix（已核实源码）。**transform**（`Affine2=[a,b,c,d,tx,ty]` 列主序 + free fn + Affine2Ext trait；`LocalTransform{matrix:Affine2}` **存矩阵非 TRS 分解**——剪切复合 `scale(2,1) rotate(45deg)` 在解析期 mul 累积不丢；`compute_world_transforms` 每 frame DFS `local=T(rel)∘T(pivot)∘matrix∘T(-pivot)` pivot=box center，`world=parent.world∘local`；`Scene.world_transforms:Vec<Affine2>`）+ **渲染两路径**（identity/merge 走 TRS 零回归；非纯平移 break merge 走 matrix shader `OBJECT_MATRIX` variant 顶点 `mul(_ObjectMatrix,pos)`，剪切天然支持；顶点 re-base 两路径坑 49）+ **命中 world_to_local**（inverse(affine 含剪切可逆)·point → 本地 box (0,0,w,h)）+ **clip 不旋转**（保守留 v1.x）+ **blob v3→v4**（transform 列 local_x/y(2)→world matrix m_a..m_ty(6)，18 列 header_len=84）+ **pkg v5→v6**（ResolvedStyle+transform bincode）+ **NativeHost-lite**（后端纯 C#，div 占位 + BindNativeHost(uint|string)，TRS 分解跟随 world matrix + 显隐 + sort_key→sortingOrder；复用既有 find_node_by_id，core 零改）+ **dump_scene**（FFI 整树 JSON，id/classes 转义）。version v1d.3；1 新常驻 FFI（dump_scene）+ StageHandle+dump_blob；.dll 重编（1709056→1733120B）。spec `docs/superpowers/specs/2026-06-25-v1d.3-transform-nativehost-design.md`、plan `docs/superpowers/plans/2026-06-25-v1d.3-transform-nativehost.md`。**两机约束**：core+ffi cargo test 全绿（core 230+ffi 37+snapshot 3=270）；C# 本机写未编译，家里机 PlayMode（旋转/剪切/缩放容器视觉+子跟随/剪切走 matrix shader/命中 world_to_local/identity 不回归/NativeHost cube 跟随+显隐/DumpScene 日志/500 节点 stress）。subagent-driven 11 task 全 Approved + final review Ready（opus，**跨语言矩阵契约全链核实正确无 Critical**；I1 culling+M1 MPB fix）。踩坑：Affine2 type/mod namespace 冲突（坑 46）、共享 material _ObjectMatrix 覆盖（坑 47）、matrix shader GO identity 致 Mesh.bounds 剔除错位（坑 48）、顶点 re-base 两路径（坑 49）；**家里机验收修 shader matrix design→Unity world 桥接（坑 51）+ Properties 无 Matrix/MPB 必须覆盖 CBUFFER（坑 52）+ stale .dll（坑 10 强化，libloading 加载验证）**。**drag 跟手**（v1d.1 defer）现可落地（transform.translate 已支持）。
 
 **v1d.3 defer（→ v1.x）**：transform-origin 自定义（固定 center）、旋转 clip box / shape mask（clip 不旋转保守）、CSS skew()/matrix() 解析（剪切已由 scale∘rotate 复合支持，skew() 函数本身）、translate % 单位、非均匀缩放∘旋转的 Mesh.bounds 旋转 AABB 扩展（剔除平移已修，旋转留 v1.x）、NativeHost 完整版（layout 测量/size push/hit/clip/所有权/Godot）、动态 UI/panel/实例化（独立子项目）、UI 树可视化 editor（dump 文本已支持）。
 
 **v1 其余 defer（v0 起，未动）**：
-- v1b 全收尾（A/B/C/mesh/CJK ✅）+ v1c.1 最小交互闭环 ✅ + v1c.2 路由完整化 ✅ + v1c.3 多触摸+CaptureTouch ✅ + v1c.4 click 增强 ✅ + v1d.1 拖拽+长按+safe-area ✅（家里机 PlayMode 验，main @ 013b96f，修坑 44/45）+ v1d.2 键盘+焦点+Tab+:focus ✅（家里机 PlayMode 验）+ v1d.3 transform+NativeHost-lite ✅（家里机 PlayMode 验）+ **v1d.4 GTween tween 引擎 ✅（待家里机 PlayMode 验，main @ 24e2aec）**。
+- v1b 全收尾（A/B/C/mesh/CJK ✅）+ v1c.1 最小交互闭环 ✅ + v1c.2 路由完整化 ✅ + v1c.3 多触摸+CaptureTouch ✅ + v1c.4 click 增强 ✅ + v1d.1 拖拽+长按+safe-area ✅（家里机 PlayMode 验，main @ 013b96f，修坑 44/45）+ v1d.2 键盘+焦点+Tab+:focus ✅（家里机 PlayMode 验）+ v1d.3 transform+NativeHost-lite ✅（家里机 PlayMode 验，修坑 51/52）+ **v1d.4 GTween tween 引擎 ✅（家里机 PlayMode 验，修坑 53 首帧 dt spike→demo 按钮触发）**。
 - **下一个**：v1d.5 ScrollPane+滚轮+手势仲裁（关验收 #2，消费 v1d.1 drag）/ 动态 UI/panel 子项目（独立 spec）/ v1e perf。
 - virtualization/shape mask/NativeHost 完整版：v1.x。
 

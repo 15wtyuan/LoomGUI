@@ -2,16 +2,17 @@ using UnityEngine;
 
 namespace LoomGUI
 {
-    /// v1d.4 PlayMode sample：fade-in + pop-in(BackOut) + onComplete 链式（tag 识别）。
-    /// 挂在 LoomStage 同 GO（Awake 取 stage），或 Inspector 指定 _stage。
+    /// v1d.4 PlayMode sample：fade-in + pop-in(BackOut) + onComplete（tag 识别）。
+    /// 点 OnGUI 按钮（或 Space）触发——避免 Start 首帧 dt spike（Unity PlayMode 首帧
+    /// unscaledDeltaTime 可达数秒，会让 tween 瞬间 complete 写末值、无渐变）。
     public unsafe class LoomTweenDemo : MonoBehaviour
     {
         [SerializeField] LoomStage _stage;
-        // 要动的节点 CSS id（demo html 须有对应 id 属性）。
         [SerializeField] string _targetId = "popup";
-        // 链式 tag 常量。
         const uint TagFadeIn = 1;
         const uint TagPopIn = 2;
+
+        uint _popupNode = uint.MaxValue;
 
         void Awake()
         {
@@ -19,16 +20,34 @@ namespace LoomGUI
             if (_stage == null) { Debug.LogError("[LoomTweenDemo] 无 LoomStage"); return; }
         }
 
-        /// 业务在合适时机调（如开面板按钮 click）。Start 里 demo 触发一次。
         void Start()
         {
-            uint node = _stage.FindNodeById(_targetId);
-            if (node == uint.MaxValue) { Debug.LogError($"[LoomTweenDemo] id '{_targetId}' 未找到"); return; }
-            // fade-in（opacity 0→1, 0.3s Linear）+ pop（scale 0.8→1.0, 0.3s BackOut）并发（不同通道）
-            _stage.Tween(node, TweenProp.Opacity, new float[] { 0f, 0, 0, 0 }, new float[] { 1f, 0, 0, 0 }, 0.3f, Ease.Linear, 0f, TagFadeIn);
-            _stage.Tween(node, TweenProp.Scale, new float[] { 0.8f, 0.8f, 0, 0 }, new float[] { 1f, 1f, 0, 0 }, 0.3f, Ease.BackOut, 0f, TagPopIn);
-            // 监听 fade 完成（按 tag 链式触发下一段——demo 仅 log）
-            _stage.EventHandler.AddListener(node, EventType.TweenComplete, OnTweenComplete);
+            _popupNode = _stage.FindNodeById(_targetId);
+            Debug.Log($"[LoomTweenDemo] FindNodeById('{_targetId}')={_popupNode}（点按钮或 Space 触发动画）");
+            if (_popupNode != uint.MaxValue)
+                _stage.EventHandler.AddListener(_popupNode, EventType.TweenComplete, OnTweenComplete);
+        }
+
+        void OnGUI()
+        {
+            if (_popupNode == uint.MaxValue) return;
+            if (GUI.Button(new Rect(10, 10, 240, 36), "播放 tween（或按 Space）"))
+                PlayTween();
+        }
+
+        void Update()
+        {
+            if (_popupNode == uint.MaxValue) return;
+            if (Input.GetKeyDown(KeyCode.Space))
+                PlayTween();
+        }
+
+        /// 触发 fade-in + pop-in。ClearAnim 重置到 CSS 初始，可重复点。
+        void PlayTween()
+        {
+            _stage.ClearAnim(_popupNode);
+            _stage.Tween(_popupNode, TweenProp.Opacity, new float[] { 0f, 0, 0, 0 }, new float[] { 1f, 0, 0, 0 }, 1.5f, Ease.Linear, 0f, TagFadeIn);
+            _stage.Tween(_popupNode, TweenProp.Scale, new float[] { 0.8f, 0.8f, 0, 0 }, new float[] { 1f, 1f, 0, 0 }, 1.5f, Ease.BackOut, 0f, TagPopIn);
         }
 
         static void OnTweenComplete(EventContext ctx)
