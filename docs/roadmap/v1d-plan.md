@@ -88,8 +88,8 @@
   - [ ] #6 focus/Tab/`:focus`
 - [ ] **v1d.3** transform 命中+渲染
   - [ ] #7 scale/rotation 激活 + CSS `transform` 解析 + world_to_local + blob
-- [ ] **v1d.4** GTween 时钟 + 基础 tween
-  - [ ] #8 clock + TweenManager + easing
+- [x] **v1d.4** GTween 时钟 + 基础 tween
+  - [x] #8 clock + TweenManager + easing
 - [ ] **v1d.5** ScrollPane + 滚动条 + 滚轮 + 手势仲裁
   - [ ] #9 ScrollPane 核心
   - [ ] #4 滚轮

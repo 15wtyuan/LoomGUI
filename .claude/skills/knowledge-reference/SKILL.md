@@ -219,6 +219,14 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 - **FFI/version**：version v1d.2→v1d.3；1 新常驻 FFI（`dump_scene`，csbindgen regen）+ StageHandle+dump_blob。.dll 重编（1709056→1733120B）。
 - **两机约束（v1d.3 执行）**：core+ffi cargo test 全绿（core 230 + ffi 37 + snapshot 3 = 270）；C# 本机写未编译（无 Unity），家里机 PlayMode（旋转/剪切/缩放容器视觉+子跟随/剪切走 matrix shader/命中 world_to_local/identity 不回归/NativeHost cube 跟随+显隐/DumpScene 日志/500 节点 stress）。subagent-driven 11 task 全 Approved + final review Ready（opus，跨语言矩阵契约全链核实正确，无 Critical；I1 culling+M1 MPB fix）。spec `docs/superpowers/specs/2026-06-25-v1d.3-transform-nativehost-design.md`、plan `docs/superpowers/plans/2026-06-25-v1d.3-transform-nativehost.md`。踩坑：Affine2 type/mod 同名 namespace 冲突（坑 46）、matrix shader GO identity 致 Mesh.bounds 剔除错位（坑 48）、共享 material _ObjectMatrix 覆盖（坑 47）。
 
+### 2.22 GTween tween 引擎（v1d.4，§10.3）
+- **TweenManager + replace-override**（spec §3-§5）：新 `loomgui_core/src/tween.rs`——`TweenProp`/`Ease` 均 `#[repr(u8)]`（Opacity=0..TextColor=5 / Linear=0..BackInOut=9）+ `Ease::evaluate(t,dur)->f32`（10 个照 fgui EaseManager 直译，OVERSHOOT=1.70158；dur<=0 返 1）+ `prop_value_size`（1/2/4）+ `try_from(u32)` 边界校验。`TweenManager.update(dt, scene, &mut out)` 每 tick：`elapsed+=dt`→delay 门控（`<delay` 跳过不写）→`tt=elapsed-delay` 钳到 duration→`norm=evaluate`→`apply` 写通道→`tt>=duration` 产 `EVT_TWEEN_COMPLETE`+killed→`retain(!killed)`。Stage 持 `tweens`。
+- **anim override = Scene transient 字段**（spec §4，关键）：`Scene.anim: AnimTable`（`Vec<NodeAnim>`，同 `world_transforms` **不进 pkg**）。`NodeAnim{opacity/transform/bg_color/text_color}` 全 Option。**replace-override**：4 读取点 `unwrap_or(CSS)`——`compute_world_transforms` 读 `anim.transform.unwrap_or(style.transform.matrix)`（**不 compose，覆盖 css_matrix**）；`build_render_nodes` 读 `anim.opacity/bg_color/text_color.unwrap_or(style.*)`。`AnimTable::get` 经 `NodeAnim::is_empty` 过滤（全 None→None）→ 热路径退回 CSS **零回归**。一节点一 transform tween（Translate/Scale/Rotation 共享 transform 通道，并发 last-write-wins；混用嵌套 div）。持久：killed/自然完成停末值，`clear_anim(_prop)` 才回 CSS。
+- **时钟 = 单 unscaled dt stash**（spec §6）：`advance_time(dt)`（FFI tick 已先调）加 `self.pending_dt=dt`；`tick_and_render`（**无参签名不动**，零测试 ripple）顶部 `let dt=pending_dt.take(); tweens.update(dt,scene,&mut out)`——**须在 solve/compute_world_transforms 前**（anim 先写后读）。load_inline/load_package 调 `tweens.clear()`（防悬空 node_id）。per-tween timeScale/scaled dt defer v1.x。
+- **EVT_TWEEN_COMPLETE=16 复用 EventRecord 字段**（spec §8，零结构改动）：`click_count`=prop(u8)、`touch_id`=tag(i32)、x/y=0。C# `EventType.TweenComplete=16` + `DispatchPending` 加 `case→DirectDispatch`（target-specific 不 bubble）；listener 读 `ctx.clickCount`=prop、`ctx.touchId`=tag。
+- **FFI/version**：version v1d.3→v1d.4；4 新常驻 FFI（`tween/kill_tween/clear_anim/clear_anim_prop`，csbindgen regen）+ `TweenProp/Ease::try_from(u32)`。.dll 重编（1733120→1739776B）。**blob 保持 v4 不 bump**（anim 在 core fold 进既有字段，blob/MirrorPool 零改）。
+- **两机约束（v1d.4 执行）**：core+ffi cargo test 全绿（core 249 + ffi 38 + snapshot 3 = 290）；C# 本机未编译，家里机 PlayMode（fade-in / pop-in BackOut overshoot / 并发不同通道 / onComplete tag+prop / 颜色 / kill 停末值 / clear 回 CSS / 零回归 / 500 节点 stress）。subagent-driven 8 task 全 Approved + final review Ready（opus，跨语言 u32↔repr(u8) 三处对齐 + EventRecord 20B ABI 不变 + 零回归每读取点核实，无 Critical/Important）。spec `docs/superpowers/specs/2026-06-25-v1d.4-gtween-tween-design.md`、plan `docs/superpowers/plans/2026-06-25-v1d.4-gtween-tween.md`。踩坑：LoomGUIBindings.cs 是 csbindgen 自动生成+gitignored（坑 50）、brief 再次写错 borrow_events len（坑 39 复踩）、Scene 加字段 replace_all 技法（坑 43 优化）。
+
 ## 3. 依赖 API 适配踩坑（v0 最大教训）
 
 > **plan/brief 写的 API 草稿常与实际 crate 版本不符**。遇编译错按本节对照，**勿硬改依赖版本**，按 crate 实际源码（`~/.cargo/registry/src/<crate>-<ver>/src/`）调。
@@ -549,7 +557,7 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 **症状**：cancel_click abi_test 切 borrow_events 返回 slice 用 `len / size_of::<EventRecord>()` → `1/20=0` 记录 → 空 slice → 「Up 仍发」断言失败。
 **根因**：`loomgui_stage_borrow_events(h, *mut out_len)` 写入的是 `events.len()`（记录**条数**）非字节数；brief/测草稿误以为字节。
 **解决**：直接用 `len` 作记录数切 `from_raw_parts(ptr, len)`（同既有 `set_input_borrow_events_round_trip` 测用 `len * rec_size` 取字节的反向印证）。
-**教训**：两个 borrow 的 out_len 语义**不同**——`borrow_events`=**记录 count**（EventRecord 条数），`borrow_frame`=**字节**（blob 字节）。测/消费代码勿混用。
+**教训**：两个 borrow 的 out_len 语义**不同**——`borrow_events`=**记录 count**（EventRecord 条数），`borrow_frame`=**字节**（blob 字节）。测/消费代码勿混用。**复踩（v1d.4）**：v1d.4 plan T6 brief 又写 `len/size_of`——plan 作者写 FFI 测前须回读本坑。
 
 ### 坑 40：Assert.IsNotNull(ptr) 对非托管指针装箱恒非 null（no-op）（v1c.4）
 
@@ -577,7 +585,7 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 **症状**：T1 给 `Scene` 加 `focused_node` 字段。plan 把"修 Scene `{...}` 字面量"按文件派（T1 node.rs / T2 asset / T3 dynamic / T4 input / T5 stage），但**漏了 render/mod.rs、render/batch.rs、hit.rs、layout/mod.rs** 的 Scene 字面量/`Scene::build` 7-tuple 调用 → 这些模块测编译失败（`missing field focused_node`），T4 跑 `cargo test -p loomgui_core --lib input` 才暴露，临时补丁让 lib 编过。
 **根因**：广泛构造的 struct（`Scene` 被全 crate 测 helper 手搓）加字段是**全局 fallout**，但 plan 的 per-file 任务划分只枚举了"主路径"文件，没 grep 全仓所有构造点。与坑 41 同族（跨文件 fallout），但坑 41 是签名变更跨 crate，本坑是**字段加在同一 crate 内多模块的字面量**。
 **解决**：给 struct 加字段后，**全仓 grep 所有构造点**（`grep -rn "Scene {" loomgui_core/src/` + `Scene::build(` 调用）一次性枚举，不靠 per-file 任务记忆。T4 implementer 补了漏的 4 文件（render/mod.rs+batch.rs+hit.rs+layout，stage.rs 最小补丁留 T5 结构化重写）。
-**教训**：struct 字段/签名变更的 fallout 枚举要**全仓 grep 驱动**，不能依赖 plan 的文件清单（plan 写时未必枚举全）。controller pre-flight review 应 grep 一遍构造点写进 brief，而非让 implementer 边编译边发现。
+**教训**：struct 字段/签名变更的 fallout 枚举要**全仓 grep 驱动**，不能依赖 plan 的文件清单（plan 写时未必枚举全）。controller pre-flight review 应 grep 一遍构造点写进 brief，而非让 implementer 边编译边发现。**v1d.4 优化**：给 Scene 加 transient 字段（如 `anim`）时，`replace_all` 把相邻的 `world_transforms: Vec::new()`→`world_transforms: Vec::new(), anim: Default::default()` 一次命中全 46 处字面量（同族 transient 字段相邻），比逐文件 grep 省；cargo build missing-field 仍兜底。
 
 ### 坑 44：compound_matches 不检伪类 → 伪类规则污染 base_style（v1d 验收）
 
@@ -620,6 +628,13 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 **根因**：blob 的 `local_x/local_y`（现 world matrix tx/ty）双用：GO 定位 + mesh re-base。identity 时两值同（layout top-left=world top-left），非 identity 时 world top-left≠layout top-left，统一减 tx,ty 对非 identity 错。
 **解决**：render + blob 按纯平移分两路径——**identity**：render 产绝对顶点 + blob re-base 减 tx,ty → top-local + GO position=tx,ty（现状零改）；**非纯平移**：render 产 box 本地 (0..w)（减 layout_rect.xy）+ blob **不 re-base** + GO transform=identity + shader matrix。两处判断一致（同 `is_pure_translation`）。
 **教训**：blob transform 列语义从「layout 绝对」变「world 累计」时，re-base 基准必须分路径（identity 走 layout top-left，非 identity 走 box 本地）。这是 transform 渲染最易藏 bug 处，需跨 render/mod.rs + blob.rs 一致。
+
+### 坑 50：LoomGUIBindings.cs 是 csbindgen 自动生成 + gitignored，手写会被覆盖（v1d.4-T7）
+
+**症状**：v1d.4 plan T7 让 implementer 手动给 `LoomGUIBindings.cs` 加 4 个 `loomgui_stage_tween*` DllImport。implementer 发现文件已被 T6 的 `cargo build` 自动再生出这 4 个，且文件 **gitignored**（`.gitignore:40 **/LoomGUI*Bindings*.cs`）——手写多余且会被下次 build 覆盖。
+**根因**：`loomgui_ffi_c/build.rs` 每次 `cargo build` 跑 csbindgen 扫 `src/lib.rs` 的 `#[no_mangle]` → 写 `loomgui_unity/.../Bindings/LoomGUIBindings.cs`（best-effort，纯 Rust 构建时 Unity 目录可能不在则 `cargo:warning`）。文件是**构建产物**非源码，故 gitignored。
+**解决**：新增 Rust `#[no_mangle]` FFI 符号后 `cargo build` 自动再生 C# 绑定——**绝不手编 LoomGUIBindings.cs**。C# 侧只手写**应用层镜像**（非 FFI 类型的 enum 如 TweenProp/Ease、wrapper 方法、EventType 路由）。家里机/CI 须在含 Unity 目录的仓库根 `cargo build` 才再生绑定。
+**教训**：FFI 绑定是 csbindgen 单向产物（Rust→C#）；把"加 DllImport"当独立 C# 任务是错的——它是 Rust `#[no_mangle]` 任务的副产物。判断绑定文件是否手编：看 build.rs 是否 csbindgen 生成 + .gitignore 是否排除。
 
 ## 6. 调试/验证技巧
 
@@ -736,8 +751,8 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 **v1d.3 defer（→ v1.x）**：transform-origin 自定义（固定 center）、旋转 clip box / shape mask（clip 不旋转保守）、CSS skew()/matrix() 解析（剪切已由 scale∘rotate 复合支持，skew() 函数本身）、translate % 单位、非均匀缩放∘旋转的 Mesh.bounds 旋转 AABB 扩展（剔除平移已修，旋转留 v1.x）、NativeHost 完整版（layout 测量/size push/hit/clip/所有权/Godot）、动态 UI/panel/实例化（独立子项目）、UI 树可视化 editor（dump 文本已支持）。
 
 **v1 其余 defer（v0 起，未动）**：
-- v1b 全收尾（A/B/C/mesh/CJK ✅）+ v1c.1 最小交互闭环 ✅ + v1c.2 路由完整化 ✅ + v1c.3 多触摸+CaptureTouch ✅ + v1c.4 click 增强 ✅ + v1d.1 拖拽+长按+safe-area ✅（家里机 PlayMode 验，main @ 013b96f，修坑 44/45）+ v1d.2 键盘+焦点+Tab+:focus ✅（家里机 PlayMode 验）+ **v1d.3 transform+NativeHost-lite ✅（家里机 PlayMode 验）**。
-- **下一个**：v1d.4 GTween（transform 已支持，tween 能动 rotate/scale 更值）/ v1d.5 ScrollPane+滚轮+手势仲裁（关验收 #2，消费 v1d.1 drag）/ 动态 UI/panel 子项目（独立 spec）/ v1e perf。
+- v1b 全收尾（A/B/C/mesh/CJK ✅）+ v1c.1 最小交互闭环 ✅ + v1c.2 路由完整化 ✅ + v1c.3 多触摸+CaptureTouch ✅ + v1c.4 click 增强 ✅ + v1d.1 拖拽+长按+safe-area ✅（家里机 PlayMode 验，main @ 013b96f，修坑 44/45）+ v1d.2 键盘+焦点+Tab+:focus ✅（家里机 PlayMode 验）+ v1d.3 transform+NativeHost-lite ✅（家里机 PlayMode 验）+ **v1d.4 GTween tween 引擎 ✅（待家里机 PlayMode 验，main @ 24e2aec）**。
+- **下一个**：v1d.5 ScrollPane+滚轮+手势仲裁（关验收 #2，消费 v1d.1 drag）/ 动态 UI/panel 子项目（独立 spec）/ v1e perf。
 - virtualization/shape mask/NativeHost 完整版：v1.x。
 
 完整 defer 表见各 spec §7；v1a Phase 1 实现 ledger 见 `.git/sdd/progress.md`。
