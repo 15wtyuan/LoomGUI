@@ -121,6 +121,7 @@ namespace LoomGUI
         /// v1d.3-T10：dump 当前 scene 为 JSON（Rust 拥有，下 tick 失效）。
         public string DumpScene()
         {
+            if (_stage == null) return "[]";
             unsafe
             {
                 nuint len;
