@@ -904,7 +904,7 @@ mod abi_tests {
         loomgui_stage_free(h);
     }
 
-    /// v1d.3：version 字符串 == "v1d.3"。
+    /// v1d.4：version 字符串 == "v1d.4"。
     #[test]
     fn version_is_v1d_4() {
         let p = loomgui_version();

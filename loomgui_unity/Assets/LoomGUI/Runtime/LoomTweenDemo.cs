@@ -1,5 +1,4 @@
 using UnityEngine;
-using LoomGUI.Bindings;
 
 namespace LoomGUI
 {
