@@ -744,4 +744,40 @@ mod tests {
         let st2 = s.scroll.get(NodeId(0)).unwrap();
         assert_eq!(st2.tweening, 1, "pos 在范围内不打断 tween");
     }
+
+    // ── T8 apply_wheel_to_hit（v1d.5 reviewer fix） ───────────────────────
+    #[test]
+    fn apply_wheel_to_hit_scrolls_nearest_effective_ancestor() {
+        use crate::scene::transform::compute_world_transforms;
+
+        // 构造 scene：overflow:scroll 容器 + content>viewport（effective_y=true）
+        let mut s = build_scroll_scene();
+        // 扩子节点使 content_size > viewport_size on y 轴
+        // content AABB y = max(40, 250) = 250 > viewport=100 → overlap_y=150
+        s.nodes[2].layout_rect = Rect { x: 0.0, y: 0.0, w: 30.0, h: 250.0 };
+        // Scene::build 为 overflow node 设 clip_rect=Rect::default()（(0,0,0,0) 挡全部命中）；
+        // hand-fill 为 layout_rect 同尺寸让 hit_test 能命中（T7 坑，reviewer brief 点名）。
+        s.nodes[0].clip_rect = Some(Rect { x: 0.0, y: 0.0, w: 100.0, h: 100.0 });
+
+        // 填 scroll state（content_size/viewport/overlap）+ world transforms（hit_test 用）
+        refresh_content_sizes(&mut s);
+        compute_world_transforms(&mut s);
+
+        // 核实场景生效
+        {
+            let st = s.scroll.get(NodeId(0)).unwrap();
+            assert!(st.overlap.1 > 0.0, "content 超出 viewport，overlap_y={}", st.overlap.1);
+            assert_eq!(st.tweening, 0, "初始 tweening=0");
+        }
+
+        // hit 容器内一点 (10,10) → hit_test 命中子节点 1 → parent 遍历到节点 0
+        // → 节点 0 overflow_y=Scroll + effective → apply_wheel
+        apply_wheel_to_hit(
+            &mut s,
+            WheelEvent { x: 10.0, y: 10.0, delta_x: 0.0, delta_y: 1.0 },
+        );
+
+        let st = s.scroll.get(NodeId(0)).unwrap();
+        assert!(st.tweening != 0, "wheel 触发滚动 tween，tweening={}", st.tweening);
+    }
 }

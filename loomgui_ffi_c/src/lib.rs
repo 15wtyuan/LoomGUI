@@ -1138,4 +1138,25 @@ mod abi_tests {
         }
         loomgui_stage_free(h);
     }
+
+    /// v1d.5-T8：set_wheel_input round-trip —— 推 WheelEvent 入 Stage，验 pending_wheel 累积。
+    /// 复用 Stage 类型直接构造（不经过 FFI pointer 层——abi_tests 测 public API 契约）。
+    #[test]
+    fn set_wheel_input_round_trip() {
+        let fp = format!(
+            "{}/../loomgui_core/tests/fixtures/DejaVuSans.ttf",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let mut stage = Stage::new(&fp, (200.0, 100.0)).unwrap();
+        let evs = [loomgui_core::scroll::WheelEvent { x: 10.0, y: 20.0, delta_x: 0.0, delta_y: 1.0 }];
+        stage.set_wheel_input(&evs);
+        assert_eq!(stage.pending_wheel.len(), 1);
+    }
+
+    /// v1d.5-T8：WheelEvent ABI 尺寸 16B（4×f32 紧凑，C# 端同布局）。
+    /// compile-time 断言已在 scroll.rs:27-29 锁住；本测为 runtime 可见的检查。
+    #[test]
+    fn wheel_event_is_16_bytes() {
+        assert_eq!(std::mem::size_of::<loomgui_core::scroll::WheelEvent>(), 16);
+    }
 }
