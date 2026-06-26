@@ -68,7 +68,17 @@ namespace LoomGUI
             {
                 if (!blob.Visible(i)) continue;
                 byte kind = blob.PayloadKind(i);
-                if (kind != 1 && kind != 2) continue;  // Mesh(1)/Text(2)；Unchanged(0) 跳过
+                // v1e dirty：Unchanged(0) = 静态帧节点。dirty.rs 保证此刻 world/alpha/sort/mask/payload
+                // 全不变 → 清 stale 保留上帧 GO、跳过上传。修复前此处直接 continue 不清 stale，导致静态
+                // 帧节点全被末尾 stale 销毁——首帧渲染后 UI 集体消失（blob.rs:60-71 仍写 Unchanged 节点
+                // 的 world_matrix 等公共头列，证明它该保留而非销毁）。
+                if (kind == 0)
+                {
+                    if (_pool.TryGetValue(blob.NodeId(i), out var unchangedRo))
+                        unchangedRo.Stale = false;
+                    continue;
+                }
+                if (kind != 1 && kind != 2) continue;  // 未知 kind 防御跳过
 
                 uint id = blob.NodeId(i);
                 if (!_pool.TryGetValue(id, out var ro))

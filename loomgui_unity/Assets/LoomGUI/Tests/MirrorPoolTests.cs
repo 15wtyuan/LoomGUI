@@ -14,7 +14,7 @@ namespace LoomGUI.Tests
         /// v4 布局（18 列含 world matrix + mesh/text/clip 三 arena header；text 空、clip 仅 count=0）。
         /// 用于驱动 MirrorPool.Sync 的 diff 逻辑。
         static byte[] OneMeshNodeBlob(
-            uint id, float x, float y, float w, float h, uint sortKey)
+            uint id, float x, float y, float w, float h, uint sortKey, byte payloadKind = 1)
         {
             var b = new List<byte>();
 
@@ -87,7 +87,7 @@ namespace LoomGUI.Tests
             b.AddRange(System.BitConverter.GetBytes(1f));        // col 9: m_d
             b.AddRange(System.BitConverter.GetBytes(x));         // col 10: m_tx
             b.AddRange(System.BitConverter.GetBytes(y));         // col 11: m_ty
-            b.Add(1);                                            // col 12: payload_kind = Mesh
+            b.Add(payloadKind);                                  // col 12: payload_kind (1=Mesh 默认；0=Unchanged v1e 测)
             b.AddRange(System.BitConverter.GetBytes(0u));        // col 13: mesh_off（相对 arena 起始）
             b.AddRange(System.BitConverter.GetBytes((uint)arenaLen)); // col 14: mesh_len
             b.AddRange(System.BitConverter.GetBytes(0u));        // col 15: text_off（T1 占位）
@@ -263,6 +263,46 @@ namespace LoomGUI.Tests
                 Assert.AreEqual(new Vector2(1f, 1f), meshA2.uv[2], "A2: uv2 恢复 (1,1)");
                 Assert.AreEqual(4, meshA2.colors.Length, "A2: 4 色（收缩后无残留）");
                 Assert.AreEqual(new Color(1f, 1f, 1f, 1f), meshA2.colors[0], "A2: 白色不透明 恢复");
+            }
+            finally
+            {
+                pool.Clear();
+                mm.Clear();
+                Object.DestroyImmediate(root);
+            }
+        }
+
+        /// v1e dirty 回归：静态帧 payload_kind=0(Unchanged) 节点必须保留上帧 GO（清 stale 不销毁、
+        /// 不上传）。dirty.rs 保证 Unchanged 时 world/alpha/payload 全不变 → 保留上帧 GO 状态即可。
+        /// 首帧 Mesh 建 GO，第二帧同节点 Unchanged 必须保留——否则 v1e 优化致静态 UI 首帧后全消失。
+        [Test]
+        public void UnchangedNodeRetainsGoAcrossFrames()
+        {
+            var root = new GameObject("root");
+            var shader = Shader.Find("LoomGUI/Unlit");
+            var mm = new MaterialManager(shader);
+            var pool = new MirrorPool();
+            var texMap = new Dictionary<uint, Texture2D>();
+            var fallback = Texture2D.whiteTexture;
+
+            try
+            {
+                // 首帧：Mesh 节点 → 建 GO + 4 顶点 mesh + position=(10,20)。
+                var blobMesh = new FrameBlob(OneMeshNodeBlob(id: 7, x: 10f, y: 20f, w: 5f, h: 5f, sortKey: 3, payloadKind: 1));
+                pool.Sync(blobMesh, root.transform, mm, texMap, fallback, null);
+                Assert.AreEqual(1, pool.Count, "首帧 Mesh: pool.Count=1");
+                var go = root.transform.GetChild(0).gameObject;
+                Assert.AreEqual(4, go.GetComponent<MeshFilter>().sharedMesh.vertexCount, "首帧: mesh 4 顶点");
+
+                // 第二帧：同节点 Unchanged → 必须保留 GO（不销毁、不上传、不重设 position）。
+                // position 故意写 (999,999)：Unchanged 应保留上帧 (10,20)，不取本帧值。
+                var blobUnchanged = new FrameBlob(OneMeshNodeBlob(id: 7, x: 999f, y: 999f, w: 5f, h: 5f, sortKey: 3, payloadKind: 0));
+                pool.Sync(blobUnchanged, root.transform, mm, texMap, fallback, null);
+                Assert.AreEqual(1, pool.Count, "Unchanged: 静态帧节点应保留，pool.Count 仍=1");
+                Assert.AreSame(go, root.transform.GetChild(0).gameObject, "Unchanged: 同一 GO 保留（未销毁重建）");
+                Assert.AreEqual(new Vector3(10f, 20f, 0f), go.transform.localPosition,
+                    "Unchanged: 保留上帧 position (10,20)，不取本帧 (999,999)");
+                Assert.AreEqual(4, go.GetComponent<MeshFilter>().sharedMesh.vertexCount, "Unchanged: 上帧 mesh 保留（4 顶点）");
             }
             finally
             {
