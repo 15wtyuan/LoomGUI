@@ -11,6 +11,9 @@ namespace LoomGUI
         uint _scrollNode = uint.MaxValue;
         uint[] _navNodes = new uint[8];
 
+        // === 灯阵（T7 §4）===
+        int _clickCount, _hoverCount, _dragCount, _longCount, _keyCount;
+
         void Awake()
         {
             if (_stage == null) _stage = GetComponent<LoomStage>();
@@ -28,6 +31,7 @@ namespace LoomGUI
             }
             Debug.Log($"[Showcase] scroll={_scrollNode} nav0={_navNodes[0]}（点 nav 跳区）");
             StaggeredEntrance();
+            SubscribeLampEvents();
         }
 
         // design-taste §4: 启动错峰入场。各 sec 卡 tween opacity 0→1 + delay 递增。
@@ -56,5 +60,57 @@ namespace LoomGUI
                 }
             }
         }
+
+        // === §4 灯阵订阅（T7）===
+        // 订阅各交互元素事件 + 禁用 hit-disabled。pointer-events/StopProp 在 4.7 外/内 Click 上演示。
+        void SubscribeLampEvents()
+        {
+            SubscribeLamp("hit-click", EventType.Click, OnClickHit);
+            SubscribeLamp("hit-hover", EventType.RollOver, OnHoverHit);
+            SubscribeLamp("hit-hover", EventType.RollOut, OnHoverLeave);
+            SubscribeLamp("hit-drag", EventType.DragMove, OnDragHit);
+            SubscribeLamp("hit-longpress", EventType.LongPress, OnLongHit);
+            SubscribeLamp("hit-key", EventType.KeyDown, OnKeyHit);
+            // 4.3 disabled：Start 设 disabled，click 不触发。
+            _stage.SetNodeDisabled(_stage.FindNodeById("hit-disabled"), true);
+            // 4.7 路由：outer/inner 均订阅 Click；inner 调 StopPropagation 止冒泡（outer 不触发）。
+            SubscribeLamp("route-outer", EventType.Click, OnRouteOuter);
+            SubscribeLamp("route-inner", EventType.Click, OnRouteInner);
+            SubscribeLamp("route-pe", EventType.Click, OnRoutePe);
+            Debug.Log("[Showcase] §4 灯阵订阅完成（click/hover/drag/longpress/key + route + disabled）");
+        }
+
+        void SubscribeLamp(string id, EventType t, EventCallback cb)
+        {
+            uint n = _stage.FindNodeById(id);
+            if (n != uint.MaxValue) _stage.EventHandler.AddListener(n, t, cb);
+        }
+
+        // 点亮 lamp-{name} 容器（ponytail: 无 get_children API，改用整容器 opacity 脉冲指示触发）。
+        // 每触发 tween 1→0.3 闪一下，作为触发反馈；放弃逐盏计数可视化（v1 简化）。
+        void LightLamp(string name, int count)
+        {
+            uint container = _stage.FindNodeById("lamp-" + name);
+            if (container == uint.MaxValue) return;
+            _stage.Tween(container, TweenProp.Opacity,
+                new float[] { 1f, 0, 0, 0 }, new float[] { 0.3f, 0, 0, 0 },
+                0.2f, Ease.QuadOut, 0f, 0);
+        }
+
+        void OnClickHit(EventContext ctx) { LightLamp("click", ++_clickCount); }
+        void OnHoverHit(EventContext ctx) { LightLamp("hover", ++_hoverCount); }
+        void OnHoverLeave(EventContext ctx) { LightLamp("hover", ++_hoverCount); }
+        void OnDragHit(EventContext ctx) { LightLamp("drag", ++_dragCount); }
+        void OnLongHit(EventContext ctx) { LightLamp("longpress", ++_longCount); }
+        void OnKeyHit(EventContext ctx) { LightLamp("key", ++_keyCount); }
+
+        // 4.7 路由演示：inner StopPropagation → outer 不收。
+        void OnRouteOuter(EventContext ctx) { LightLamp("hover", ++_hoverCount); }   // 外层命中（inner 未止冒泡时）
+        void OnRouteInner(EventContext ctx)
+        {
+            ctx.StopPropagation();   // 止冒泡，outer 不触发
+            LightLamp("hover", ++_hoverCount);
+        }
+        void OnRoutePe(EventContext ctx) { LightLamp("hover", ++_hoverCount); }   // pointer-events:none 穿透后命中下层
     }
 }

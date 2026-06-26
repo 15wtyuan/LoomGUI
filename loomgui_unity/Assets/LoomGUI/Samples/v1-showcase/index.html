@@ -185,7 +185,75 @@
           </div>
         </div>
       </div>
-      <div class="sec" id="sec-4"><div class="sec-h">§4 交互事件集</div></div>
+      <div class="sec" id="sec-4">
+        <div class="sec-h">§4 交互事件集</div>
+        <div class="card">
+          <div class="card-h"><span class="card-t">4.1 click + dblclick</span><span class="card-x">预期: 单击/双击均亮灯（容器脉冲）</span></div>
+          <div class="card-b" style="flex-direction:column;gap:8px;width:100%">
+            <div class="hit" id="hit-click">点我（单击+双击）</div>
+            <div class="lamps" id="lamp-click">
+              <div class="lamp"></div><div class="lamp"></div><div class="lamp"></div><div class="lamp"></div><div class="lamp"></div><div class="lamp"></div>
+            </div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-h"><span class="card-t">4.2 hover / leave / active</span><span class="card-x">预期: 悬停变色 + 进入/离开亮灯</span></div>
+          <div class="card-b" style="flex-direction:column;gap:8px;width:100%">
+            <div class="hit" id="hit-hover">悬停我（RollOver/Out 亮灯）</div>
+            <div class="lamps" id="lamp-hover">
+              <div class="lamp"></div><div class="lamp"></div><div class="lamp"></div><div class="lamp"></div>
+            </div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-h"><span class="card-t">4.3 disabled</span><span class="card-x">预期: 不响应 click（C# SetNodeDisabled）</span></div>
+          <div class="card-b" style="flex-direction:column;gap:8px;width:100%">
+            <div class="hit disabled" id="hit-disabled">禁用（disabled 不响应）</div>
+            <span class="card-x">对比 4.1 可点；本块 SetNodeDisabled(true) 后 click 不触发。</span>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-h"><span class="card-t">4.4 drag</span><span class="card-x">预期: 拖动亮灯（DragMove）</span></div>
+          <div class="card-b" style="flex-direction:column;gap:8px;width:100%">
+            <div class="hit" draggable="true" id="hit-drag">拖我（draggable）</div>
+            <div class="lamps" id="lamp-drag">
+              <div class="lamp"></div><div class="lamp"></div><div class="lamp"></div><div class="lamp"></div>
+            </div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-h"><span class="card-t">4.5 longpress</span><span class="card-x">预期: 长按 1.5s 亮灯</span></div>
+          <div class="card-b" style="flex-direction:column;gap:8px;width:100%">
+            <div class="hit" id="hit-longpress">长按 1.5s</div>
+            <div class="lamps" id="lamp-longpress">
+              <div class="lamp"></div><div class="lamp"></div><div class="lamp"></div>
+            </div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-h"><span class="card-t">4.6 focus + Tab + key</span><span class="card-x">预期: 聚焦后按键亮灯（KeyDown）</span></div>
+          <div class="card-b" style="flex-direction:column;gap:8px;width:100%">
+            <div class="hit" tabindex="1" id="hit-key">点聚焦后按键（tabindex）</div>
+            <div class="lamps" id="lamp-key">
+              <div class="lamp"></div><div class="lamp"></div><div class="lamp"></div><div class="lamp"></div>
+              <div class="lamp"></div><div class="lamp"></div><div class="lamp"></div><div class="lamp"></div>
+            </div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-h"><span class="card-t">4.7 路由 + pointer-events</span><span class="card-x">预期: bubble + StopProp + 点击穿透</span></div>
+          <div class="card-b" style="flex-direction:column;gap:8px;width:100%">
+            <div class="outer-r" id="route-outer">
+              <div class="inner-r" id="route-inner">内（StopPropagation 止冒泡）</div>
+            </div>
+            <div class="pe-stack">
+              <div class="hit" id="route-pe">下层可点</div>
+              <div class="pe-none">穿透（pointer-events:none）</div>
+            </div>
+            <span class="card-x">外/内均订阅 Click；内调 StopPropagation → 外不触发。pe-none 叠在上层，pointer-events:none → 点击穿透到下层。</span>
+          </div>
+        </div>
+      </div>
       <div class="sec" id="sec-5">
         <div class="sec-h">§5 滚动实验室</div>
         <div class="card">

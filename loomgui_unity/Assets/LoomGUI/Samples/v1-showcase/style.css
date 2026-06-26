@@ -46,3 +46,16 @@
 .filler{width:100%;height:300px;background-color:#2d3148;}
 .hscroll{width:100%;height:60px;flex-direction:row;overflow-x:scroll;overflow-y:hidden;white-space:nowrap;background-color:#1a1d2e;}
 .hfiller{min-width:120px;height:44px;background-color:#5fb2c4;color:#1a1d2e;margin:0 6px;display:flex;align-items:center;justify-content:center;}
+
+/* §4 交互事件集 */
+.hit{background-color:#2d3148;border:1px solid #3a3f55;padding:16px 24px;color:#e0e0e0;font-size:18px;}
+.hit:hover{background-color:#3a4258;border:1px solid #5fb2c4;color:#5fb2c4;}
+.hit:active{background-color:#5fb2c4;transform:scale(0.96);color:#1a1d2e;}
+.hit.disabled{background-color:#2d3148;opacity:0.5;color:#6c7080;border:1px solid #3a3f55;}
+.lamps{flex-direction:row;gap:6px;}
+/* .lamp 已在 base 定义（width/height/bg-color #3a3f55），容器脉冲改 opacity 不改子灯色 */
+.outer-r{background-color:#2d3148;border:1px solid #3a3f55;padding:20px;gap:12px;}
+.inner-r{background-color:#5fb2c4;padding:12px;color:#1a1d2e;font-size:16px;}
+.pe-stack{position:relative;width:200px;height:80px;}
+.pe-stack .hit{width:100%;}
+.pe-none{position:absolute;left:0;top:0;width:100%;height:100%;background-color:#c2605a;padding:12px;color:#e0e0e0;font-size:14px;pointer-events:none;}
