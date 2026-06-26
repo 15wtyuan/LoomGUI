@@ -1,6 +1,0 @@
-.card { width: 200px; height: 100px; background-color: #3366cc; margin: 10px; }
-.rot { transform: rotate(30deg); }
-.skew { transform: scale(2, 1) rotate(20deg); }   /* 剪切：matrix shader 路径 */
-.scale-d { transform: scale(1.5); }
-.inner { width: 50px; height: 50px; background-color: #ffcc00; }  /* 子节点跟随父变换 */
-#model-slot { width: 100px; height: 100px; }  /* NativeHost 占位 */
