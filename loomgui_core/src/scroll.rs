@@ -22,9 +22,9 @@ pub const DECELERATION_RATE: f64 = 0.967;
 pub const VELOCITY_SMOOTH: f32 = 10.0;
 /// 速度衰减基（未用，fgui 兼容声明）。
 pub const VELOCITY_DECAY_BASE: f32 = 0.833;
-/// 惯性触发阈值（px/s 速度平方）：PC。
+/// 惯性触发阈值（px/s 线性 |v|）：PC。fgui begin_inertia 判 `|v|*scale < thresh`。
 pub const INERTIA_THRESH_PC: f32 = 500.0;
-/// 惯性触发阈值（px/s 速度平方）：触摸。
+/// 惯性触发阈值（px/s 线性 |v|）：触摸。
 pub const INERTIA_THRESH_TOUCH: f32 = 1000.0;
 /// 惯性位移系数（change = v*dur*0.4）。
 pub const INERTIA_DIST_COEFF: f32 = 0.4;
@@ -128,18 +128,25 @@ impl ScrollPaneState {
         self.tweening = 0; // 拖拽中无 tween
     }
 
-    /// Up 后启惯性（tweening=2）。is_touch 选阈值；v² < thresh 该轴不惯性。
+    /// Up 后启惯性（tweening=2）。is_touch 选阈值；|v| < thresh 该轴不惯性。
+    ///
+    /// **坑 46（spec 转录 bug，reviewer 抓）**：fgui ScrollPane.cs:2060 原式
+    /// `v2 = Mathf.Abs(v) * _velocityScale`（_velocityScale 默认 1），即 v2 = 线性 |v|，
+    /// 变量名 "v2" 误导成 v²。原 T6 brief 按 `v2 = v*v` 实现 → dur 偏长（v=2000 → 5.5s
+    /// 而非 fgui 实际 ~1.7s）+ 阈值过敏（|v|>22 触发而非 fgui |v|>500）。修：v2 用 |v|。
+    /// 下游 `change = v * dur * 0.4` 仍用 signed v（保方向），dur 公式里 v2 是 |v| 自动正确。
     pub fn begin_inertia(&mut self, is_touch: bool) {
         let thresh = if is_touch { INERTIA_THRESH_TOUCH } else { INERTIA_THRESH_PC };
         for ax in 0..2u8 {
             let v = if ax == 0 { self.velocity.0 } else { self.velocity.1 };
             let ov = if ax == 0 { self.overlap.0 } else { self.overlap.1 };
-            let v2 = v * v;
+            // fgui: v2 = |v| * _velocityScale（scale 默认 1）→ 线性 |v|，非 v²。
+            let v2 = v.abs();
             if v2 < thresh || ov <= 0.0 {
                 // 该轴无惯性（速度不足或无 overlap）；越界回弹由 advance done 判定处理
                 continue;
             }
-            // dur = |log(60/v²) / log(DECELERATION_RATE)| / 60（fgui 公式）
+            // dur = |log(60/|v|) / log(DECELERATION_RATE)| / 60（fgui 公式，v2=|v|·scale）
             // 用 f64 计算（DECELERATION_RATE 为 f64），结果回 f32。
             let ratio = 60.0f64 / v2 as f64;
             let dur = (ratio.log(DECELERATION_RATE).abs() / 60.0) as f32;
@@ -573,10 +580,12 @@ mod tests {
         let mut st = ScrollPaneState::default();
         st.overlap = (0.0, 1000.0);
         st.scroll_pos = (0.0, 0.0);
-        st.velocity = (0.0, 2000.0); // v²=4e6 > 阈值 500
+        st.velocity = (0.0, 2000.0); // |v|=2000 > PC 阈值 500
         st.begin_inertia(false); // is_touch=false (PC 阈值 500)
-                                 // dur ≈ |log(60/4e6)/log(0.967)|/60 ≈ 5.5s → 需 ~350 步 16ms 才 settle
-        for _ in 0..400 {
+                                 // 坑 46 修后：v2=|v|=2000 → dur=|log(60/2000)/log(0.967)|/60 ≈ 1.74s
+                                 // change=2000·1.74·0.4≈1387px > overlap 1000 → clamp 到 1000
+                                 // 1.74s @16ms ≈ 109 步，150 步覆盖 ~2.4s > dur
+        for _ in 0..150 {
             st.advance(0.016);
             if st.tweening == 0 {
                 break;
