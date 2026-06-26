@@ -15,6 +15,7 @@
 | 4 | 视觉调性 | 暗色 dashboard（深底 + 青高亮 + 状态色 + 线条边框） |
 | 5 | 交互反馈 | 灯阵 + tween（v1 无运行时改文本/style，见 §6） |
 | 6 | background-image | **不补**（v1 围栏 §2 列了但 core 未解析，是 v1 gap，单独跟踪，不塞进 showcase） |
+| 7 | 审美增强（design-taste-frontend 品味） | `:active` 触觉 `scale(0.96)` + 启动错峰入场（delay tween）+ 配色降饱和 + Lucide 线性图标 + Sarasa 字体（均围栏内可行，见 §3/§4） |
 
 ## 1. 定位
 
@@ -30,16 +31,18 @@ fgui 式交互功能 showcase。单 HTML → loomgui_pkg 打包 → Unity PlayMo
 
 > background-image gap 影响 AI 可预测性（围栏列了 AI 会写却不生效），应作为 v1 收尾独立 gap 修复项跟踪，但**不在本 showcase 范围内补**（避免 core 改动 + .dll 重编 + 两台机摩擦混入纯 sample 项目）。
 
-## 3. 素材与调色
+## 3. 素材、字体、调色（含 design-taste 品味增强）
 
-- **素材**：Game-icons.net（CC0）图标，作 `<img>` 内容元素（nav 图标、卡图标、状态图标）。无 PNG 皮肤。
-- **调色板**（暗色 dashboard）：
-  - 背景 `#1a1d2e` / 面板 `#252839` / 面板悬浮 `#2d3148`
-  - 边框线条 `#3a3f55`（1px）
-  - 青高亮（accent）`#4dd0e1`
+- **图标**：**Lucide / Tabler**（MIT，线性 dashboard 风），实现期导出 PNG 作 `<img>` 内容（nav 图标、卡图标、状态图标）。不用 Game-icons（偏游戏奇幻风）。无 PNG 皮肤。
+- **字体**：包声明 **更纱黑体 Sarasa Gothic / Sarasa UI**（OFL，中英混排现代 Sans）——契合 dashboard 且覆盖 §6 CJK 测试。避免 Inter（拉丁 only + 俗气，design-taste 禁）。
+- **调色板**（暗色 dashboard，**降饱和**——design-taste Rule 2 + NO Neon/Oversat）：
+  - 背景 `#1a1d2e`（off-black，非 `#000`）/ 面板 `#252839` / 悬浮 `#2d3148`
+  - 边框线条 `#3a3f55`（1px，**无阴影**——v1 无 box-shadow，天然符合 NO Glow）
+  - accent 青（降饱和）`#5fb2c4`
   - 文字主 `#e0e0e0` / 次要 `#9aa0b4`
-  - 通过绿 `#4caf50` / 警告红 `#f44336` / 禁用灰 `#6c7080`
-- **按钮三态**（纯 CSS 伪类，interact sample 已验证路径）：normal=面板色；`:hover`=悬浮色 + 青边框；`:active`=青色填充；`:disabled`=灰 + opacity 0.5。
+  - 通过（柔绿）`#6fa66c` / 警告（哑红）`#c2605a` / 禁用 `#6c7080`
+- **按钮三态 + 触觉**（design-taste Rule 5）：normal=面板色；`:hover`=悬浮色 + 青边框；`:active`=青填充 **+ `transform: scale(0.96)`** 模拟按压（v1 transform+伪类，interact :active 已验证改色路径，scale 同理†）；`:disabled`=灰 + opacity 0.5。
+  - † `:active` 改 transform 实现期验证（伪类打包期展开 + 任意属性，预期支持；若不支持则降级为仅变色）。
 
 ## 4. 布局骨架
 
@@ -58,6 +61,7 @@ root (column, 设计稿 1080×1920, 参考分辨率缩放)
 - header 在 scroll 外（flex 子项，固定高），永远可见——规避 v1 无 `position:sticky`。
 - nav 按钮 click → C# `FindNodeById("main-scroll")` → `SetScrollPos(scroll_id, 0, target_y)`。
 - `target_y` = 设计期按各区累积高度写死的数组（§8 风险：内容高度变需重算）。
+- **启动错峰入场**（design-taste §4 Staggered Orchestration）：pkg 加载后 C# 给各卡 tween `opacity 0→1` + `delay = index × 0.04s`，破"静态展示"平庸感（v1d.4 delay tween，单次播完即停，非 perpetual）。各卡 HTML 初始 `opacity:0`，靠 tween 拉亮——同时验证 §7.1 opacity tween + §7.3 delay。
 
 ## 5. 八区卡片清单（46 卡，覆盖 119 项所有值）
 
@@ -131,7 +135,7 @@ root (column, 设计稿 1080×1920, 参考分辨率缩放)
 |---|---|---|---|
 | 7.1 6 tween prop | opacity/translate/scale/rotation/bg-color/text-color 各一 | 各 prop 动画 | [tween] |
 | 7.2 10 缓动对照 | Linear/Quad×3/Cubic×3/Back×3 同 tween 并排 | 缓动曲线差异 | [tween] |
-| 7.3 delay | delay 参数（<delay 期间跳过） | 延时启动 | [tween] |
+| 7.3 delay | delay 参数（<delay 期间跳过） | 延时启动（= §4 启动错峰入场所用机制） | [tween] |
 | 7.4 complete 回调 | EVT_TWEEN_COMPLETE + tag/prop | 完成亮灯 | [tween]+[灯] |
 | 7.5 kill/clear/replace-override | kill_tween / clear_anim / clear_anim_prop（回 CSS） | 停/清/覆盖 | C# API |
 
