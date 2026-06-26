@@ -17,14 +17,24 @@ pub fn node_hash(rn: &RenderNode) -> u64 {
     rn.grayed.hash(&mut h);
     for &v in rn.color_tint.iter() { v.to_le_bytes().hash(&mut h); }  // [f32;4]
     (match rn.blend { crate::render::node::BlendMode::Normal => 0u8 }).hash(&mut h);
-    rn.mask_context.0.hash(&mut h);
-    rn.sort_key.hash(&mut h);
+    // sort_key/mask_context **不进 hash**：build_render_nodes 在 assign_sort_keys 之前调
+    // node_hash（mod.rs L155 循环内 vs L161 循环后），此刻两者仍是占位值（0/MaskContext(0)），
+    // hash 了也只是常量、无贡献。两者由 scene 结构（DFS 序 + clip 链）决定，结构变必伴随
+    // 节点增删（prev_hashes 长度变 → baselined=false 全 dirty）或 world/payload 变（hash 仍捕获），
+    // 无需单独 hash。v1e final review I1。
+    // rn.mask_context.0.hash(&mut h);  // 移除（占位值）
+    // rn.sort_key.hash(&mut h);        // 移除（占位值）
     // payload 摘要。
     match &rn.payload {
         NodePayload::Unchanged => 0u64,      // 防御；调用方不应对 Unchanged 调
         NodePayload::Mesh { texture, verts, colors, .. } => {
             texture.hash(&mut h);
             verts.len().hash(&mut h);
+            // v1e final review C1：首末顶点 verts[0](TL) + verts[2](BR) 坐标——
+            // quad 尺寸/位置变时 verts.len 仍 4、colors/world 不变，旧 hash 漏（hover 改 width 不生效）。
+            // O(1) 捕获尺寸+位置；f32 走 to_le_bytes 与既有风格一致。
+            if let Some(v0) = verts.first() { v0[0].to_le_bytes().hash(&mut h); v0[1].to_le_bytes().hash(&mut h); }
+            if let Some(v2) = verts.get(2) { v2[0].to_le_bytes().hash(&mut h); v2[1].to_le_bytes().hash(&mut h); }
             if let Some(c0) = colors.first() { for &v in c0.iter() { v.to_le_bytes().hash(&mut h); } }
             h.finish()
         }
@@ -35,13 +45,22 @@ pub fn node_hash(rn: &RenderNode) -> u64 {
                 .map(|l| l.runs.iter().map(|r| r.glyphs.len()).sum::<usize>())
                 .sum();
             glyph_count.hash(&mut h);
-            // 首 glyph codepoint（捕获内容变）。
-            let first_cp: u32 = layout.lines.first()
+            // 首 glyph codepoint（捕获内容变）+ pen_x/pen_y（捕获布局变：align 改/constraint 宽改/换行位置改）。
+            // v1e final review I2：旧版只 hash codepoint，text-align Left→Center 或 content offset 烤进
+            // 时 pen_x/pen_y 变但 codepoint 不变 → hash 漏 → 文本位置错。复用 first glyph 引用避免二次遍历。
+            match layout.lines.first()
                 .and_then(|l| l.runs.first())
                 .and_then(|r| r.glyphs.first())
-                .map(|g| g.codepoint)
-                .unwrap_or(0);
-            first_cp.hash(&mut h);
+            {
+                Some(g) => {
+                    g.codepoint.hash(&mut h);
+                    g.x.to_le_bytes().hash(&mut h);
+                    g.y.to_le_bytes().hash(&mut h);
+                }
+                None => {
+                    0u32.hash(&mut h);  // codepoint sentinel（与旧 unwrap_or(0) 行为一致）
+                }
+            }
             h.finish()
         }
     }
@@ -119,6 +138,34 @@ mod tests {
         let mut rn = mesh_rn(1, 1.0, [1.0;4]);
         rn.payload = NodePayload::Unchanged;
         assert_eq!(node_hash(&rn), 0, "Unchanged 防御性返回 0");
+    }
+
+    // -----------------------------------------------------------------------
+    // v1e final review C1：Mesh quad 尺寸变（verts.len=4 不变、color/texture/world 不变）
+    // → 旧 hash 只看 verts.len 漏掉坐标变。真实路径：.btn:hover{width:200px} 改 layout_rect.w
+    // → Mesh verts[0]/verts[2] 坐标变但 hash 不变 → hover 展开不生效。
+    // -----------------------------------------------------------------------
+    #[test]
+    fn mesh_quad_size_change_changes_hash() {
+        let a = mesh_rn(1, 1.0, [1.0,0.0,0.0,1.0]); // 4 verts 全 [0,0]（默认）
+        let mut b = mesh_rn(1, 1.0, [1.0,0.0,0.0,1.0]); // 同色/texture/alpha/world
+        if let NodePayload::Mesh { verts, .. } = &mut b.payload {
+            // 改 quad 尺寸：TL=[0,0] BR=[100,100]（verts.len 仍 4，colors 不变，world 不变）。
+            verts[2] = [100.0, 100.0];
+        }
+        assert_ne!(node_hash(&a), node_hash(&b), "Mesh quad 尺寸变（verts[2] 坐标）→ hash 变");
+    }
+
+    // C1 补：quad 位置变（TL 移动，尺寸不变）也应捕到。
+    #[test]
+    fn mesh_quad_position_change_changes_hash() {
+        let a = mesh_rn(1, 1.0, [1.0;4]);
+        let mut b = mesh_rn(1, 1.0, [1.0;4]);
+        if let NodePayload::Mesh { verts, .. } = &mut b.payload {
+            // 整体平移：verts[0] 移到 [50,50]（尺寸不变、color/world 不变）。
+            verts[0] = [50.0, 50.0];
+        }
+        assert_ne!(node_hash(&a), node_hash(&b), "Mesh quad 位置变（verts[0] 坐标）→ hash 变");
     }
 
     // -----------------------------------------------------------------------
@@ -201,5 +248,31 @@ mod tests {
         let a = text_rn(16.0, [1.0, 0.0, 0.0, 1.0], 65, 3);
         let b = text_rn(16.0, [1.0, 0.0, 0.0, 1.0], 65, 3);
         assert_eq!(node_hash(&a), node_hash(&b), "全等 Text hash 相等");
+    }
+
+    // -----------------------------------------------------------------------
+    // v1e final review I2：Text 布局变（text-align Left→Center 或 constraint 宽变）
+    // → 首字 pen_x 变但 codepoint/glyph_count/font_size 不变 → 旧 hash 漏 → 文本位置错。
+    // -----------------------------------------------------------------------
+    #[test]
+    fn text_first_glyph_pen_x_change_changes_hash() {
+        let a = text_rn(16.0, [1.0, 0.0, 0.0, 1.0], 65, 3); // 首 glyph x=0
+        let mut b = text_rn(16.0, [1.0, 0.0, 0.0, 1.0], 65, 3); // 同 codepoint/count/size/color
+        if let NodePayload::Text { layout, .. } = &mut b.payload {
+            // 模拟 align 变：首 glyph pen_x 从 0 → 40（Center 居中偏移）。
+            layout.lines[0].runs[0].glyphs[0].x = 40.0;
+        }
+        assert_ne!(node_hash(&a), node_hash(&b), "首字 pen_x 变（布局变）→ hash 变");
+    }
+
+    #[test]
+    fn text_first_glyph_pen_y_change_changes_hash() {
+        let a = text_rn(16.0, [1.0, 0.0, 0.0, 1.0], 65, 3); // 首 glyph y=0
+        let mut b = text_rn(16.0, [1.0, 0.0, 0.0, 1.0], 65, 3);
+        if let NodePayload::Text { layout, .. } = &mut b.payload {
+            // 模拟 line baseline 变：首 glyph pen_y 从 0 → 6（content offset 烤进）。
+            layout.lines[0].runs[0].glyphs[0].y = 6.0;
+        }
+        assert_ne!(node_hash(&a), node_hash(&b), "首字 pen_y 变（布局变）→ hash 变");
     }
 }
