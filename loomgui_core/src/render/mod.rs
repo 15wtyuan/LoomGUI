@@ -13,7 +13,7 @@ pub mod mesh;
 pub mod node;
 
 use crate::asset::texture::TextureRegistry;
-use crate::scene::node::{NodeKind, Rect, Scene};
+use crate::scene::node::{NodeId, NodeKind, Rect, Scene};
 use crate::text::layout::{measure_text, Font};
 use node::*;
 
@@ -37,6 +37,34 @@ pub struct ClipEntry {
 pub struct FrameData {
     pub nodes: Vec<RenderNode>,
     pub clips: Vec<ClipEntry>,
+}
+
+/// v1d.5 T9：构造合成 scrollbar thumb RenderNode。
+/// node_id=sentinel (container|flag)，world_matrix=IDENTITY (design 绝对坐标)，
+/// mask_context=0 (不裁剪)，半透明灰 quad。
+fn thumb_render_node(node_id: u32, rect: Rect, sort_key: u32) -> RenderNode {
+    let (v, uvc, col, idx) =
+        crate::render::mesh::quad(&rect, [0.6, 0.6, 0.6, 0.6], [0.0, 0.0], [1.0, 1.0]);
+    RenderNode {
+        node_id,
+        parent_id: None,
+        visible: true,
+        alpha: 1.0,
+        grayed: false,
+        color_tint: [1.0, 1.0, 1.0, 1.0],
+        world_matrix: crate::transform::IDENTITY,
+        blend: BlendMode::Normal,
+        mask_context: MaskContext(0),
+        sort_key,
+        payload: NodePayload::Mesh {
+            verts: v,
+            uvs: uvc,
+            colors: col,
+            indices: idx,
+            texture: 0,
+            program: 0,
+        },
+    }
 }
 
 /// 遍历 Scene → `FrameData`（nodes + clip 表）。
@@ -142,6 +170,29 @@ pub fn build_render_nodes(scene: &Scene, font: &Font, textures: &TextureRegistry
                     color: anim.and_then(|a| a.text_color).unwrap_or(s.color),
                     program: 1,
                 };
+            }
+        }
+    }
+    // v1d.5 T9：effective 滚动容器追加合成 scrollbar thumb RenderNode。
+    // 合成节点不进 assign_sort_keys DFS（它扫 scene.nodes），手动设 sort_key=max+1。
+    let max_sort = nodes.iter().map(|n| n.sort_key).max().unwrap_or(0);
+    for id in 0..scene.nodes.len() {
+        let nid = NodeId(id);
+        let n = &scene.nodes[id];
+        if let Some(s) = scene.scroll.get(nid) {
+            // 垂直 thumb
+            if crate::scroll::effective(n.style.overflow_y, s.content_size.1, s.viewport_size.1) {
+                if let Some(r) = crate::scroll::v_thumb_rect(scene, nid) {
+                    let thumb_id = nid.0 as u32 | crate::scroll::V_THUMB_FLAG;
+                    nodes.push(thumb_render_node(thumb_id, r, max_sort + 1));
+                }
+            }
+            // 水平 thumb
+            if crate::scroll::effective(n.style.overflow_x, s.content_size.0, s.viewport_size.0) {
+                if let Some(r) = crate::scroll::h_thumb_rect(scene, nid) {
+                    let thumb_id = nid.0 as u32 | crate::scroll::H_THUMB_FLAG;
+                    nodes.push(thumb_render_node(thumb_id, r, max_sort + 1));
+                }
             }
         }
     }
@@ -565,5 +616,79 @@ mod tests {
             }
             _ => panic!("expected Mesh"),
         }
+    }
+
+    // ── v1d.5 T9：合成 scrollbar thumb ─────────────────────────
+
+    #[test]
+    fn effective_scroll_container_emits_thumb_node() {
+        use crate::style::resolved::{OverflowMode, ResolvedStyle};
+
+        // 构造：overflow_y=Scroll 容器 + content>viewport → effective
+        let mut scroll_style = ResolvedStyle::default();
+        scroll_style.overflow_y = OverflowMode::Scroll;
+        let entries: Vec<(
+            Option<usize>,
+            NodeKind,
+            ResolvedStyle,
+            Vec<String>,
+            Option<String>,
+            bool,
+            Option<i32>,
+        )> = vec![
+            (None, NodeKind::Container, scroll_style.clone(), vec![], None, false, None),
+            (Some(0), NodeKind::Container, ResolvedStyle::default(), vec![], None, false, None),
+            (Some(0), NodeKind::Container, ResolvedStyle::default(), vec![], None, false, None),
+        ];
+        let mut scene = Scene::build(&entries);
+        scene.nodes[0].layout_rect = Rect { x: 0.0, y: 0.0, w: 100.0, h: 100.0 };
+        scene.nodes[1].layout_rect = Rect { x: 0.0, y: 0.0, w: 40.0, h: 40.0 };
+        scene.nodes[2].layout_rect = Rect { x: 0.0, y: 0.0, w: 30.0, h: 200.0 }; // content_y=200 > viewport=100
+        crate::scroll::refresh_content_sizes(&mut scene);
+        crate::scene::transform::compute_world_transforms(&mut scene);
+
+        let font = test_font().expect("need test font");
+        let fd = build_render_nodes(&scene, &font, &TextureRegistry::default());
+        let thumbs: Vec<_> = fd
+            .nodes
+            .iter()
+            .filter(|n| n.node_id & crate::scroll::V_THUMB_FLAG != 0)
+            .collect();
+        assert!(!thumbs.is_empty(), "垂直 thumb 追加");
+        // 验 thumb 是 Mesh quad 半透明灰
+        let thumb = thumbs[0];
+        assert_eq!(thumb.mask_context, MaskContext(0), "thumb mask_context=0");
+        assert!(thumb.sort_key > 0, "thumb sort_key > 0");
+        match &thumb.payload {
+            NodePayload::Mesh { colors, .. } => {
+                assert_eq!(colors[0], [0.6, 0.6, 0.6, 0.6], "半透明灰");
+            }
+            _ => panic!("thumb 应为 Mesh"),
+        }
+    }
+
+    #[test]
+    fn non_effective_container_no_thumb() {
+        // 构造 overflow:auto 但 content < viewport → 非 effective → 无 thumb
+        use crate::style::resolved::{OverflowMode, ResolvedStyle};
+        let mut scroll_style = ResolvedStyle::default();
+        scroll_style.overflow_y = OverflowMode::Auto;
+        let entries = vec![
+            (None, NodeKind::Container, scroll_style.clone(), vec![], None, false, None),
+            (Some(0), NodeKind::Container, ResolvedStyle::default(), vec![], None, false, None),
+        ];
+        let mut scene = Scene::build(&entries);
+        scene.nodes[0].layout_rect = Rect { x: 0.0, y: 0.0, w: 100.0, h: 100.0 };
+        scene.nodes[1].layout_rect = Rect { x: 0.0, y: 0.0, w: 40.0, h: 40.0 }; // content < viewport
+        crate::scroll::refresh_content_sizes(&mut scene);
+        crate::scene::transform::compute_world_transforms(&mut scene);
+
+        let font = test_font().expect("need test font");
+        let fd = build_render_nodes(&scene, &font, &TextureRegistry::default());
+        let has_thumb = fd
+            .nodes
+            .iter()
+            .any(|n| n.node_id & (crate::scroll::V_THUMB_FLAG | crate::scroll::H_THUMB_FLAG) != 0);
+        assert!(!has_thumb, "non-effective 容器无 thumb");
     }
 }

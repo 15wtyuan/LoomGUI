@@ -612,11 +612,31 @@ impl PointerState {
                         }
                     }
                     // v1d.5 T7：scrolling_pane 已判定 → 跟手 drag_follow（写 scene.scroll）。
+                    // v1d.5 T9：grip_dragging → grip 位置驱动 scroll_pos（非 delta 跟手）。
                     // 复制 scrolling_pane 出 slot 解借用冲突（slot &mut 与 scene.scroll.get_mut &mut）。
                     // delta = 本帧 pos - 上帧 pos（prev_pos 在 last_pos 覆盖前捕获）。
                     let scrolling_pane = slot.scrolling_pane;
                     if let Some(pane) = scrolling_pane {
-                        if let Some(s) = scene.scroll.get_mut(pane) {
+                        if slot.grip_dragging {
+                            // grip 拖拽：指针在 track 内的比例 → scroll_pos
+                            if let Some(s) = scene.scroll.get_mut(pane) {
+                                let lr = scene.nodes[pane.0].layout_rect;
+                                let pe = slot.last_pos;
+                                let min_thumb = 20.0f32;
+                                if slot.scroll_gesture & 1 != 0 {
+                                    // 垂直 thumb
+                                    let perc =
+                                        ((pe.1 - lr.y) / (lr.h - min_thumb)).clamp(0.0, 1.0);
+                                    s.scroll_pos.1 = (perc * s.overlap.1).clamp(0.0, s.overlap.1);
+                                }
+                                if slot.scroll_gesture & 2 != 0 {
+                                    // 水平 thumb
+                                    let perc =
+                                        ((pe.0 - lr.x) / (lr.w - min_thumb)).clamp(0.0, 1.0);
+                                    s.scroll_pos.0 = (perc * s.overlap.0).clamp(0.0, s.overlap.0);
+                                }
+                            }
+                        } else if let Some(s) = scene.scroll.get_mut(pane) {
                             let delta = (slot.last_pos.0 - prev_pos.0, slot.last_pos.1 - prev_pos.1);
                             s.drag_follow(delta, /*dt*/ 0.016);
                         }
@@ -636,6 +656,18 @@ impl PointerState {
                     }
                 }
                 PointerKind::Down => {
+                    // v1d.5 T9：grip 命中优先于 scroll 候选（scrollbar 最上层）
+                    if let Some(grip) = crate::hit::hit_scrollbar_grip(scene, (ev.x, ev.y)) {
+                        slot.grip_dragging = true;
+                        slot.scrolling_pane = Some(grip.0);
+                        slot.click_cancelled = true;
+                        slot.scroll_down_pos = (ev.x, ev.y);
+                        slot.is_down = true;
+                        slot.down_pos = (ev.x, ev.y);
+                        slot.scroll_gesture = if grip.1 == 0 { 1 } else { 2 };
+                        Self::hover_diff_slot(slot, scene, &mut out);
+                        continue; // grip 不走 drag/scroll/click 候选
+                    }
                     slot.is_down = true;
                     slot.down_pos = (ev.x, ev.y);
                     slot.down_node = hit;
@@ -738,34 +770,38 @@ impl PointerState {
                         }
                     }
                     slot.is_down = false;
-                    if let Some(n) = hit {
-                        if !scene.nodes[n.0].disabled {
-                            out.push(EventRecord {
-                                node_id: n.0 as u32,
-                                event_type: EVT_UP,
-                                click_count: 0,
-                                pad: [0, 0],
-                                touch_id,
-                                x: ev.x,
-                                y: ev.y,
-                            });
-                            if let Some(target) = Self::click_test(slot, scene, hit) {
-                                if !scene.nodes[target.0].disabled {
-                                    let count = Self::bump_click_count(slot, ev.button, time_s);
-                                    out.push(EventRecord {
-                                        node_id: target.0 as u32,
-                                        event_type: EVT_CLICK,
-                                        click_count: count,
-                                        pad: [0, 0],
-                                        touch_id,
-                                        x: ev.x,
-                                        y: ev.y,
-                                    });
+                    // v1d.5 T9：grip_dragging 时 hit 为 sentinel（scene.nodes 越界），
+                    // 跳过 EVT_UP/EVT_CLICK（grip Up 不产这些事件）。
+                    if !slot.grip_dragging {
+                        if let Some(n) = hit {
+                            if !scene.nodes[n.0].disabled {
+                                out.push(EventRecord {
+                                    node_id: n.0 as u32,
+                                    event_type: EVT_UP,
+                                    click_count: 0,
+                                    pad: [0, 0],
+                                    touch_id,
+                                    x: ev.x,
+                                    y: ev.y,
+                                });
+                                if let Some(target) = Self::click_test(slot, scene, hit) {
+                                    if !scene.nodes[target.0].disabled {
+                                        let count = Self::bump_click_count(slot, ev.button, time_s);
+                                        out.push(EventRecord {
+                                            node_id: target.0 as u32,
+                                            event_type: EVT_CLICK,
+                                            click_count: count,
+                                            pad: [0, 0],
+                                            touch_id,
+                                            x: ev.x,
+                                            y: ev.y,
+                                        });
+                                    }
+                                } else {
+                                    // click_test 返 None（位移超阈值/cancelled）→ 重置双击窗口（照 fgui End cancel 分支）
+                                    slot.last_click_time = 0.0;
+                                    slot.click_count = 1;
                                 }
-                            } else {
-                                // click_test 返 None（位移超阈值/cancelled）→ 重置双击窗口（照 fgui End cancel 分支）
-                                slot.last_click_time = 0.0;
-                                slot.click_count = 1;
                             }
                         }
                     }
@@ -794,6 +830,7 @@ impl PointerState {
                     slot.scrolling_pane = None;
                     slot.scroll_candidate = None;
                     slot.scroll_gesture = 0;
+                    slot.grip_dragging = false;   // v1d.5 T9：grip Up 清（不惯性）
                     Self::hover_diff_slot(slot, scene, &mut out);
                     if slot_idx > 0 {
                         slot.touch_id = -1; // 释放触摸槽（鼠标不释放）
@@ -2282,5 +2319,116 @@ mod tests {
         assert!(slot.scroll_candidate.is_none(), "无 scroll 容器 → scroll_candidate=None");
         assert!(!slot.scroll_testing, "无 scroll 容器 → scroll_testing=false");
         assert!(slot.scrolling_pane.is_none(), "无 scroll 容器 → scrolling_pane=None");
+    }
+
+    // ── v1d.5 T9：scrollbar grip 拖拽 ─────────────────────────────
+
+    fn grip_scroll_scene() -> Scene {
+        use crate::scene::node::NodeKind;
+        use crate::style::resolved::{OverflowMode, ResolvedStyle};
+        let mut scroll_style = ResolvedStyle::default();
+        scroll_style.overflow_y = OverflowMode::Scroll;
+        let entries: Vec<(
+            Option<usize>,
+            NodeKind,
+            ResolvedStyle,
+            Vec<String>,
+            Option<String>,
+            bool,
+            Option<i32>,
+        )> = vec![
+            (None, NodeKind::Container, scroll_style.clone(), vec![], None, false, None),
+            (Some(0), NodeKind::Container, ResolvedStyle::default(), vec![], None, false, None),
+            (Some(0), NodeKind::Container, ResolvedStyle::default(), vec![], None, false, None),
+        ];
+        let mut s = Scene::build(&entries);
+        s.nodes[0].layout_rect = Rect { x: 0.0, y: 0.0, w: 100.0, h: 100.0 };
+        s.nodes[0].clip_rect = Some(Rect { x: 0.0, y: 0.0, w: 100.0, h: 100.0 });
+        s.nodes[1].layout_rect = Rect { x: 0.0, y: 0.0, w: 40.0, h: 40.0 };
+        s.nodes[2].layout_rect = Rect { x: 0.0, y: 0.0, w: 30.0, h: 200.0 }; // content_y=200 > viewport=100
+        crate::scroll::refresh_content_sizes(&mut s);
+        compute_world_transforms(&mut s);
+        s
+    }
+
+    #[test]
+    fn grip_down_sets_grip_dragging_and_cancels_click() {
+        let mut s = grip_scroll_scene();
+        let mut ps = PointerState::new();
+        // thumb 右边缘：x=92..100, y=0..50（viewport=100 content=200 → thumb_h=50）
+        // 点 thumb center (96, 25)
+        let out = ps.process(
+            &mut s,
+            &[PointerEvent { kind: PointerKind::Down, x: 96.0, y: 25.0, button: 0, pad: [0, 0], touch_id: -1 }],
+        );
+        let slot = &ps.slots[0];
+        assert!(slot.grip_dragging, "thumb 命中 → grip_dragging=true");
+        assert_eq!(slot.scrolling_pane, Some(NodeId(0)), "scrolling_pane=容器 0");
+        assert!(slot.click_cancelled, "grip down 取消 click");
+        assert!(slot.scroll_gesture & 1 != 0, "垂直 thumb → scroll_gesture bit0");
+        // 不应发 EVT_DOWN（continue 跳过）
+        assert!(!out.iter().any(|e| e.event_type == EVT_DOWN), "grip down 不产 EVT_DOWN");
+    }
+
+    #[test]
+    fn grip_move_drives_scroll_pos() {
+        let mut s = grip_scroll_scene();
+        let mut ps = PointerState::new();
+        // Down on thumb (96, 25)
+        ps.process(
+            &mut s,
+            &[PointerEvent { kind: PointerKind::Down, x: 96.0, y: 25.0, button: 0, pad: [0, 0], touch_id: -1 }],
+        );
+        // Move thumb to y=75（track_h=100, min_thumb=20 → effective range=80；perc = (75-0)/80=0.9375）
+        // overlap_y=100 → scroll_pos = 0.9375*100 = 93.75
+        ps.process(
+            &mut s,
+            &[PointerEvent { kind: PointerKind::Move, x: 96.0, y: 75.0, button: 0, pad: [0, 0], touch_id: -1 }],
+        );
+        let st = s.scroll.get(NodeId(0)).unwrap();
+        assert!(
+            st.scroll_pos.1 > 50.0,
+            "grip move → scroll_pos 变化，got {}",
+            st.scroll_pos.1
+        );
+    }
+
+    #[test]
+    fn grip_up_clears_state_and_no_inertia() {
+        let mut s = grip_scroll_scene();
+        let mut ps = PointerState::new();
+        ps.process(
+            &mut s,
+            &[PointerEvent { kind: PointerKind::Down, x: 96.0, y: 25.0, button: 0, pad: [0, 0], touch_id: -1 }],
+        );
+        // Move to build some velocity via... actually grip doesn't use drag_follow
+        ps.process(
+            &mut s,
+            &[PointerEvent { kind: PointerKind::Move, x: 96.0, y: 75.0, button: 0, pad: [0, 0], touch_id: -1 }],
+        );
+        // Up — grip_dragging should clear, no inertia (tweening remains 0)
+        ps.process(
+            &mut s,
+            &[PointerEvent { kind: PointerKind::Up, x: 96.0, y: 75.0, button: 0, pad: [0, 0], touch_id: -1 }],
+        );
+        let slot = &ps.slots[0];
+        assert!(!slot.grip_dragging, "Up 后 grip_dragging 清");
+        assert!(slot.scrolling_pane.is_none(), "Up 后 scrolling_pane 清");
+        let st = s.scroll.get(NodeId(0)).unwrap();
+        assert_eq!(st.tweening, 0, "grip up 不启惯性 tweening=0");
+    }
+
+    #[test]
+    fn grip_no_hit_on_non_thumb_area() {
+        let mut s = grip_scroll_scene();
+        let mut ps = PointerState::new();
+        // Click on container area (10, 10) — not thumb
+        let out = ps.process(
+            &mut s,
+            &[PointerEvent { kind: PointerKind::Down, x: 10.0, y: 10.0, button: 0, pad: [0, 0], touch_id: -1 }],
+        );
+        let slot = &ps.slots[0];
+        assert!(!slot.grip_dragging, "非 thumb 区 → grip_dragging=false");
+        assert!(out.iter().any(|e| e.event_type == EVT_DOWN), "非 thumb Down 正常发 EVT_DOWN");
     }
 }

@@ -5,7 +5,7 @@
 use crate::scene::node::{NodeId, Rect, Scene};
 
 /// 点是否在 Rect 内（含边界，design 坐标）。
-fn point_in_rect(point: (f32, f32), r: Rect) -> bool {
+pub(crate) fn point_in_rect(point: (f32, f32), r: Rect) -> bool {
     point.0 >= r.x && point.0 <= r.x + r.w && point.1 >= r.y && point.1 <= r.y + r.h
 }
 
@@ -20,8 +20,37 @@ fn effective_draw_order(scene: &Scene, parent: NodeId) -> Vec<NodeId> {
     kids
 }
 
+/// v1d.5 T9：命中合成 scrollbar thumb → (container_id, axis: 0=v 1=h)。None 不命中。
+/// scrollbar 最上层——遍历所有容器 check v/h thumb rect。
+pub fn hit_scrollbar_grip(scene: &Scene, point: (f32, f32)) -> Option<(NodeId, u8)> {
+    for id in 0..scene.nodes.len() {
+        let nid = NodeId(id);
+        if let Some(r) = crate::scroll::v_thumb_rect(scene, nid) {
+            if point_in_rect(point, r) {
+                return Some((nid, 0));
+            }
+        }
+        if let Some(r) = crate::scroll::h_thumb_rect(scene, nid) {
+            if point_in_rect(point, r) {
+                return Some((nid, 1));
+            }
+        }
+    }
+    None
+}
+
 /// §10.1 命中测试。逆等效绘制序遍历，第一个命中即返回（顶层优先）。
+/// v1d.5 T9：scrollbar thumb 最上层，前置 check。
 pub fn hit_test(scene: &Scene, point: (f32, f32)) -> Option<NodeId> {
+    // scrollbar grip 最上层（先于所有 Scene 节点）
+    if let Some((container, axis)) = hit_scrollbar_grip(scene, point) {
+        let flag = if axis == 0 {
+            crate::scroll::V_THUMB_FLAG
+        } else {
+            crate::scroll::H_THUMB_FLAG
+        };
+        return Some(NodeId((container.0 as u32 | flag) as usize));
+    }
     // 从 roots 逐棵 DFS。多个 root 按顺序，后 root 顶层（与渲染序一致）。
     for &root in &scene.roots {
         if let Some(hit) = hit_subtree(scene, root, point) {
@@ -63,7 +92,7 @@ fn hit_subtree(scene: &Scene, id: NodeId, point: (f32, f32)) -> Option<NodeId> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scene::node::{Node, NodeId, Rect, Scene};
+    use crate::scene::node::{Node, NodeId, NodeKind, Rect, Scene};
     use crate::scene::transform::compute_world_transforms;
     use crate::style::resolved::LocalTransform;
     use crate::transform;
@@ -198,5 +227,70 @@ mod tests {
         parent.children = vec![NodeId(2)];
         Scene { roots: vec![NodeId(0)], nodes: vec![root, parent, child],
                 dynamic_rules: Default::default(), focused_node: None, world_transforms: Vec::new(), anim: Default::default(), scroll: Default::default() }
+    }
+
+    // ── v1d.5 T9：hit_scrollbar_grip ─────────────────────────────────
+
+    fn scroll_scene_with_thumb() -> Scene {
+        use crate::style::resolved::{OverflowMode, ResolvedStyle};
+        let mut scroll_style = ResolvedStyle::default();
+        scroll_style.overflow_y = OverflowMode::Scroll;
+        let entries: Vec<(
+            Option<usize>,
+            NodeKind,
+            ResolvedStyle,
+            Vec<String>,
+            Option<String>,
+            bool,
+            Option<i32>,
+        )> = vec![
+            (None, NodeKind::Container, scroll_style.clone(), vec![], None, false, None),
+            (Some(0), NodeKind::Container, ResolvedStyle::default(), vec![], None, false, None),
+            (Some(0), NodeKind::Container, ResolvedStyle::default(), vec![], None, false, None),
+        ];
+        let mut s = Scene::build(&entries);
+        s.nodes[0].layout_rect = Rect { x: 0.0, y: 0.0, w: 100.0, h: 100.0 };
+        s.nodes[1].layout_rect = Rect { x: 0.0, y: 0.0, w: 40.0, h: 40.0 };
+        s.nodes[2].layout_rect = Rect { x: 0.0, y: 0.0, w: 30.0, h: 200.0 }; // content_y=200 > viewport=100
+        crate::scroll::refresh_content_sizes(&mut s);
+        compute_world_transforms(&mut s);
+        s
+    }
+
+    #[test]
+    fn hit_scrollbar_grip_returns_container() {
+        let s = scroll_scene_with_thumb();
+        // thumb 右边缘 (x=92..100, y=0..50)，取 center (96, 25)
+        let result = hit_scrollbar_grip(&s, (96.0, 25.0));
+        assert!(result.is_some(), "thumb 内一点应命中");
+        let (container, axis) = result.unwrap();
+        assert_eq!(container, NodeId(0), "返容器 NodeId(0)");
+        assert_eq!(axis, 0, "垂直 thumb axis=0");
+    }
+
+    #[test]
+    fn hit_scrollbar_grip_returns_none_outside_thumb() {
+        let s = scroll_scene_with_thumb();
+        // 点在容器左上角 (10,10) 非 thumb 区
+        assert!(hit_scrollbar_grip(&s, (10.0, 10.0)).is_none(), "非 thumb 区 → None");
+    }
+
+    #[test]
+    fn hit_scrollbar_grip_no_scroll_no_thumb() {
+        let s = overlap_scene(); // 无 scroll 容器
+        compute_world_transforms(&mut s.clone());
+        assert!(hit_scrollbar_grip(&s, (50.0, 50.0)).is_none(), "无 scroll 容器 → None");
+    }
+
+    #[test]
+    fn hit_test_returns_sentinel_for_thumb() {
+        let s = scroll_scene_with_thumb();
+        // thumb 内一点 → hit_test 应返 sentinel（含 V_THUMB_FLAG）
+        let hit = hit_test(&s, (96.0, 25.0));
+        assert!(hit.is_some(), "thumb 区 hit_test 命中");
+        let raw = hit.unwrap().0 as u32;
+        assert!(raw & crate::scroll::V_THUMB_FLAG != 0, "sentinel 含 V_THUMB_FLAG");
+        // 去掉 flag 应得 container id
+        assert_eq!(raw & !crate::scroll::V_THUMB_FLAG, 0u32, "flag off → container 0");
     }
 }

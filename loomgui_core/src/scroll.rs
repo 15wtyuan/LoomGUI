@@ -9,7 +9,7 @@
 //!
 //! core 无 Vec2 类型——几何用 `(f32, f32)` 元组（照 `transform::apply_point`）。
 
-use crate::scene::node::{NodeId, Node, Scene};
+use crate::scene::node::{NodeId, Node, Rect, Scene};
 use crate::style::resolved::OverflowMode;
 
 /// v1d.5-T8：滚轮输入事件（FFI POD）。C# set_wheel_input 推一组；core apply_wheel_to_hit
@@ -54,6 +54,11 @@ pub const PULL_RATIO: f32 = 0.5;
 pub const BOUNCE_THRESHOLD: f32 = 20.0;
 /// 滚轮步进（每 delta 单位位移 px）。
 pub const SCROLL_STEP: f32 = 25.0;
+
+/// v1d.5 T9：合成 scrollbar thumb 的 sentinel node_id flag。
+/// 合成 RenderNode 的 node_id = container_id.0 as u32 | flag（高位，真实 NodeId 小，复用稳定）。
+pub const V_THUMB_FLAG: u32 = 0x4000_0000;
+pub const H_THUMB_FLAG: u32 = 0x2000_0000;
 
 /// cubic-out 缓动：(t-1)^3 + 1，t∈[0,1]。advance tween 用。
 fn cubic_out(t: f32) -> f32 {
@@ -328,6 +333,59 @@ pub fn capable(ovf: OverflowMode) -> bool {
 /// Auto 仅当内容溢出才可滚；Scroll 无论溢出与否皆可滚（fgui 语义）。
 pub fn effective(ovf: OverflowMode, content: f32, viewport: f32) -> bool {
     capable(ovf) && (ovf == OverflowMode::Scroll || content > viewport)
+}
+
+/// v1d.5 T9：垂直 thumb design-rect（容器 viewport 右边缘 track；thumb 大小/位置）。
+/// 返 None 若 overlap_y <= 0（无溢出、无需 thumb）。
+pub fn v_thumb_rect(scene: &Scene, id: NodeId) -> Option<Rect> {
+    let s = scene.scroll.get(id)?;
+    if s.overlap.1 <= 0.0 {
+        return None;
+    }
+    let lr = scene.nodes[id.0].layout_rect;
+    let track_w = 8.0; // v1 固定宽
+    let track_h = lr.h;
+    let thumb_h = (s.viewport_size.1 * (s.viewport_size.1 / s.content_size.1))
+        .max(20.0)
+        .min(track_h);
+    let perc = if s.overlap.1 > 0.0 {
+        (s.scroll_pos.1 / s.overlap.1).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let thumb_y = lr.y + (track_h - thumb_h) * perc;
+    Some(Rect {
+        x: lr.x + lr.w - track_w,
+        y: thumb_y,
+        w: track_w,
+        h: thumb_h,
+    })
+}
+
+/// v1d.5 T9：水平 thumb design-rect（容器 viewport 底边 track；thumb 大小/位置）。
+pub fn h_thumb_rect(scene: &Scene, id: NodeId) -> Option<Rect> {
+    let s = scene.scroll.get(id)?;
+    if s.overlap.0 <= 0.0 {
+        return None;
+    }
+    let lr = scene.nodes[id.0].layout_rect;
+    let track_h = 8.0;
+    let track_w = lr.w;
+    let thumb_w = (s.viewport_size.0 * (s.viewport_size.0 / s.content_size.0))
+        .max(20.0)
+        .min(track_w);
+    let perc = if s.overlap.0 > 0.0 {
+        (s.scroll_pos.0 / s.overlap.0).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let thumb_x = lr.x + (track_w - thumb_w) * perc;
+    Some(Rect {
+        x: thumb_x,
+        y: lr.y + lr.h - track_h,
+        w: thumb_w,
+        h: track_h,
+    })
 }
 
 /// solve 后填 content_size/viewport/overlap（spec §2.3）。
@@ -779,5 +837,59 @@ mod tests {
 
         let st = s.scroll.get(NodeId(0)).unwrap();
         assert!(st.tweening != 0, "wheel 触发滚动 tween，tweening={}", st.tweening);
+    }
+
+    // ── T9 thumb rect 测 ─────────────────────────────────────
+    #[test]
+    fn v_thumb_rect_is_right_edge_with_proportional_size() {
+        let mut s = build_scroll_scene();
+        s.nodes[1].layout_rect = Rect { x: 0.0, y: 0.0, w: 40.0, h: 40.0 };
+        s.nodes[2].layout_rect = Rect { x: 0.0, y: 0.0, w: 30.0, h: 200.0 };
+        refresh_content_sizes(&mut s);
+        // viewport=(100,100) content=(40,200) → overlap=(0,100)
+        // thumb_h = 100*(100/200)=50, track_h=100, perc=0 → thumb_y = lr.y=0
+        let r = v_thumb_rect(&s, NodeId(0)).expect("overlap>0 → thumb");
+        assert_eq!(r.w, 8.0, "track_w=8");
+        assert!((r.h - 50.0).abs() < 1e-2, "thumb_h = 100*(100/200)=50, got {}", r.h);
+        assert_eq!(r.x, 92.0, "右边缘: x = lr.x(0) + lr.w(100) - track_w(8)");
+        assert_eq!(r.y, 0.0, "scroll_pos=0 → thumb 在顶端");
+    }
+
+    #[test]
+    fn v_thumb_rect_moves_with_scroll_pos() {
+        let mut s = build_scroll_scene();
+        s.nodes[1].layout_rect = Rect { x: 0.0, y: 0.0, w: 40.0, h: 40.0 };
+        s.nodes[2].layout_rect = Rect { x: 0.0, y: 0.0, w: 30.0, h: 200.0 };
+        refresh_content_sizes(&mut s);
+        let st = s.scroll.get_mut(NodeId(0)).unwrap();
+        st.scroll_pos.1 = 50.0; // 50% scrolled
+        let r = v_thumb_rect(&s, NodeId(0)).unwrap();
+        // thumb_h=50, track_h=100, travel=50, perc=0.5 → thumb_y = 0 + 50*0.5 = 25
+        assert!((r.y - 25.0).abs() < 1e-2, "50% scroll → thumb_y=25, got {}", r.y);
+    }
+
+    #[test]
+    fn thumb_rect_returns_none_when_no_overlap() {
+        let mut s = build_scroll_scene();
+        // content < viewport → overlap=(0,0)
+        s.nodes[1].layout_rect = Rect { x: 0.0, y: 0.0, w: 40.0, h: 40.0 };
+        s.nodes[2].layout_rect = Rect { x: 0.0, y: 50.0, w: 30.0, h: 30.0 };
+        refresh_content_sizes(&mut s);
+        assert!(v_thumb_rect(&s, NodeId(0)).is_none(), "overlap=0 → 无 thumb");
+        assert!(h_thumb_rect(&s, NodeId(0)).is_none(), "overlap=0 → 无 thumb");
+    }
+
+    #[test]
+    fn h_thumb_rect_is_bottom_edge() {
+        let mut s = build_scroll_scene();
+        s.nodes[1].layout_rect = Rect { x: 0.0, y: 0.0, w: 200.0, h: 40.0 };
+        s.nodes[2].layout_rect = Rect { x: 0.0, y: 50.0, w: 30.0, h: 30.0 };
+        refresh_content_sizes(&mut s);
+        // viewport=(100,100) content=(200,80) → overlap=(100,0)
+        // h_thumb: track_h=8, track_w=100, thumb_w=100*(100/200)=50
+        let r = h_thumb_rect(&s, NodeId(0)).expect("overlap_x>0 → h_thumb");
+        assert_eq!(r.h, 8.0, "track_h=8");
+        assert!((r.w - 50.0).abs() < 1e-1, "thumb_w = 100*(100/200)=50");
+        assert_eq!(r.y, 92.0, "底边: y = lr.y(0) + lr.h(100) - track_h(8)");
     }
 }
