@@ -8,7 +8,7 @@ use loomgui_core::input::{EventRecord, KeyEvent, PointerEvent};
 use loomgui_core::scene::NodeId;
 use loomgui_core::stage::Stage;
 
-/// 版本字符串（C null-terminated `b"v1d.4\0"`）。Task 1 工具链 round-trip 用。
+/// 版本字符串（C null-terminated `b"v1d.5\0"`）。Task 1 工具链 round-trip 用。
 ///
 /// 返回 `*const u8`（csbindgen 映射为 C# `byte*`）；CString::as_ptr 给的是
 /// `*const c_char`（i8），这里 cast 对齐签名。OnceLock 缓存，避免每次分配+泄漏。
@@ -16,7 +16,7 @@ use loomgui_core::stage::Stage;
 pub extern "C" fn loomgui_version() -> *const u8 {
     static VERSION: std::sync::OnceLock<CString> = std::sync::OnceLock::new();
     VERSION
-        .get_or_init(|| CString::new("v1d.4").unwrap())
+        .get_or_init(|| CString::new("v1d.5").unwrap())
         .as_ptr() as *const u8
 }
 
@@ -405,6 +405,21 @@ pub extern "C" fn loomgui_stage_set_wheel_input(
     sh.stage.set_wheel_input(evs);
 }
 
+/// v1d.5-T11：编程滚动到指定位置。非 scroll 容器 / 越界 node → no-op（不 panic）。
+/// animated: u8（0=瞬移 1=缓动 cubic-out）。null 句柄 → no-op。
+#[no_mangle]
+pub extern "C" fn loomgui_stage_set_scroll_pos(
+    h: *mut StageHandle,
+    node_id: u32,
+    x: f32,
+    y: f32,
+    animated: u8,
+) {
+    if h.is_null() { return; }
+    let handle = unsafe { &mut *h };
+    handle.stage.set_scroll_pos(NodeId(node_id as usize), x, y, animated != 0);
+}
+
 /// v1d.2：编程聚焦节点（照 fgui RequestFocus）。强制聚焦任意非 disabled 节点
 /// （含 tabindex=None/-1）；disabled 拒；越界跳过。null 句柄 → no-op。
 ///
@@ -528,10 +543,10 @@ mod tests {
     use std::ffi::CStr;
 
     #[test]
-    fn version_returns_c_string_v1d4() {
+    fn version_returns_c_string_v1d5() {
         unsafe {
             let s = CStr::from_ptr(loomgui_version() as *const i8);
-            assert_eq!(s.to_str().unwrap(), "v1d.4");
+            assert_eq!(s.to_str().unwrap(), "v1d.5");
         }
     }
 
@@ -923,13 +938,13 @@ mod abi_tests {
         loomgui_stage_free(h);
     }
 
-    /// v1d.4：version 字符串 == "v1d.4"。
+    /// v1d.5：version 字符串 == "v1d.5"。
     #[test]
-    fn version_is_v1d_4() {
+    fn version_is_v1d_5() {
         let p = loomgui_version();
         let len = (0..).take_while(|&i| unsafe { *p.add(i) != 0 }).count();
         let s = std::str::from_utf8(unsafe { std::slice::from_raw_parts(p, len) }).unwrap();
-        assert_eq!(s, "v1d.4");
+        assert_eq!(s, "v1d.5");
     }
 
     /// v1d.1：EventRecord 仍 20B（drag/longpress 复用 event_type 空位 6-9）、PointerEvent 16B、Canceled=3。
@@ -1151,6 +1166,98 @@ mod abi_tests {
         let evs = [loomgui_core::scroll::WheelEvent { x: 10.0, y: 20.0, delta_x: 0.0, delta_y: 1.0 }];
         stage.set_wheel_input(&evs);
         assert_eq!(stage.pending_wheel.len(), 1);
+    }
+
+    /// v1d.5-T11 helper：构造带 overflow:scroll 容器的 Stage（无子；手动填 layout_rect + scroll state）。
+    fn build_scroll_stage() -> Stage {
+        let fp = format!(
+            "{}/../loomgui_core/tests/fixtures/DejaVuSans.ttf",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let mut stage = Stage::new(&fp, (200.0, 100.0)).unwrap();
+        use loomgui_core::scene::{NodeKind, Scene};
+        use loomgui_core::style::resolved::{OverflowMode, ResolvedStyle};
+        let mut sty = ResolvedStyle::default();
+        sty.overflow_y = OverflowMode::Scroll;
+        let entries = vec![
+            (None::<usize>, NodeKind::Container, sty, vec![], None::<String>, false, None::<i32>),
+        ];
+        stage.scene = Some(Scene::build(&entries));
+        let scene = stage.scene.as_mut().unwrap();
+        scene.nodes[0].layout_rect = loomgui_core::scene::node::Rect { x: 0.0, y: 0.0, w: 200.0, h: 100.0 };
+        // refresh 需要 content_size/viewport/overlap（set_pos 读 overlap 做 clamp）
+        loomgui_core::scroll::refresh_content_sizes(&mut stage.scene.as_mut().unwrap());
+        // 手动改 overlap 到 200 让 scroll_pos 可测（无子 content=0,overlap=0 → set_pos 全 clamp 0）
+        stage.scene.as_mut().unwrap().scroll.get_mut(NodeId(0)).unwrap().overlap = (0.0, 200.0);
+        stage
+    }
+
+    #[test]
+    fn set_scroll_pos_updates_state() {
+        let mut stage = build_scroll_stage();
+        stage.set_scroll_pos(NodeId(0), 0.0, 50.0, false);
+        assert_eq!(
+            stage.scene.as_ref().unwrap().scroll.get(NodeId(0)).unwrap().scroll_pos,
+            (0.0, 50.0)
+        );
+    }
+
+    #[test]
+    fn set_scroll_pos_animated_starts_tween() {
+        let mut stage = build_scroll_stage();
+        stage.set_scroll_pos(NodeId(0), 0.0, 80.0, true);
+        let st = stage.scene.as_ref().unwrap().scroll.get(NodeId(0)).unwrap();
+        assert_eq!(st.tweening, 1, "animated=true 启 tweening=1");
+    }
+
+    #[test]
+    fn set_scroll_pos_non_container_no_op() {
+        let fp = format!(
+            "{}/../loomgui_core/tests/fixtures/DejaVuSans.ttf",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let mut stage = Stage::new(&fp, (200.0, 100.0)).unwrap();
+        use loomgui_core::scene::{NodeKind, Scene};
+        use loomgui_core::style::resolved::ResolvedStyle;
+        let entries = vec![
+            (None::<usize>, NodeKind::Container, ResolvedStyle::default(), vec![], None::<String>, false, None::<i32>),
+        ];
+        stage.scene = Some(Scene::build(&entries));
+        // node 0 是 Container，overflow=Visible（默认）→ 非 scroll 容器 → set_scroll_pos no-op（不 panic）
+        stage.set_scroll_pos(NodeId(0), 0.0, 50.0, false);
+        // 不 panic 即通过
+    }
+
+    #[test]
+    fn set_scroll_pos_oob_no_op() {
+        let mut stage = build_scroll_stage();
+        // NodeId(99) 越界 → no-op 不 panic
+        stage.set_scroll_pos(NodeId(99), 0.0, 50.0, false);
+    }
+
+    /// v1d.5-T11：loomgui_stage_set_scroll_pos FFI round-trip。
+    #[cfg(feature = "parse")]
+    #[test]
+    fn ffi_set_scroll_pos_round_trip() {
+        use loomgui_core::scene::NodeId;
+        let (fp, fplen) = font_path();
+        let h = loomgui_stage_new(fp.as_ptr() as *const u8, fplen, 200.0, 100.0);
+        let html = b"<div class=\"scroll\"></div>";
+        let css = b".scroll{width:200px;height:100px;overflow:scroll;}";
+        loomgui_stage_load_html(h, html.as_ptr() as *const u8, html.len(), css.as_ptr() as *const u8, css.len());
+        // fill scroll state（load_inline 后需 refresh + 手动扩 overlap）
+        let handle = unsafe { &mut *h };
+        loomgui_core::scroll::refresh_content_sizes(handle.stage.scene.as_mut().unwrap());
+        handle.stage.scene.as_mut().unwrap().scroll.get_mut(NodeId(0)).unwrap().overlap = (0.0, 200.0);
+        // 调 FFI set_scroll_pos（animated=0 瞬移）
+        loomgui_stage_set_scroll_pos(h, 0, 0.0, 50.0, 0);
+        let st = handle.stage.scene.as_ref().unwrap().scroll.get(NodeId(0)).unwrap();
+        assert_eq!(st.scroll_pos, (0.0, 50.0), "FFI 调后 scroll_pos 更新");
+        // animated=1 启 tween
+        loomgui_stage_set_scroll_pos(h, 0, 0.0, 80.0, 1);
+        let st = handle.stage.scene.as_ref().unwrap().scroll.get(NodeId(0)).unwrap();
+        assert_eq!(st.tweening, 1, "animated=1 启 tween");
+        loomgui_stage_free(h);
     }
 
     /// v1d.5-T8：WheelEvent ABI 尺寸 16B（4×f32 紧凑，C# 端同布局）。

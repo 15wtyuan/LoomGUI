@@ -162,6 +162,18 @@ impl Stage {
         self.pending_wheel.extend_from_slice(events);
     }
 
+    /// v1d.5-T11：编程滚动到指定位置。非 scroll 容器 / 越界 node → no-op（不 panic）。
+    /// animated=false 直接 snap+clamp；true 启 cubic-out tween（调 T6 set_pos）。
+    pub fn set_scroll_pos(&mut self, node: NodeId, x: f32, y: f32, animated: bool) {
+        if let Some(scene) = self.scene.as_mut() {
+            if node.0 < scene.nodes.len() {
+                if let Some(s) = scene.scroll.get_mut(node) {
+                    s.set_pos((x, y), animated);
+                }
+            }
+        }
+    }
+
     /// v1d.2：编程聚焦（照 fgui RequestFocus）。强制聚焦任意非 disabled 节点
     /// （含 tabindex=None/-1——request_focus 是编程 API，不查 tabindex）。
     /// disabled 拒 / 越界跳过。记 pending_focus_request，下 tick 最前消费（不直接写 last_events）。
