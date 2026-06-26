@@ -793,4 +793,26 @@ mod tests {
         // 字节数合理（2 节点 × 18 列 + mesh arena + header）
         assert!(blob.len() > 100);
     }
+
+    /// v1e：blob 零 bump（仍 v4）。Unchanged 节点经 build_blob → payload_kind==0 透传。
+    /// C# 侧 MirrorPool.cs:71 `kind!=1&&!=2 continue` 跳过 kind=0（家里机验）；
+    /// 本机 Rust 侧 round-trip 验：Unchanged 节点占 1 节点位、payload_kind(0)==0、VERSION=4。
+    #[test]
+    fn blob_unchanged_kind_is_zero() {
+        let rn = RenderNode {
+            node_id: 0, parent_id: None, visible: true, alpha: 1.0, grayed: false,
+            color_tint: [1.0; 4], world_matrix: transform::IDENTITY,
+            blend: BlendMode::Normal, mask_context: MaskContext(0), sort_key: 0,
+            payload: NodePayload::Unchanged,
+        };
+        let frame = FrameData { nodes: vec![rn], clips: vec![] };
+        let blob = build_blob(&frame);
+        assert!(!blob.is_empty(), "Unchanged 节点 blob 非空（公共头仍 emit）");
+        assert_eq!(&blob[0..4], &MAGIC.to_le_bytes(), "magic");
+        let view = TestView::parse(&blob);
+        assert_eq!(view.node_count(), 1, "Unchanged 仍占 1 节点位");
+        assert_eq!(view.payload_kind(0), 0, "Unchanged payload_kind==0 透传");
+        // blob 零 bump：VERSION 仍 4（Unchanged 无新列，列结构零改）。
+        assert_eq!(u32::from_le_bytes(blob[4..8].try_into().unwrap()), 4, "VERSION=4 零 bump");
+    }
 }

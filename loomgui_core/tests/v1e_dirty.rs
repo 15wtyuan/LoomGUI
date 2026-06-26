@@ -11,7 +11,7 @@ fn font_path() -> (String, usize) {
 /// Stage 跨帧 dirty：首帧全 emit，第二帧静态 → Unchanged。
 #[test]
 fn stage_static_frame_produces_unchanged() {
-    let (fp, fplen) = font_path();
+    let (fp, _fplen) = font_path();
     let mut stage = Stage::new(&fp, (200.0, 100.0)).expect("stage");
     let html = r#"<div style="width:50px;height:50px;background-color:#ff0000"></div>"#;
     stage.load_inline(html, "").expect("load");
@@ -30,7 +30,7 @@ fn stage_static_frame_produces_unchanged() {
 /// reload 清 hash 基线：load 后首帧又全 emit。
 #[test]
 fn stage_reload_clears_dirty_baseline() {
-    let (fp, fplen) = font_path();
+    let (fp, _fplen) = font_path();
     let mut stage = Stage::new(&fp, (200.0, 100.0)).expect("stage");
     stage.load_inline(r#"<div style="width:50px;height:50px;background-color:#ff0000"></div>"#, "").expect("load");
     stage.advance_time(0.016);
