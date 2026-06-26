@@ -6,7 +6,7 @@
 
 #[cfg(feature = "parse")]
 use crate::parse::dom::{ElementId, ElementTree};
-use crate::style::resolved::ResolvedStyle;
+use crate::style::resolved::{OverflowMode, ResolvedStyle};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NodeId(pub usize);
@@ -176,7 +176,7 @@ pub struct Scene {
 impl Scene {
     /// 从扁平 entries（DFS 先序）建 Node 树。`NodeId = entries 下标`；
     /// `parent_idx` 指向 entries 下标，`None` = 根。
-    /// clip_rect slot / dirty 标志按 style.overflow_hidden / kind 派生。
+    /// clip_rect slot / dirty 标志按 style.overflow_x/y（非 Visible 即 clip）/ kind 派生。
     /// parse 路径（build_scene）与包加载路径（read_package）共用——防建树逻辑分叉。
     pub fn build(entries: &[(Option<usize>, NodeKind, ResolvedStyle, Vec<String>, Option<String>, bool, Option<i32>)]) -> Scene {
         let mut scene = Scene {
@@ -195,7 +195,9 @@ impl Scene {
                 base_style: style.clone(),
                 taffy_id: None,
                 layout_rect: Rect::default(),
-                clip_rect: if style.overflow_hidden {
+                clip_rect: if style.overflow_x != OverflowMode::Visible
+                    || style.overflow_y != OverflowMode::Visible
+                {
                     Some(Rect::default())
                 } else {
                     None
@@ -411,18 +413,19 @@ mod tests {
         let root = &scene.nodes[0];
         assert!(matches!(root.kind, NodeKind::Container));
         assert_eq!(root.children, vec![NodeId(1)], "Text 子挂 root");
-        assert!(root.clip_rect.is_none(), "overflow_hidden=false → 无 clip slot");
+        assert!(root.clip_rect.is_none(), "overflow Visible → 无 clip slot");
         assert!(!root.dirty_text, "Container dirty_text=false");
         let text = &scene.nodes[1];
         assert!(matches!(&text.kind, NodeKind::Text { content } if content == "hi"));
         assert_eq!(text.parent, Some(NodeId(0)));
         assert!(text.dirty_text, "Text 节点 dirty_text=true");
 
-        // overflow_hidden → clip slot 派生
+        // overflow Hidden → clip slot 派生
         let mut of = ResolvedStyle::default();
-        of.overflow_hidden = true;
+        of.overflow_x = OverflowMode::Hidden;
+        of.overflow_y = OverflowMode::Hidden;
         let scene2 = Scene::build(&[(None, NodeKind::Container, of, Vec::new(), None, false, None)]);
-        assert!(scene2.nodes[0].clip_rect.is_some(), "overflow_hidden=true → clip slot");
+        assert!(scene2.nodes[0].clip_rect.is_some(), "overflow Hidden → clip slot");
     }
 
     #[test]

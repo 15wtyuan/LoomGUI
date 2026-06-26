@@ -2,6 +2,19 @@ use serde::{Deserialize, Serialize};
 use taffy::style::Style as TaffyStyle;
 use taffy::FlexDirection;
 
+/// v1d.5：CSS overflow 轴模式（替旧 `overflow_hidden: bool`）。
+/// `#[repr(u8)]` 保证 FFI/序列化稳定（坑 34），`Default = Visible` 零回归旧 `overflow_hidden=false`。
+/// Scroll/Auto 的物理/手势由 v1d.5 T6/T7 实现；本 enum 仅承载语义值。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[repr(u8)]
+pub enum OverflowMode {
+    #[default]
+    Visible = 0,
+    Hidden = 1,
+    Scroll = 2,
+    Auto = 3,
+}
+
 /// CSS transform 解析产物。内部存 Affine2 矩阵（非分解字段）——这样单节点
 /// `scale(2,1) rotate(45deg)` 的复合剪切在解析期就保留，不因提取字段丢失。
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -24,7 +37,9 @@ pub struct ResolvedStyle {
     pub border_color: Option<[f32; 4]>,
     pub border_width: f32,
     pub opacity: f32,
-    pub overflow_hidden: bool,
+    /// v1d.5：overflow 两轴模式（替 `overflow_hidden: bool`）。Default 双轴 Visible。
+    pub overflow_x: OverflowMode,
+    pub overflow_y: OverflowMode,
     pub color: [f32; 4],
     pub font_size: f32,
     pub font_family: Option<String>,
@@ -63,7 +78,8 @@ impl Default for ResolvedStyle {
             border_color: None,
             border_width: 0.0,
             opacity: 1.0,
-            overflow_hidden: false,
+            overflow_x: OverflowMode::Visible,
+            overflow_y: OverflowMode::Visible,
             color: [0.0, 0.0, 0.0, 1.0],
             font_size: 16.0,
             font_family: None,
@@ -87,7 +103,8 @@ mod tests {
         let s = ResolvedStyle::default();
         assert_eq!(s.opacity, 1.0);
         assert_eq!(s.font_size, 16.0);
-        assert!(!s.overflow_hidden);
+        assert_eq!(s.overflow_x, OverflowMode::Visible, "overflow_x 默认 Visible");
+        assert_eq!(s.overflow_y, OverflowMode::Visible, "overflow_y 默认 Visible");
         // §4.1：div 默认 flex-direction: column（taffy DEFAULT 是 row，必须显式覆盖）
         assert_eq!(s.taffy_style.flex_direction, taffy::FlexDirection::Column);
     }
@@ -102,7 +119,8 @@ mod tests {
         s.border_color = Some([0.5, 0.6, 0.7, 0.8]);
         s.border_width = 3.0;
         s.opacity = 0.5;
-        s.overflow_hidden = true;
+        s.overflow_x = OverflowMode::Hidden;
+        s.overflow_y = OverflowMode::Hidden;
         s.color = [1.0, 0.0, 0.0, 1.0];
         s.font_size = 48.0;
         s.font_family = Some("DejaVuSans".to_string());
@@ -147,5 +165,30 @@ mod tests {
         let bytes = bincode::serialize(&s).expect("serialize");
         let back: ResolvedStyle = bincode::deserialize(&bytes).expect("deserialize");
         assert_eq!(back.transform.matrix, s.transform.matrix, "transform 经 bincode round-trip");
+    }
+
+    #[test]
+    fn overflow_default_is_visible_both_axes() {
+        let s = ResolvedStyle::default();
+        assert_eq!(s.overflow_x, OverflowMode::Visible);
+        assert_eq!(s.overflow_y, OverflowMode::Visible);
+    }
+
+    #[test]
+    fn overflow_mode_is_one_byte() {
+        assert_eq!(std::mem::size_of::<OverflowMode>(), 1);
+    }
+
+    #[test]
+    fn overflow_hidden_bincode_roundtrip() {
+        // 零回归：Hidden 经 bincode round-trip 不变（pkg 字段）
+        let mut s = ResolvedStyle::default();
+        s.overflow_x = OverflowMode::Hidden;
+        s.overflow_y = OverflowMode::Scroll;
+        let bytes = bincode::serialize(&s).expect("serialize");
+        let back: ResolvedStyle = bincode::deserialize(&bytes).expect("deserialize");
+        assert_eq!(back.overflow_x, OverflowMode::Hidden);
+        assert_eq!(back.overflow_y, OverflowMode::Scroll);
+        assert_eq!(back, s, "overflow 字段 round-trip 全等");
     }
 }

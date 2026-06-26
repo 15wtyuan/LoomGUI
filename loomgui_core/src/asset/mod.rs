@@ -1,4 +1,4 @@
-//! 包格式（spec §5）：.pkg.bin v6。
+//! 包格式（spec §5）：.pkg.bin v7。
 //! Rust-internal（packager 写、runtime 读，C# 不解析）。
 //!
 //! 扁平布局：Header(28B) + StringTable + NodeBlock（DFS 先序，含 classes/id/flags/tabindex）+
@@ -7,6 +7,7 @@
 //! atlas filename + sprite src + classes + id_attr（统一 intern 去重）。
 //! v4：NodeBlock 末 +1 byte flags（bit0=draggable）。v5：flags 后 +tabindex:i32（None→i32::MIN）。
 //! v6：ResolvedStyle +transform 字段（bincode，视觉层不进 taffy）。
+//! v7：ResolvedStyle overflow_hidden:bool → overflow_x/overflow_y:OverflowMode（bincode 字段变）。
 
 use crate::scene::{NodeKind, NodeId, Scene};
 use crate::style::dynamic::DynamicRuleTable;
@@ -15,9 +16,9 @@ use crate::style::resolved::ResolvedStyle;
 pub mod texture; // v1b.2：纹理注册表（src→TexMeta）
 
 pub const PKG_MAGIC: u32 = 0x474B504C; // 磁盘字节(LE) "LPKG"（不与 frame blob "LOOM" 撞）
-pub const PKG_FORMAT_VERSION: u32 = 6; // v6：+ResolvedStyle.transform（bincode 字段，v5=tabindex, v4=draggable, v3=DynamicRuleSection, v2=AtlasSection）
-const MIN_VERSION: u32 = 6;
-const MAX_VERSION: u32 = 6;
+pub const PKG_FORMAT_VERSION: u32 = 7; // v7：ResolvedStyle overflow_hidden→overflow_x/y（bincode，v6=transform, v5=tabindex, v4=draggable, v3=DynamicRuleSection, v2=AtlasSection）
+const MIN_VERSION: u32 = 7;
+const MAX_VERSION: u32 = 7;
 const NULL_IDX: u16 = 0xFFFF;
 
 const KIND_CONTAINER: u8 = 0;
@@ -536,14 +537,14 @@ mod tests {
 
     #[test]
     fn read_rejects_unsupported_version() {
-        // 借 round-trip 测的合法包（v6），把 version 字段（offset 4）改成 7 / 5。
-        // MIN_VERSION=MAX_VERSION=6：v5 → TooOld，v7 → TooNew。
+        // 借 round-trip 测的合法包（v7），把 version 字段（offset 4）改成 8 / 5。
+        // MIN_VERSION=MAX_VERSION=7：v5/v6 → TooOld，v8 → TooNew。
         let entries: Vec<(Option<usize>, NodeKind, ResolvedStyle, Vec<String>, Option<String>, bool, Option<i32>)> =
             vec![(None, NodeKind::Container, ResolvedStyle::default(), Vec::new(), None, false, None)];
         let mut bytes = write_package(&Scene::build(&entries), (100.0, 100.0), &AtlasSection::default(), &crate::style::dynamic::DynamicRuleTable::default());
-        bytes[4..8].copy_from_slice(&7u32.to_le_bytes()); // version=7 → too new
-        assert!(matches!(read_package(&bytes), Err(PkgError::TooNew(7))));
-        bytes[4..8].copy_from_slice(&5u32.to_le_bytes()); // version=5 → too old（v6 起拒 v5）
+        bytes[4..8].copy_from_slice(&8u32.to_le_bytes()); // version=8 → too new
+        assert!(matches!(read_package(&bytes), Err(PkgError::TooNew(8))));
+        bytes[4..8].copy_from_slice(&5u32.to_le_bytes()); // version=5 → too old（v7 起拒 v6 及以下）
         assert!(matches!(read_package(&bytes), Err(PkgError::TooOld(5))));
     }
 

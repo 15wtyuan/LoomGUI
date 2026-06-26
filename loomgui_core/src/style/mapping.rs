@@ -277,7 +277,16 @@ pub fn apply_decl(style: &mut ResolvedStyle, prop: &str, value: &str) -> bool {
             true
         }
         "overflow" => {
-            style.overflow_hidden = value.trim() == "hidden";
+            // v1d.5-T1 临时：仅保持 hidden 语义（两轴 Hidden）。T2 正式解析
+            // scroll/auto + overflow-x/y longhand（本任务不实现）。
+            let hidden = value.trim() == "hidden";
+            if hidden {
+                style.overflow_x = crate::style::resolved::OverflowMode::Hidden;
+                style.overflow_y = crate::style::resolved::OverflowMode::Hidden;
+            } else {
+                style.overflow_x = crate::style::resolved::OverflowMode::Visible;
+                style.overflow_y = crate::style::resolved::OverflowMode::Visible;
+            }
             true
         }
         "color" => {
