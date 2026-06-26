@@ -221,7 +221,7 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 
 ### 2.22 GTween tween 引擎（v1d.4，§10.3）
 - **TweenManager + replace-override**（spec §3-§5）：新 `loomgui_core/src/tween.rs`——`TweenProp`/`Ease` 均 `#[repr(u8)]`（Opacity=0..TextColor=5 / Linear=0..BackInOut=9）+ `Ease::evaluate(t,dur)->f32`（10 个照 fgui EaseManager 直译，OVERSHOOT=1.70158；dur<=0 返 1）+ `prop_value_size`（1/2/4）+ `try_from(u32)` 边界校验。`TweenManager.update(dt, scene, &mut out)` 每 tick：`elapsed+=dt`→delay 门控（`<delay` 跳过不写）→`tt=elapsed-delay` 钳到 duration→`norm=evaluate`→`apply` 写通道→`tt>=duration` 产 `EVT_TWEEN_COMPLETE`+killed→`retain(!killed)`。Stage 持 `tweens`。
-- **anim override = Scene transient 字段**（spec §4，关键）：`Scene.anim: AnimTable`（`Vec<NodeAnim>`，同 `world_transforms` **不进 pkg**）。`NodeAnim{opacity/transform/bg_color/text_color}` 全 Option。**replace-override**：4 读取点 `unwrap_or(CSS)`——`compute_world_transforms` 读 `anim.transform.unwrap_or(style.transform.matrix)`（**不 compose，覆盖 css_matrix**）；`build_render_nodes` 读 `anim.opacity/bg_color/text_color.unwrap_or(style.*)`。`AnimTable::get` 经 `NodeAnim::is_empty` 过滤（全 None→None）→ 热路径退回 CSS **零回归**。一节点一 transform tween（Translate/Scale/Rotation 共享 transform 通道，并发 last-write-wins；混用嵌套 div）。持久：killed/自然完成停末值，`clear_anim(_prop)` 才回 CSS。
+- **anim override = Scene transient 字段**（spec §4，关键）：`Scene.anim: AnimTable`（`Vec<NodeAnim>`，同 `world_transforms` **不进 pkg**）。`NodeAnim{opacity/transform/bg_color/text_color}` 全 Option。**replace-override**：4 读取点 `unwrap_or(CSS)`——`compute_world_transforms` 读 `anim.transform.unwrap_or(style.transform.matrix)`（**不 compose，覆盖 css_matrix**）；`build_render_nodes` 读 `anim.opacity/bg_color/text_color.unwrap_or(style.*)`。`AnimTable::get` 经 `NodeAnim::is_empty` 过滤（全 None→None）→ 热路径退回 CSS **零回归**。一节点一 transform tween（Translate/Scale/Rotation 共享 transform 通道，并发 last-write-wins；混用嵌套 div）。持久：killed/自然完成停末值，`clear_anim(_prop)` 才回 CSS。**颜色通道（bg_color/text_color）用 0-1 归一化**（mapping.rs:77 hex `/255.0`、render 测试 `[0,0,1,1]`=蓝；brief/草稿常写 0-255 致 clamp 全白——v1-showcase T8 implementer 查源修 `Rgba(/255f)`）。
 - **时钟 = 单 unscaled dt stash**（spec §6）：`advance_time(dt)`（FFI tick 已先调）加 `self.pending_dt=dt`；`tick_and_render`（**无参签名不动**，零测试 ripple）顶部 `let dt=pending_dt.take(); tweens.update(dt,scene,&mut out)`——**须在 solve/compute_world_transforms 前**（anim 先写后读）。load_inline/load_package 调 `tweens.clear()`（防悬空 node_id）。per-tween timeScale/scaled dt defer v1.x。
 - **EVT_TWEEN_COMPLETE=16 复用 EventRecord 字段**（spec §8，零结构改动）：`click_count`=prop(u8)、`touch_id`=tag(i32)、x/y=0。C# `EventType.TweenComplete=16` + `DispatchPending` 加 `case→DirectDispatch`（target-specific 不 bubble）；listener 读 `ctx.clickCount`=prop、`ctx.touchId`=tag。
 - **FFI/version**：version v1d.3→v1d.4；4 新常驻 FFI（`tween/kill_tween/clear_anim/clear_anim_prop`，csbindgen regen）+ `TweenProp/Ease::try_from(u32)`。.dll 重编（1733120→1739776B）。**blob 保持 v4 不 bump**（anim 在 core fold 进既有字段，blob/MirrorPool 零改）。
@@ -455,7 +455,7 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 **症状**：PlayMode atlas sprite 全白占位（atlas.png 没载），但 .pkg.bin 解析正常、Console 无报错。
 **根因**：main.rs 用 `out_path.with_extension("atlas.png")` 写磁盘 → `<stem>.pkg.atlas.png`；lib.rs 把 `"loom.atlas.png"` 写进 AtlasSection header。Unity 按 header 名 `Path.Combine(StreamingAssets, atlas_filename)` 找 → 名不匹配 → `File.ReadAllBytes` 抛 → 跳过 → 白占位。
 **解决**：main.rs 用 packer 返回的 `p.atlas_filename` 拼磁盘路径（`out_parent.join(&p.atlas_filename)`）→ header 与磁盘同串，by-construction 一致。
-**教训**：打包器产两文件（.pkg.bin + atlas.png）时，**磁盘 atlas 名必须 == header 的 `atlas_filename`**（后端按 header 载）；用同一变量拼两端，别各算各的。
+**教训**：打包器产两文件（.pkg.bin + atlas.png）时，**磁盘 atlas 名必须 == header 的 `atlas_filename`**（后端按 header 载）；用同一变量拼两端，别各算各的。**v1-showcase 加 `-a <name>.atlas.png`/`pack_named`**（c65db2f）——多 sample 共存 StreamingAssets 用独立 atlas 名，避免共享 `loom.atlas.png` 互相覆盖（LoomStage 按 pkg header `atlas_filename` 载，非 hardcode）。
 
 ### 坑 21：删 pub API 只验单 crate → 依赖 crate 编译断裂（v1b.3）
 **症状**：T1 删 `TextureRegistry::register` 只跑 `cargo test -p loomgui_core`（绿），但 `loomgui_ffi_c`（register_texture FFI 调 register）编译断裂，到 T3 跑 workspace 才发现。
@@ -696,6 +696,12 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 **根因**：quad 是定 4 顶点，尺寸变体现在 verts 坐标（非数量）——`verts.len()` 摘要捕获不到坐标变。Text 同族：text-align Left→Center 改 glyph pen_x/pen_y 但 glyph_count/首字 codepoint 不变 → hash 漏。另 sort_key/mask_context 在 assign_sort_keys 前调 node_hash 是占位值，hash 了无贡献（I1）。
 **解决**：Mesh arm 加 verts[0]/verts[2] 首末顶点坐标 hash（TL/BR 含尺寸，O(1)）；Text arm 加首字 glyph pen_x/pen_y hash；移除占位 sort_key/mask_context + 注释说明（commit 20fb05b，+4 测）。
 **教训**：dirty hash 的 payload 摘要不能只取"数量/标识"字段（count/tex_id），**须覆盖体现几何变化的坐标字段**（verts 顶点 / glyph pen 位置），否则"内容量不变但布局变"的场景漏判。**字段集完整性是 final review 级审查项**——per-task reviewer 易顺着 brief 字段集验（T1 reviewer 逐项核了 brief 列表全 ✅，但 brief 本身漏了 verts 坐标），须独立从"哪些视觉变化该触发重传"反推字段集。spec §8 已标"hash 字段遗漏=真风险"，final review 兑现。
+
+### 坑 57：plan/草稿写围栏外标签或属性——标签硬挡、属性静默死 CSS（v1-showcase T3/T7）
+**症状**：v1-showcase plan §2 用 `<i>` 标签（justify 卡子项标记）→ 打包失败；plan §4.7 用 `position:absolute`+`left/top`（pointer-events 叠加演示）→ CSS 死代码（parse 静默忽略），reviewer 抓到。
+**根因**：core parse 有 **FENCE_TAGS 硬白名单**（`parse/dom.rs`，仅 div/span/img/button/l-container）——围栏外标签 parse 失败打包报错；CSS 属性走 `style/mapping.rs` match，围栏外属性（position/left/top/z-index/background-image/font-style/grid/border-radius/渐变等）落 `_ => false` **静默忽略**（死 CSS 不报错）。v1 纯 taffy flexbox，**无 position/z-index/叠加**。
+**解决**：`<i>`→`<span>`（CSS `.flx i`→`.flx span`）；删 position:absolute，pointer-events 演示改流内块 + 说明 v1 无叠加。
+**教训**：写 sample HTML/CSS 前对照 FENCE_TAGS（标签）+ mapping.rs 白名单（属性）。**标签违规易发现**（打包失败），**属性违规隐蔽**（静默死 CSS，reviewer 须逐条扫 CSS 声明）。这是 AI 可预测性的打包期第一道反馈——围栏验证器工作正常。
 
 ## 6. 调试/验证技巧
 
