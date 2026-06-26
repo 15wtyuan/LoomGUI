@@ -8,7 +8,7 @@
 .navbtn:active{transform:scale(0.96);}
 .scroll{flex-grow:1;overflow-y:scroll;}
 .content{gap:16px;padding:24px;}
-.sec{gap:16px;}
+.sec{gap:16px;opacity:0;}
 .sec-h{color:#5fb2c4;font-size:28px;font-weight:700;border-bottom:1px solid #3a3f55;padding-bottom:8px;}
 /* 卡片模板 */
 .card{background-color:#252839;border:1px solid #3a3f55;padding:16px;gap:12px;}
