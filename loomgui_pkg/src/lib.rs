@@ -27,11 +27,12 @@ struct PlacedSprite {
 /// res_dir = 解析 `<img src>` 的基准目录（CLI 传 html_path.parent()）。
 /// 无图 → 空 atlas（atlas_count=0，pkg.bin 仍 v2，runtime 跳过 atlas 加载）。
 /// 缺图 → Err（build-time fail，§5.5）。
-pub fn pack(
+fn pack_inner(
     html: &str,
     css: &str,
     root_size: (f32, f32),
     res_dir: &Path,
+    atlas_name: &str,
 ) -> Result<PackedPackage, String> {
     let tree = loomgui_core::parse::dom::parse_html(html).map_err(|e| format!("parse_html: {e}"))?;
     let sheet = loomgui_core::parse::css::parse_css(css).map_err(|e| format!("parse_css: {e}"))?;
@@ -106,7 +107,7 @@ pub fn pack(
     // 7. AtlasSection + write_package v2。
     let atlas_section = AtlasSection {
         atlases: vec![AtlasInfo {
-            filename: "loom.atlas.png".into(),
+            filename: atlas_name.into(),
             width: atlas_w,
             height: atlas_h,
         }],
@@ -126,8 +127,18 @@ pub fn pack(
     Ok(PackedPackage {
         pkg_bytes: pkg,
         atlas_png: png_bytes,
-        atlas_filename: "loom.atlas.png".into(),
+        atlas_filename: atlas_name.into(),
     })
+}
+
+/// 向后兼容：atlas 名固定 "loom.atlas.png"（现有 sample 行为不变）。
+pub fn pack(html: &str, css: &str, root_size: (f32, f32), res_dir: &Path) -> Result<PackedPackage, String> {
+    pack_inner(html, css, root_size, res_dir, "loom.atlas.png")
+}
+
+/// 指定 atlas 文件名（多 sample 共存 StreamingAssets 时用独立名避免互相覆盖）。
+pub fn pack_named(html: &str, css: &str, root_size: (f32, f32), res_dir: &Path, atlas_name: &str) -> Result<PackedPackage, String> {
+    pack_inner(html, css, root_size, res_dir, atlas_name)
 }
 
 /// shelf 打包：按高降序、atlas_w=max(512,最宽)、逐行摆、超宽换行。NPOT。无旋转/trim。

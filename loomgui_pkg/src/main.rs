@@ -12,7 +12,7 @@ fn main() -> ExitCode {
     let args: Vec<String> = env::args().collect();
     if args.len() < 3 {
         eprintln!(
-            "usage: {} <html> <css> [-o out.pkg.bin] [-w designW] [-h designH]",
+            "usage: {} <html> <css> [-o out.pkg.bin] [-w designW] [-h designH] [-a atlas.png]",
             args.first().map(String::as_str).unwrap_or("loomgui_pkg")
         );
         return ExitCode::from(2);
@@ -26,6 +26,7 @@ fn main() -> ExitCode {
         .unwrap_or_else(|| format!("{html_str}.pkg.bin"));
     let mut w = 1080.0f32;
     let mut h = 1920.0f32;
+    let mut atlas_name = String::from("loom.atlas.png");
     let mut i = 3;
     while i < args.len() {
         match args[i].as_str() {
@@ -39,6 +40,10 @@ fn main() -> ExitCode {
             }
             "-h" => {
                 h = args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(h);
+                i += 2;
+            }
+            "-a" | "--atlas-name" => {
+                atlas_name = args.get(i + 1).cloned().filter(|s| !s.is_empty()).unwrap_or(atlas_name);
                 i += 2;
             }
             other => {
@@ -65,7 +70,7 @@ fn main() -> ExitCode {
         }
     };
 
-    match loomgui_pkg::pack(&html, &css, (w, h), res_dir) {
+    match loomgui_pkg::pack_named(&html, &css, (w, h), res_dir, &atlas_name) {
         Ok(p) => {
             if let Err(e) = fs::write(&out_path, &p.pkg_bytes) {
                 eprintln!("write {out_path}: {e}");
