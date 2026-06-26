@@ -241,8 +241,8 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 
 ### 2.24 v1e dirty hash + Unchanged emit（§614-623 blob 契约兑现）— 关 v1-scope §4 性能基线
 - **机制**：Stage 持 `prev_node_hashes: Vec<u64>`（transient，**Stage 字段非 Scene** → 天然不进 pkg）。`build_render_nodes` 签名 `(scene,font,tex, prev_hashes:&[u64]) -> (FrameData, Vec<u64>)`：逐节点 emit payload 后调 `render::dirty::node_hash(&rn)`，与上帧等（且 `prev_hashes.len()==n_nodes` 守基线）→ payload 改回 `NodePayload::Unchanged`。`load_inline/load_package` clear 基线（防 reload NodeId 错位）；首帧/空基线全 emit（零回归）。
-- **node_hash 字段集**（DefaultHasher，f32 走 to_le_bytes）：world_matrix 6 列（**含 scroll_pos**——scroll 子树 world 变→hash 不等→自动重传，不需特殊处理）+ visible/alpha/grayed/color_tint/blend/mask_context/sort_key + payload 摘要（Mesh: texture+verts.len+colors[0]；Text: font_size+color+glyph_count+首字codepoint）。**全链路 v0 预留兑现**：`NodePayload::Unchanged`（node.rs）+ blob kind=0（blob.rs:155）+ C# 读 kind（FrameBlob.cs:36）+ C# `kind!=1&&!=2 continue`（MirrorPool.cs:71）从 v0 全通，v1e 只在 Stage 加 hash 跟踪 → **FFI/blob(v4)/pkg(v7)/C# MirrorPool 四零改**。
-- **合成 scrollbar 强制 emit**（不进 hash 比较，随 scroll_pos 变、数量少）；merge 对 Unchanged passthrough（merge.rs:33）。**ponytail 天花板**：hash 碰撞最坏 1 帧视觉延迟不破正确性（标 `// ponytail:`）；真风险是 hash 字段遗漏（某视觉字段没进→变了不重传→持续错），reviewer 须逐项对照 blob 公共头列。
+- **node_hash 字段集**（DefaultHasher，f32 走 to_le_bytes）：world_matrix 6 列（**含 scroll_pos**——scroll 子树 world 变→hash 不等→自动重传，不需特殊处理）+ visible/alpha/grayed/color_tint/blend + payload 摘要（Mesh: texture+verts.len+colors[0]+**verts[0]/verts[2] 首末顶点**；Text: font_size+color+glyph_count+首字 codepoint+**首字 pen_x/pen_y**）。**不含 sort_key/mask_context**——它们在 `assign_sort_keys` 之前调 node_hash 时是占位值（0），hash 无贡献；结构变必伴随节点增删（baselined=false 全 dirty）或 world/payload 变（hash 仍捕获），故不 hash。**全链路 v0 预留兑现**：`NodePayload::Unchanged`（node.rs）+ blob kind=0（blob.rs:155）+ C# 读 kind（FrameBlob.cs:36）+ C# `kind!=1&&!=2 continue`（MirrorPool.cs:71）从 v0 全通，v1e 只在 Stage 加 hash 跟踪 → **FFI/blob(v4)/pkg(v7)/C# MirrorPool 四零改**。
+- **合成 scrollbar 强制 emit**（不进 hash 比较，随 scroll_pos 变、数量少）；merge 对 Unchanged passthrough（merge.rs:33）。**ponytail 天花板**：hash 碰撞最坏 1 帧视觉延迟不破正确性（标 `// ponytail:`）；**真风险是 hash 字段遗漏**（某视觉字段没进→变了不重传→持续错），reviewer 须逐项对照 blob 公共头列——见坑 56（final review 抓的 3 处遗漏）。
 - **验收（双轨）**：criterion bench 500 节点——静态帧 476µs（全 Unchanged，比冷帧快 2.7× 证 dirty 生效）/ 冷帧 1.28ms / 换页帧 1.19ms，均 ≤2ms（v1-scope §4 过线）。C# `_frameBuf` 改 ArrayPool（冷帧零 GC，ReadMesh per-node alloc 留观察撞墙再上）。家里机待验：PlayMode Profiler 静态帧≈0 upload + 冷/换页帧≤2ms + GC Alloc 静态帧≈0。
 
 ## 3. 依赖 API 适配踩坑（v0 最大教训）
@@ -690,6 +690,12 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 **根因**：T9 引入 sentinel id（合成 scrollbar thumb 不进 Scene 但要 hit-testable + MirrorPool 镜像），T8 的 wheel 路径读 `id.0` 索引 scene.nodes 未识别 sentinel。**跨 task 改动**：T9 改 hit_test 返回类型语义，T8 既有消费侧未同步守卫。
 **解决**：`apply_wheel_to_hit` while 顶解码 `if id.0 & 0x6000_0000 != 0 { id = NodeId(id.0 & !0x6000_0000) }`（0x6000_0000=V|H flag 并集；清高位回 container_id），container 自身 effective 命中 apply_wheel。Up 段 `!grip_dragging` 守卫防 `scene.nodes[sentinel]` OOB。
 **教训**：引入 sentinel/魔法 id 时，**所有读 id 做 scene 索引/沿 parent 链的路径**（hit_test/wheel/事件路由/仲裁）都须识别+解码 sentinel——跨 task 最易漏（各 task 只看自己的消费侧）。LoomGUI 首次用 sentinel id（合成节点），新路径。
+
+### 坑 56：dirty hash 字段集遗漏致持续视觉错（v1e final review Critical）
+**症状**：v1e dirty hash 初版 `node_hash` Mesh arm 只 hash `texture+verts.len+colors[0]`。`.btn:hover{width:200px}` → rematch 改 size → solve 重算 layout_rect.w → Mesh verts 坐标变，但 verts.len 仍=4、colors[0] 不变、world_matrix（纯平移且位置不变）不变 → **hash 不变 → 误判 Unchanged → hover 展开不生效（持续，非 1 帧延迟）**。final reviewer 独立 binary 复现。
+**根因**：quad 是定 4 顶点，尺寸变体现在 verts 坐标（非数量）——`verts.len()` 摘要捕获不到坐标变。Text 同族：text-align Left→Center 改 glyph pen_x/pen_y 但 glyph_count/首字 codepoint 不变 → hash 漏。另 sort_key/mask_context 在 assign_sort_keys 前调 node_hash 是占位值，hash 了无贡献（I1）。
+**解决**：Mesh arm 加 verts[0]/verts[2] 首末顶点坐标 hash（TL/BR 含尺寸，O(1)）；Text arm 加首字 glyph pen_x/pen_y hash；移除占位 sort_key/mask_context + 注释说明（commit 20fb05b，+4 测）。
+**教训**：dirty hash 的 payload 摘要不能只取"数量/标识"字段（count/tex_id），**须覆盖体现几何变化的坐标字段**（verts 顶点 / glyph pen 位置），否则"内容量不变但布局变"的场景漏判。**字段集完整性是 final review 级审查项**——per-task reviewer 易顺着 brief 字段集验（T1 reviewer 逐项核了 brief 列表全 ✅，但 brief 本身漏了 verts 坐标），须独立从"哪些视觉变化该触发重传"反推字段集。spec §8 已标"hash 字段遗漏=真风险"，final review 兑现。
 
 ## 6. 调试/验证技巧
 
