@@ -386,6 +386,25 @@ pub extern "C" fn loomgui_stage_set_key_input(h: *mut StageHandle, keys: *const 
     sh.stage.set_key_input(ks);
 }
 
+/// v1d.5-T8：注入本帧滚轮事件（扁平 WheelEvent 数组）。tick 前调；**累积式**（多次调合并）。
+/// null/len=0 = 本帧无滚轮（直接 return，不清空——与 set_key_input 不同；累积语义）。
+///
+/// **常驻（不 gate）：**输入是 runtime 稳定入口。
+#[no_mangle]
+pub extern "C" fn loomgui_stage_set_wheel_input(
+    h: *mut StageHandle,
+    events: *const loomgui_core::scroll::WheelEvent,
+    len: usize,
+) {
+    if h.is_null() { return; }
+    let sh = unsafe { &mut *h };
+    if events.is_null() || len == 0 {
+        return;
+    }
+    let evs = unsafe { std::slice::from_raw_parts(events, len) };
+    sh.stage.set_wheel_input(evs);
+}
+
 /// v1d.2：编程聚焦节点（照 fgui RequestFocus）。强制聚焦任意非 disabled 节点
 /// （含 tabindex=None/-1）；disabled 拒；越界跳过。null 句柄 → no-op。
 ///

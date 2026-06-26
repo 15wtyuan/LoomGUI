@@ -12,6 +12,22 @@
 use crate::scene::node::{NodeId, Node, Scene};
 use crate::style::resolved::OverflowMode;
 
+/// v1d.5-T8：滚轮输入事件（FFI POD）。C# set_wheel_input 推一组；core apply_wheel_to_hit
+/// 沿祖先找最近 effective 滚动容器 → apply_wheel。
+/// 16B：x@0 + y@4 + delta_x@8 + delta_y@12（4×f32 紧凑，坑 34 ABI 断言）。
+/// （x,y)=指针 design 坐标（hit_test 用）；(delta_x,delta_y)=滚轮增量（apply_wheel 吃）。
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct WheelEvent {
+    pub x: f32,
+    pub y: f32,
+    pub delta_x: f32,
+    pub delta_y: f32,
+}
+const _: () = {
+    assert!(std::mem::size_of::<WheelEvent>() == 16);
+}; // ABI 断言（坑 34）
+
 // ── §4.1 物理常量（fgui Ponytail 照搬，勿自创公式） ─────────────────────────
 // 滚动触发阈值（px）：鼠标/触摸移动超此才认拖拽（v1 T7/T10 用；此处仅声明）。
 // spec §4.1 / §5.3：mouse 8（fgui sensitivity PC）/ touch 20（fgui touchScrollSensitivity）。
@@ -378,6 +394,36 @@ pub fn refresh_content_sizes(scene: &mut Scene) {
 fn content_box_size(node: &Node) -> (f32, f32) {
     let lr = node.layout_rect;
     (lr.w, lr.h)
+}
+
+/// v1d.5-T8：hit(x,y) → 沿 node.parent 链找最近 effective 滚动容器 → apply_wheel。
+/// 无祖先（或无 effective）→ 丢弃（return）。effective 判定用 scene.scroll.get 取
+/// content/viewport（无 state 视 0.0，effective 对 Scroll overflow 仍 true）。
+/// **本任务作独立函数直接测**；T10 wire 进 tick 消费 pending_wheel 时调它。
+pub fn apply_wheel_to_hit(scene: &mut Scene, w: WheelEvent) {
+    let mut pane = crate::hit::hit_test(scene, (w.x, w.y));
+    while let Some(id) = pane {
+        if id.0 < scene.nodes.len() {
+            let n = &scene.nodes[id.0];
+            let eff_y = effective(
+                n.style.overflow_y,
+                scene.scroll.get(id).map_or(0.0, |s| s.content_size.1),
+                scene.scroll.get(id).map_or(0.0, |s| s.viewport_size.1),
+            );
+            let eff_x = effective(
+                n.style.overflow_x,
+                scene.scroll.get(id).map_or(0.0, |s| s.content_size.0),
+                scene.scroll.get(id).map_or(0.0, |s| s.viewport_size.0),
+            );
+            if eff_y || eff_x {
+                if let Some(s) = scene.scroll.get_mut(id) {
+                    s.apply_wheel((w.delta_x, w.delta_y));
+                }
+                return;
+            }
+        }
+        pane = scene.nodes[id.0].parent;
+    }
 }
 
 #[cfg(test)]

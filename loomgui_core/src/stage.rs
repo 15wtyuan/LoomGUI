@@ -37,6 +37,9 @@ pub struct Stage {
     pub last_events: Vec<EventRecord>,
     /// v1d.2：set_key_input 缓存的本帧键盘输入；tick 消费后 clear。
     pub pending_keys: Vec<crate::input::KeyEvent>,
+    /// v1d.5-T8：set_wheel_input 缓存的本帧滚轮输入；T10 tick 消费（apply_wheel_to_hit）后 clear。
+    /// 累积式（extend，非 clear-then-set）——多组滚轮合并到一帧。
+    pub pending_wheel: Vec<crate::scroll::WheelEvent>,
     /// v1d.2：编程聚焦/清焦点请求（request_focus/blur tick 外调记，tick 最前消费）。
     /// 外层 Some=有请求；内层 Some(id)=聚焦某节点 / None=清焦点。
     pub pending_focus_request: Option<Option<NodeId>>,
@@ -60,6 +63,7 @@ impl Stage {
             pending_input: Vec::new(),
             last_events: Vec::new(),
             pending_keys: Vec::new(),
+            pending_wheel: Vec::new(),
             pending_focus_request: None,
             tweens: crate::tween::TweenManager::new(),
             pending_dt: 0.0,
@@ -150,6 +154,12 @@ impl Stage {
     pub fn set_key_input(&mut self, keys: &[crate::input::KeyEvent]) {
         self.pending_keys.clear();
         self.pending_keys.extend_from_slice(keys);
+    }
+
+    /// v1d.5-T8：缓存本帧滚轮输入（tick 前调；**累积式** extend——多组滚轮合并）。
+    /// T10 wire 进 tick 消费（apply_wheel_to_hit）；本任务不接 tick。
+    pub fn set_wheel_input(&mut self, events: &[crate::scroll::WheelEvent]) {
+        self.pending_wheel.extend_from_slice(events);
     }
 
     /// v1d.2：编程聚焦（照 fgui RequestFocus）。强制聚焦任意非 disabled 节点
