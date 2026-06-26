@@ -47,6 +47,10 @@ pub struct Stage {
     pub tweens: crate::tween::TweenManager,
     /// v1d.4：advance_time stash 的本帧 dt（tick_and_render 消费，喂 tweens.update）。
     pub pending_dt: f32,
+    /// v1e：上帧每节点 dirty hash（NodeId 索引）。跨 tick 持续，供 build_render_nodes
+    /// 比较决定 emit Unchanged。transient 不进 pkg（Stage 字段非 Scene 字段）。
+    /// reload/节点数变 → clear → 下帧全 dirty（无基线）。
+    pub prev_node_hashes: Vec<u64>,
 }
 
 impl Stage {
@@ -67,6 +71,7 @@ impl Stage {
             pending_focus_request: None,
             tweens: crate::tween::TweenManager::new(),
             pending_dt: 0.0,
+            prev_node_hashes: Vec::new(),
         })
     }
 
@@ -80,6 +85,7 @@ impl Stage {
         let styles = resolve_styles(&tree, &sheet);
         self.tweens.clear();   // v1d.4：旧 tween 指向失效 node_id，随 scene 重建清空
         if let Some(scene) = self.scene.as_mut() { scene.scroll.clear(); }   // v1d.5-T4：旧 scroll 槽随 scene 重建清空（防悬空 NodeId）
+        self.prev_node_hashes.clear();   // v1e：旧 hash 基线随 scene 重建失效（防 NodeId 错位）
         self.scene = Some(build_scene(&tree, &styles));
         Ok(())
     }
@@ -96,6 +102,7 @@ impl Stage {
         self.atlases = atlas_section.atlases;
         self.tweens.clear();   // v1d.4：旧 tween 指向失效 node_id，随 scene 重建清空
         if let Some(s) = self.scene.as_mut() { s.scroll.clear(); }   // v1d.5-T4：旧 scroll 槽随 scene 重建清空（防悬空 NodeId）
+        self.prev_node_hashes.clear();   // v1e：旧 hash 基线随 scene 重建失效（防 NodeId 错位）
         self.scene = Some(scene);
         self.root_size = root_size;
         Ok(())
@@ -283,8 +290,10 @@ impl Stage {
         self.last_events = out;
         // 7. 伪类重匹配（按新 hover/active/focused 改 Node.style——视觉变本帧 render 吃到）
         rematch_pseudo_classes(scene);
-        // 8. 渲染（+ 合成 scrollbar）
-        let (frame, _new_hashes) = build_render_nodes(scene, &self.font, &self.textures, &[]);
+        // 8. 渲染（+ 合成 scrollbar）。v1e：传上帧 hash 基线，未变节点 emit Unchanged；
+        //    返回新 hash 存 self.prev_node_hashes 供下帧比。
+        let (frame, new_hashes) = build_render_nodes(scene, &self.font, &self.textures, &self.prev_node_hashes);
+        self.prev_node_hashes = new_hashes;
         frame
     }
 
