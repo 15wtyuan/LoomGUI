@@ -57,3 +57,7 @@
 .outer-r{background-color:#2d3148;border:1px solid #3a3f55;padding:20px;gap:12px;}
 .inner-r{background-color:#5fb2c4;padding:12px;color:#1a1d2e;font-size:16px;}
 .pe-none{background-color:#c2605a;padding:12px;color:#e0e0e0;font-size:14px;pointer-events:none;}
+
+/* §7 动效舞台 */
+.demo{width:60px;height:40px;background-color:#5fb2c4;color:#1a1d2e;font-size:14px;display:flex;align-items:center;justify-content:center;}
+.ease-row{width:100%;height:30px;background-color:#1a1d2e;}

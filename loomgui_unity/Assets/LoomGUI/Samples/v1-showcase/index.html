@@ -326,8 +326,89 @@
           </div>
         </div>
       </div>
-      <div class="sec" id="sec-7"><div class="sec-h">§7 动效舞台</div></div>
-      <div class="sec" id="sec-8"><div class="sec-h">§8 管线 / 分辨率</div></div>
+      <div class="sec" id="sec-7">
+        <div class="sec-h">§7 动效舞台</div>
+        <div class="card">
+          <div class="card-h"><span class="card-t">7.1 6 tween prop</span><span class="card-x">预期: 点按钮看 6 种属性动画</span></div>
+          <div class="card-b" style="flex-direction:column;gap:8px;width:100%">
+            <div class="hit" id="tween-play">播放全部</div>
+            <div class="demo" id="t-opacity">opacity</div>
+            <div class="demo" id="t-translate">translate</div>
+            <div class="demo" id="t-scale">scale</div>
+            <div class="demo" id="t-rotate">rotation</div>
+            <div class="demo" id="t-bgcolor">bg-color</div>
+            <div class="demo" id="t-textcolor">text-color</div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-h"><span class="card-t">7.2 10 缓动</span><span class="card-x">预期: 同 translate 不同 ease 曲线</span></div>
+          <div class="card-b" style="flex-direction:column;gap:6px;width:100%">
+            <div class="hit" id="ease-play">播放</div>
+            <div class="ease-row"><div class="demo" id="ease-0">QuadIn</div></div>
+            <div class="ease-row"><div class="demo" id="ease-1">CubicOut</div></div>
+            <div class="ease-row"><div class="demo" id="ease-2">BackInOut</div></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-h"><span class="card-t">7.3 delay 错峰</span><span class="card-x">预期: 3 块依次起（= §4 启动入场）</span></div>
+          <div class="card-b" style="flex-direction:column;gap:8px;width:100%">
+            <div class="hit" id="delay-play">播放（错峰）</div>
+            <div class="demo" id="d-0">delay 0</div>
+            <div class="demo" id="d-1">delay .2</div>
+            <div class="demo" id="d-2">delay .4</div>
+            <span class="card-x">delay 递增 = §4 启动错峰入场（StaggeredEntrance）所用机制。</span>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-h"><span class="card-t">7.4 complete 回调</span><span class="card-x">预期: 动画结束亮灯（TweenComplete + tag）</span></div>
+          <div class="card-b" style="flex-direction:column;gap:8px;width:100%">
+            <div class="hit" id="complete-play">播放（结束后亮灯）</div>
+            <div class="lamps" id="lamp-complete">
+              <div class="lamp"></div><div class="lamp"></div><div class="lamp"></div>
+            </div>
+            <span class="card-x">t-opacity 跑完后 core 产 TweenComplete（tag=7），C# 识别 tag 亮 lamp-complete。</span>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-h"><span class="card-t">7.5 kill / clear</span><span class="card-x">预期: kill 停末值 / clear 回 CSS 初始</span></div>
+          <div class="card-b" style="flex-direction:column;gap:8px;width:100%">
+            <div class="demo" id="kill-target">旋转中</div>
+            <div class="hit" id="kill-btn">kill（停末值）</div>
+            <div class="hit" id="clear-btn">clear（回 CSS）</div>
+            <span class="card-x">kill-target 启动即持续旋转（单次长 tween）；kill 冻结当前角，clear 清所有 anim 回 CSS。</span>
+          </div>
+        </div>
+      </div>
+      <div class="sec" id="sec-8">
+        <div class="sec-h">§8 管线 / 分辨率</div>
+        <div class="card">
+          <div class="card-h"><span class="card-t">8.1 FairyBatching 合并</span><span class="card-x">预期: 3 同 atlas 图合并，Profiler draw call↓</span></div>
+          <div class="card-b">
+            <img src="icons/home.png" style="width:48px">
+            <img src="icons/eye.png" style="width:48px">
+            <img src="icons/zap.png" style="width:48px">
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-h"><span class="card-t">8.2 图集 atlas</span><span class="card-x">预期: 散图烤进 loom_showcase.atlas.png</span></div>
+          <div class="card-b">
+            <img src="icons/home.png" style="width:64px">
+            <span class="card-x">打包时 -a loom_showcase.atlas.png 指定 atlas 名，所有 img src 散图合并为一张纹理。</span>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-h"><span class="card-t">8.3 dirty hash 静态帧</span><span class="card-x">v1e: 静态帧全 Unchanged → C# 0 upload，Profiler GC Alloc≈0</span></div>
+          <div class="card-b">
+            <span class="card-x">说明卡：静止时不重传（v1e dirty-hash 性能特性）。静态帧 Profiler 应见 GC Alloc≈0、无 mesh 重建。</span>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-h"><span class="card-t">8.4 参考分辨率 + safe-area</span><span class="card-x">预期: 改窗口尺寸看等比缩放 + safe-area 让边</span></div>
+          <div class="card-b">
+            <span class="card-x">改 Game 窗口尺寸 / 拖 Simulator 模拟刘海，UI 按 _designSize=1080×1920 等比缩放 + safe-area 自动避让。</span>
+          </div>
+        </div>
+      </div>
     </div>
   </div>
 </div>

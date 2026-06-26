@@ -6,13 +6,21 @@ namespace LoomGUI
     public unsafe class LoomShowcaseDriver : MonoBehaviour
     {
         [SerializeField] LoomStage _stage;
-        [SerializeField] float[] _sectionY = { 0f, 700f, 1500f, 2300f, 3000f, 3800f, 4500f, 5200f }; // 设计期累积高度（sec-1..sec-8 顶部 y）
+        [SerializeField] float[] _sectionY = { 0f, 700f, 1500f, 2300f, 3000f, 3800f, 4500f, 5600f }; // 设计期累积高度（sec-1..sec-8 顶部 y；sec-7/8 含 T8 新增卡，sec-8 顶≈4500+sec-7 高）
+        // T8 §1.6：外部 GO 绑 model-slot（Inspector 拖 Cube 等）。
+        [SerializeField] GameObject _nativeModel;
 
         uint _scrollNode = uint.MaxValue;
         uint[] _navNodes = new uint[8];
 
         // === 灯阵（T7 §4）===
         int _clickCount, _hoverCount, _dragCount, _longCount, _keyCount, _routeCount;
+
+        // === tween 演示（T8 §7）===
+        // TweenProp 顺序与 7.1 六块对应；Ease 0..9 与 Rust tween::Ease 对齐。
+        static readonly TweenProp[] _allProps = { TweenProp.Opacity, TweenProp.Translate, TweenProp.Scale, TweenProp.Rotation, TweenProp.BgColor, TweenProp.TextColor };
+        static readonly Ease[] _allEase = { Ease.Linear, Ease.QuadIn, Ease.QuadOut, Ease.QuadInOut, Ease.CubicIn, Ease.CubicOut, Ease.CubicInOut, Ease.BackIn, Ease.BackOut, Ease.BackInOut };
+        const uint TagComplete = 7;   // 7.4 complete 回调用
 
         void Awake()
         {
@@ -32,6 +40,9 @@ namespace LoomGUI
             Debug.Log($"[Showcase] scroll={_scrollNode} nav0={_navNodes[0]}（点 nav 跳区）");
             StaggeredEntrance();
             SubscribeLampEvents();
+            SubscribeTweenDemos();
+            // T8 §1.6：绑外部 GO 到 model-slot（每帧 Sync 自动同步 TRS）。
+            if (_nativeModel != null) _stage.BindNativeHost("model-slot", _nativeModel);
         }
 
         // design-taste §4: 启动错峰入场。各 sec 卡 tween opacity 0→1 + delay 递增。
@@ -118,5 +129,73 @@ namespace LoomGUI
             LightLamp("route", ++_routeCount);
         }
         void OnRoutePe(EventContext ctx) { LightLamp("route", ++_routeCount); }   // pointer-events:none 穿透后命中下层
+
+        // === §7 tween 演示订阅（T8）===
+        void SubscribeTweenDemos()
+        {
+            SubscribeLamp("tween-play", EventType.Click, OnTweenPlay);
+            SubscribeLamp("ease-play", EventType.Click, OnEasePlay);
+            SubscribeLamp("delay-play", EventType.Click, OnDelayPlay);
+            SubscribeLamp("complete-play", EventType.Click, OnCompletePlay);
+            SubscribeLamp("kill-btn", EventType.Click, OnKill);
+            SubscribeLamp("clear-btn", EventType.Click, OnClear);
+            // 7.4：监听 t-opacity 的 TweenComplete（core 完成时直派，ctx.clickCount=prop、ctx.touchId=tag）。
+            SubscribeLamp("t-opacity", EventType.TweenComplete, OnTweenCompleteTag);
+            // 7.5 kill-target：启动即开始持续旋转（单次长 tween——loop 需 TweenComplete 重启，简化省略）。
+            PlayProp("kill-target", TweenProp.Rotation, new float[] { 0f, 0, 0, 0 }, new float[] { 360f, 0, 0, 0 }, 4f, Ease.Linear, 0f, 0);
+            Debug.Log("[Showcase] §7 tween 演示订阅完成（play/ease/delay/complete/kill/clear + kill-target 旋转）");
+        }
+
+        void PlayProp(string id, TweenProp prop, float[] s, float[] e, float dur, Ease ease, float delay, uint tag)
+        {
+            uint n = _stage.FindNodeById(id);
+            if (n != uint.MaxValue) _stage.Tween(n, prop, s, e, dur, ease, delay, tag);
+        }
+
+        // 7.1 六属性同放：opacity / translate / scale / rotation / bg-color / text-color。
+        void OnTweenPlay(EventContext ctx)
+        {
+            PlayProp("t-opacity", TweenProp.Opacity, new float[] { 0f, 0, 0, 0 }, new float[] { 1f, 0, 0, 0 }, 0.8f, Ease.Linear, 0f, 0);
+            PlayProp("t-translate", TweenProp.Translate, new float[] { -40f, 0, 0, 0 }, new float[] { 40f, 0, 0, 0 }, 0.8f, Ease.CubicInOut, 0f, 0);
+            PlayProp("t-scale", TweenProp.Scale, new float[] { 0.5f, 0.5f, 0, 0 }, new float[] { 1.4f, 1.4f, 0, 0 }, 0.8f, Ease.BackOut, 0f, 0);
+            PlayProp("t-rotate", TweenProp.Rotation, new float[] { 0f, 0, 0, 0 }, new float[] { 360f, 0, 0, 0 }, 0.8f, Ease.QuadInOut, 0f, 0);
+            // 颜色 tween：Rust anim 通道是归一化 [0,1] RGBA（style/mapping.rs /255.0），故 float[] 也须归一化。
+            PlayProp("t-bgcolor", TweenProp.BgColor, Rgba(0x5f, 0xb2, 0xc4), Rgba(0x6f, 0xa6, 0x6c), 0.8f, Ease.Linear, 0f, 0);
+            PlayProp("t-textcolor", TweenProp.TextColor, Rgba(0xe6, 0xe6, 0xe0), Rgba(0xc2, 0x60, 0x5a), 0.8f, Ease.Linear, 0f, 0);
+        }
+
+        // 7.2 三条 ease 对比（QuadIn / CubicOut / BackInOut），同 translate 200px。
+        void OnEasePlay(EventContext ctx)
+        {
+            int[] pick = { 1, 5, 9 };   // _allEase 下标：QuadIn / CubicOut / BackInOut
+            for (int i = 0; i < pick.Length; i++)
+                PlayProp("ease-" + i, TweenProp.Translate, new float[] { 0f, 0, 0, 0 }, new float[] { 200f, 0, 0, 0 }, 1.0f, _allEase[pick[i]], 0f, 0);
+        }
+
+        // 7.3 delay 错峰：三块依次起（= 启动 StaggeredEntrance 机制）。
+        void OnDelayPlay(EventContext ctx)
+        {
+            PlayProp("d-0", TweenProp.Opacity, new float[] { 0f, 0, 0, 0 }, new float[] { 1f, 0, 0, 0 }, 0.5f, Ease.CubicOut, 0f, 0);
+            PlayProp("d-1", TweenProp.Opacity, new float[] { 0f, 0, 0, 0 }, new float[] { 1f, 0, 0, 0 }, 0.5f, Ease.CubicOut, 0.2f, 0);
+            PlayProp("d-2", TweenProp.Opacity, new float[] { 0f, 0, 0, 0 }, new float[] { 1f, 0, 0, 0 }, 0.5f, Ease.CubicOut, 0.4f, 0);
+        }
+
+        // 7.4 complete：t-opacity 跑完后 core 派 TweenComplete（tag=TagComplete），C# 识别 tag 亮灯。
+        void OnCompletePlay(EventContext ctx)
+        {
+            PlayProp("t-opacity", TweenProp.Opacity, new float[] { 1f, 0, 0, 0 }, new float[] { 0.2f, 0, 0, 0 }, 0.6f, Ease.QuadIn, 0f, TagComplete);
+        }
+        void OnTweenCompleteTag(EventContext ctx)
+        {
+            // ctx.clickCount = prop（Opacity=0）；ctx.touchId = tag（TagComplete=7）。
+            if (ctx.touchId == TagComplete) LightLamp("complete", 1);
+        }
+
+        // 7.5 kill 冻结当前角（停在末值）；clear 清所有 anim 回 CSS 初始。
+        void OnKill(EventContext ctx) { _stage.KillTween(_stage.FindNodeById("kill-target"), TweenProp.Rotation); }
+        void OnClear(EventContext ctx) { _stage.ClearAnim(_stage.FindNodeById("kill-target")); }
+
+        // 0-255 RGB → 归一化 [0,1] RGBA float[4]（alpha=1）。Rust tween 直接写 anim 通道，须与 style 归一化一致。
+        static float[] Rgba(int r, int g, int b) => new float[] { r / 255f, g / 255f, b / 255f, 1f };
     }
 }
