@@ -36,7 +36,16 @@ fn rec(scene: &Scene, anim: &AnimTable, id: NodeId, parent_world: Affine2, world
             &transform::mul(&m, &transform::from_translate(-pivot.0, -pivot.1)),
         ),
     );
-    let world = transform::mul(&parent_world, &local);
+    // v1d.5：父若是滚动容器，world 前乘 T(-父.scroll_pos)（offset 注入，spec §3）。
+    // 容器自身 world 不含自己 scroll_pos（其 world 用它父的 offset）；后代每层累积。
+    // scroll_pos=(0,0) → T(0,0)=identity → no-op（零回归）。
+    let world = match node.parent.and_then(|p| scene.scroll.get(p)) {
+        Some(st) => transform::mul(
+            &parent_world,
+            &transform::mul(&transform::from_translate(-st.scroll_pos.0, -st.scroll_pos.1), &local),
+        ),
+        None => transform::mul(&parent_world, &local),
+    };
     worlds[id.0] = world;
     let kids = node.children.clone();
     for c in kids {
@@ -48,7 +57,7 @@ fn rec(scene: &Scene, anim: &AnimTable, id: NodeId, parent_world: Affine2, world
 mod tests {
     use super::*;
     use crate::scene::node::{Node, Rect, Scene};
-    use crate::style::resolved::LocalTransform;
+    use crate::style::resolved::{LocalTransform, OverflowMode};
     use crate::transform::Affine2Ext;
 
     fn node(id: usize, parent: Option<usize>, rect: Rect) -> Node {
@@ -56,6 +65,13 @@ mod tests {
         n.id = NodeId(id);
         n.parent = parent.map(NodeId);
         n.layout_rect = rect;
+        n
+    }
+
+    // v1d.5：scroll 容器 helper——overflow_y=Scroll（仅样式标记，scroll 表项由 ensure 注入）。
+    fn scroll_node(id: usize, parent: Option<usize>, rect: Rect) -> Node {
+        let mut n = node(id, parent, rect);
+        n.style.overflow_y = OverflowMode::Scroll;
         n
     }
 
@@ -142,5 +158,41 @@ mod tests {
         let (x, y) = s.world_transforms[0].apply_point(0.0, 0.0);
         assert!((x - 5.0).abs() < 1e-4 && (y - 7.0).abs() < 1e-4, "无 anim → CSS identity 纯平移");
         assert!(s.world_transforms[0].is_pure_translation());
+    }
+
+    // v1d.5 T5：offset 注入——父 scroll_pos 影响 子 world，不影响容器自身。
+    #[test]
+    fn scroll_offset_applies_to_children_not_container() {
+        // 容器 (0,0,100,100) overflow:scroll；子 (0,0,20,20)；scroll_pos=(0,30)
+        let mut s = scene_with(vec![
+            scroll_node(0, None, Rect { x: 0.0, y: 0.0, w: 100.0, h: 100.0 }),
+            node(1, Some(0), Rect { x: 0.0, y: 0.0, w: 20.0, h: 20.0 }),
+        ]);
+        s.nodes[0].children = vec![NodeId(1)];
+        s.scroll.ensure(NodeId(0)).scroll_pos = (0.0, 30.0);
+        compute_world_transforms(&mut s);
+        // 容器自身 world.apply(0,0) = (0,0)（容器 world 不含自己 scroll_pos）
+        let (cx, cy) = s.world_transforms[0].apply_point(0.0, 0.0);
+        assert!(cx.abs() < 1e-3 && cy.abs() < 1e-3, "容器自身 world 不吃自己 scroll_pos");
+        // 子 world.apply(0,0) = (0, -30)（含 T(-scroll_pos)）
+        let (x, y) = s.world_transforms[1].apply_point(0.0, 0.0);
+        assert!(x.abs() < 1e-3 && (y - (-30.0)).abs() < 1e-3, "子吃父 scroll offset：(0,30)→(0,-30)");
+    }
+
+    #[test]
+    fn scroll_pos_zero_is_no_op_zero_regression() {
+        // scroll_pos=(0,0) → world 与无 scroll 表项等价（零回归）
+        let nodes = vec![
+            node(0, None, Rect { x: 10.0, y: 20.0, w: 100.0, h: 100.0 }),
+            node(1, Some(0), Rect { x: 15.0, y: 25.0, w: 10.0, h: 10.0 }),
+        ];
+        let mut a = scene_with(nodes.clone());
+        a.nodes[0].children = vec![NodeId(1)];
+        a.scroll.ensure(NodeId(0)); // scroll_pos=(0,0)
+        let mut b = scene_with(nodes);
+        b.nodes[0].children = vec![NodeId(1)]; // 无 scroll 表项
+        compute_world_transforms(&mut a);
+        compute_world_transforms(&mut b);
+        assert_eq!(a.world_transforms, b.world_transforms, "scroll_pos=0 no-op：与无 scroll 表项等价");
     }
 }
