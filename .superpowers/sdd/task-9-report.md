@@ -71,7 +71,7 @@
 
 ## T9 Critical+Important fix (reviewer)
 
-**Commit**: `CHANGEME`
+**Commit**: `f93f282`
 
 ### Critical: apply_wheel_to_hit sentinel OOB
 

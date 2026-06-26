@@ -51,6 +51,7 @@ pub fn node_hash(rn: &RenderNode) -> u64 {
 mod tests {
     use super::*;
     use crate::render::node::{BlendMode, MaskContext, NodePayload, RenderNode};
+    use crate::text::layout::{Glyph, GlyphRun, Line, TextLayout};
     use crate::transform::IDENTITY;
 
     fn mesh_rn(tex: u32, alpha: f32, color0: [f32;4]) -> RenderNode {
@@ -118,5 +119,87 @@ mod tests {
         let mut rn = mesh_rn(1, 1.0, [1.0;4]);
         rn.payload = NodePayload::Unchanged;
         assert_eq!(node_hash(&rn), 0, "Unchanged 防御性返回 0");
+    }
+
+    // -----------------------------------------------------------------------
+    // Text payload hash 变化测试（v1e-T1）
+    // 直接构造 TextLayout（不走 measure_text），排除字体 IO 依赖。
+    // -----------------------------------------------------------------------
+
+    fn text_rn(font_size: f32, color: [f32; 4], codepoint: u32, glyph_count: usize) -> RenderNode {
+        let glyphs: Vec<Glyph> = (0..glyph_count)
+            .map(|i| Glyph {
+                glyph_id: 1,
+                codepoint: codepoint + i as u32,
+                x: i as f32 * 10.0,
+                y: 0.0,
+                bearing_x: 0.0,
+                bearing_y: 0.0,
+            })
+            .collect();
+        let layout = TextLayout {
+            text_width: 100.0,
+            text_height: 20.0,
+            lines: vec![Line {
+                y: 0.0,
+                height: 20.0,
+                baseline: 16.0,
+                width: 100.0,
+                runs: vec![GlyphRun { font_size, glyphs }],
+            }],
+        };
+        RenderNode {
+            node_id: 0,
+            parent_id: None,
+            visible: true,
+            alpha: 1.0,
+            grayed: false,
+            color_tint: [1.0; 4],
+            world_matrix: IDENTITY,
+            blend: BlendMode::Normal,
+            mask_context: MaskContext(0),
+            sort_key: 0,
+            payload: NodePayload::Text {
+                layout,
+                font_size,
+                color,
+                program: 1,
+            },
+        }
+    }
+
+    #[test]
+    fn text_font_size_change_changes_hash() {
+        let a = text_rn(16.0, [1.0, 0.0, 0.0, 1.0], 65, 3);
+        let b = text_rn(20.0, [1.0, 0.0, 0.0, 1.0], 65, 3);
+        assert_ne!(node_hash(&a), node_hash(&b), "font_size 变 → hash 变");
+    }
+
+    #[test]
+    fn text_codepoint_change_changes_hash() {
+        let a = text_rn(16.0, [1.0, 0.0, 0.0, 1.0], 65, 3);
+        let b = text_rn(16.0, [1.0, 0.0, 0.0, 1.0], 66, 3);
+        assert_ne!(node_hash(&a), node_hash(&b), "首字 codepoint 变 → hash 变");
+    }
+
+    #[test]
+    fn text_color_change_changes_hash() {
+        let a = text_rn(16.0, [1.0, 0.0, 0.0, 1.0], 65, 3);
+        let b = text_rn(16.0, [0.0, 1.0, 0.0, 1.0], 65, 3);
+        assert_ne!(node_hash(&a), node_hash(&b), "color 变 → hash 变");
+    }
+
+    #[test]
+    fn text_glyph_count_change_changes_hash() {
+        let a = text_rn(16.0, [1.0, 0.0, 0.0, 1.0], 65, 3);
+        let b = text_rn(16.0, [1.0, 0.0, 0.0, 1.0], 65, 5);
+        assert_ne!(node_hash(&a), node_hash(&b), "glyph_count 变 → hash 变");
+    }
+
+    #[test]
+    fn text_identical_same_hash() {
+        let a = text_rn(16.0, [1.0, 0.0, 0.0, 1.0], 65, 3);
+        let b = text_rn(16.0, [1.0, 0.0, 0.0, 1.0], 65, 3);
+        assert_eq!(node_hash(&a), node_hash(&b), "全等 Text hash 相等");
     }
 }
