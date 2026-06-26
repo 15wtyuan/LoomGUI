@@ -1,4 +1,5 @@
 using System;
+using System.Buffers;   // v1e：ArrayPool<byte> for _frameBuf
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -63,6 +64,9 @@ namespace LoomGUI
         MaterialManager _mm;
         MirrorPool _pool;
         NativeHostManager _nhm;
+        // v1e：ArrayPool 租用（非 new）。Rent 返回 ≥len，只 copy/解析 len 字节。
+        // OnDestroy 归还防泄漏。冷帧零 GC（ReadMesh per-node alloc 留观察，撞墙再上 List 复用）。
+        // ponytail: ReadMesh per-node alloc 留观察，冷帧 GC 卡顿再上 List 复用
         byte[] _frameBuf;
         // v1b.3：tex_id → Texture2D（LoadAtlas 填；Sync 按 blob.TexId 查此绑 atlas 纹理）。
         // 同 atlas 的多个 sprite 共享同一 Texture2D（atlas.png）→ MaterialManager key 命中同实例 → batchable。
@@ -542,9 +546,12 @@ namespace LoomGUI
             int len = (int)lenRaw;
             if (ptr != null && len > 0)
             {
-                // 原子拷贝到托管 buffer（§14.3）。v1a 先 new；ArrayPool 留 v1e。
+                // v1e：ArrayPool 租用（§14.3 冷帧零 GC）。Rent 返回 ≥len，多余字节忽略。
                 if (_frameBuf == null || _frameBuf.Length < len)
-                    _frameBuf = new byte[len];
+                {
+                    if (_frameBuf != null) ArrayPool<byte>.Shared.Return(_frameBuf);
+                    _frameBuf = ArrayPool<byte>.Shared.Rent(len);
+                }
                 Marshal.Copy((IntPtr)ptr, _frameBuf, 0, len);
 
                 var blob = new FrameBlob(_frameBuf);
@@ -579,6 +586,12 @@ namespace LoomGUI
                     else UnityEngine.Object.DestroyImmediate(t);
                 }
                 _texMap.Clear();
+            }
+            // v1e：归还 ArrayPool 租用的 _frameBuf。
+            if (_frameBuf != null)
+            {
+                ArrayPool<byte>.Shared.Return(_frameBuf);
+                _frameBuf = null;
             }
             FreeStage();
         }
