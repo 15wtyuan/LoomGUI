@@ -173,8 +173,10 @@ pub fn build_render_nodes(scene: &Scene, font: &Font, textures: &TextureRegistry
             }
         }
     }
+    let clips = batch::assign_sort_keys(scene, &mut nodes);
     // v1d.5 T9：effective 滚动容器追加合成 scrollbar thumb RenderNode。
-    // 合成节点不进 assign_sort_keys DFS（它扫 scene.nodes），手动设 sort_key=max+1。
+    // 合成节点不进 assign_sort_keys DFS（它扫 scene.nodes），在 assign_sort_keys 后
+    // 追加（此时真实节点已有 sort_key 0..N），thumb sort_key = max+1。
     let max_sort = nodes.iter().map(|n| n.sort_key).max().unwrap_or(0);
     for id in 0..scene.nodes.len() {
         let nid = NodeId(id);
@@ -196,7 +198,6 @@ pub fn build_render_nodes(scene: &Scene, font: &Font, textures: &TextureRegistry
             }
         }
     }
-    let clips = batch::assign_sort_keys(scene, &mut nodes);
     // §8.5/§8.8 v1b.4：先按 BatchingRoot AABB 保序重排（同 DrawState 不相交聚拢），
     // 再合并连续同 DrawState 的 program=0 Mesh → 1 draw call。clips 表由
     // assign_sort_keys 产（mask_context 在 reorder/merge 中透传，表内容不受影响）。

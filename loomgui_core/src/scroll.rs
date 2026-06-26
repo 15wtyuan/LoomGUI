@@ -461,6 +461,9 @@ fn content_box_size(node: &Node) -> (f32, f32) {
 pub fn apply_wheel_to_hit(scene: &mut Scene, w: WheelEvent) {
     let mut pane = crate::hit::hit_test(scene, (w.x, w.y));
     while let Some(id) = pane {
+        // sentinel thumb_id → decode container_id（thumb covers container edge,
+        // wheel on thumb = wheel on container）
+        let id = if id.0 & 0x6000_0000 != 0 { NodeId(id.0 & !0x6000_0000) } else { id };
         if id.0 < scene.nodes.len() {
             let n = &scene.nodes[id.0];
             let eff_y = effective(
@@ -479,6 +482,9 @@ pub fn apply_wheel_to_hit(scene: &mut Scene, w: WheelEvent) {
                 }
                 return;
             }
+        } else {
+            // defensive: invalid node id (shouldn't happen after sentinel decode)
+            break;
         }
         pane = scene.nodes[id.0].parent;
     }
@@ -837,6 +843,44 @@ mod tests {
 
         let st = s.scroll.get(NodeId(0)).unwrap();
         assert!(st.tweening != 0, "wheel 触发滚动 tween，tweening={}", st.tweening);
+    }
+
+    /// v1d.5-T9 critical fix：wheel 落 thumb 区域，hit_test 返 sentinel
+    /// → apply_wheel_to_hit 解码 container_id 继续祖先链，不 crash 且正确滚该容器。
+    #[test]
+    fn apply_wheel_to_hit_on_thumb_decodes_sentinel() {
+        use crate::scene::transform::compute_world_transforms;
+
+        let mut s = build_scroll_scene();
+        // content_y=250 > viewport=100 → overlap_y=150
+        s.nodes[2].layout_rect = Rect { x: 0.0, y: 0.0, w: 30.0, h: 250.0 };
+        s.nodes[0].clip_rect = Some(Rect { x: 0.0, y: 0.0, w: 100.0, h: 100.0 });
+
+        refresh_content_sizes(&mut s);
+        compute_world_transforms(&mut s);
+
+        // 核实 scroll state
+        let st = s.scroll.get(NodeId(0)).unwrap();
+        assert!(st.overlap.1 > 0.0, "overlap needed for thumb");
+        assert_eq!(st.tweening, 0);
+
+        // v_thumb_rect: x=92, y=0, w=8, h=40（100*(100/250)=40）
+        // 点 (96, 20) 在 thumb 内 → hit_test 应返 sentinel
+        let hit = crate::hit::hit_test(&s, (96.0, 20.0));
+        assert!(
+            hit.map_or(false, |id| id.0 & 0x6000_0000 != 0),
+            "thumb 命中应返 sentinel，got {:?}",
+            hit
+        );
+
+        // apply_wheel_to_hit：sentinel 解码 → container 0 → apply_wheel
+        apply_wheel_to_hit(
+            &mut s,
+            WheelEvent { x: 96.0, y: 20.0, delta_x: 0.0, delta_y: 1.0 },
+        );
+
+        let st = s.scroll.get(NodeId(0)).unwrap();
+        assert!(st.tweening != 0, "thumb wheel 应触发滚动，tweening={}", st.tweening);
     }
 
     // ── T9 thumb rect 测 ─────────────────────────────────────
