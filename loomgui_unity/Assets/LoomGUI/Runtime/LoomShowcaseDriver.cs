@@ -17,8 +17,7 @@ namespace LoomGUI
         int _clickCount, _hoverCount, _dragCount, _longCount, _keyCount, _routeCount;
 
         // === tween 演示（T8 §7）===
-        // TweenProp 顺序与 7.1 六块对应；Ease 0..9 与 Rust tween::Ease 对齐。
-        static readonly TweenProp[] _allProps = { TweenProp.Opacity, TweenProp.Translate, TweenProp.Scale, TweenProp.Rotation, TweenProp.BgColor, TweenProp.TextColor };
+        // Ease 0..9 与 Rust tween::Ease 对齐（OnEasePlay 取子集对比）。7.1 六 prop 在 OnTweenPlay 逐个硬编码 PlayProp。
         static readonly Ease[] _allEase = { Ease.Linear, Ease.QuadIn, Ease.QuadOut, Ease.QuadInOut, Ease.CubicIn, Ease.CubicOut, Ease.CubicInOut, Ease.BackIn, Ease.BackOut, Ease.BackInOut };
         const uint TagComplete = 7;   // 7.4 complete 回调用
 
