@@ -490,6 +490,19 @@ pub fn apply_wheel_to_hit(scene: &mut Scene, w: WheelEvent) {
     }
 }
 
+/// tick 推进所有活跃 scroll tween（tweening≠0）。
+/// 遍历 scene.scroll，每个 Some(st) 若 tweening≠0 调 st.advance(dt)。
+/// tweening=0 的拖拽中/静止容器不 advance。
+pub fn advance_all(dt: f32, scene: &mut Scene) {
+    for slot in &mut scene.scroll.0 {
+        if let Some(st) = slot {
+            if st.tweening != 0 {
+                st.advance(dt);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

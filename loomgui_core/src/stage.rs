@@ -219,18 +219,16 @@ impl Stage {
         &self.last_events
     }
 
-    /// 每帧管线（§4.5 + 首帧修正）：
-    /// ①solve（算 layout_rect——hit_test 必须用已解矩形，故 solve 在 process 前）
-    /// ②process（hit+状态 diff+产事件，存 last_events，更新各槽 last_hit + hovered/active）
-    /// ③rematch_pseudo_classes（按新 hover/active 状态改 Node.style——本帧渲染吃到视觉变）
-    /// ④build_render_nodes
+    /// 每帧管线（§8 + v1d.5-T10 重排）：
+    /// ①tween ②focus_request ③solve ④refresh_content_sizes（v1d.5）
+    /// ⑤process（仲裁+拖拽跟手写 scroll_pos；hit_test 读上帧 world_transforms，1 帧延迟
+    ///   spec §8.2 已认） ⑥scroll update（消费 pending_wheel + inertia/bounce advance）
+    /// ⑦process_keys ⑧compute_world_transforms（v1d.5 移 process 后：读 scroll_pos 同帧
+    ///   进 world matrix，零拖拽延迟） ⑨rematch_pseudo_classes ⑩build_render_nodes
     ///
-    /// **与 spec §4.5 的差异**：spec 原「process→rematch→solve」在首帧 hit_test 读全零
-    /// layout_rect（未 solve）→ 无命中 → 1 tick 出不来事件。本实现把 solve 前移到 process
-    /// 前——hit_test 用本帧刚解的矩形，首帧即能产 RollOver。代价：rematch 改的 *layout*
-    /// 属性（如 `.btn:hover { width:200px }`）延到下帧 solve 才吃（spec §15 已认此为延迟
-    /// 项）；rematch 的纯视觉变（background-color 等）本帧 render 立即吃到（render 读 style
-    /// 不读 layout_rect.size）。v1c.1 视觉伪类为主，layout 伪类为边角，此权衡 OK。
+    /// **首帧 guard**：process 前若 world_transforms 未计算，solve 后即时算一次。
+    /// **1 帧延迟语义**：hit_test 用上帧 world_transforms。仲裁在 Down 未滚动前不影响；
+    /// clip 门控用 viewport 固定主导，不依赖每帧变换精度。
     pub fn tick_and_render(&mut self) -> FrameData {
         let scene = self.scene.as_mut().expect("load first");
         let mut out: Vec<EventRecord> = Vec::new();
@@ -245,20 +243,35 @@ impl Stage {
         }
         // 1. solve（先解 layout_rect，hit_test 要用）
         solve(scene, &self.font, self.root_size, &self.textures);
-        // v1d.3：solve 后算 world matrix（hit/render 用；命中须用本帧刚 solve 布局）
-        crate::scene::transform::compute_world_transforms(scene);
-        // 借用冲突解（brief Step 3 注）：process 借 &mut scene + &input——scene 与 pending_input
-        // 都是 self 字段，同时借 self 冲突。先 take 出 input（离开 self 借用），process 返回后 drop。
+        // 2. content_size 填充（v1d.5 §2.3：solve 后 content_size/viewport/overlap）
+        crate::scroll::refresh_content_sizes(scene);
+        // v1d.5-T10：compute_world_transforms 移到 process 后（读 scroll_pos 同帧进 world matrix）。
+        // 首帧 guard：hit_test 需有效 world_transforms，solve 后即时算一次。
+        // 后续 tick process 读上帧 world_transforms（1 帧延迟，spec §8.2 已认）。
+        if scene.world_transforms.is_empty() {
+            crate::scene::transform::compute_world_transforms(scene);
+        }
+        // 3. process（仲裁 + 拖拽跟手写 scroll_pos）
+        // 借用冲突解：process 借 &mut scene + &input——scene 与 pending_input 都是 self 字段，
+        // 同时借 self 冲突。先 take 出 input（离开 self 借用），process 返回后 drop。
         let input = std::mem::take(&mut self.pending_input);
         let mut ptr_out = self.pointer_state.process(scene, &input);
         out.append(&mut ptr_out);
-        // v1d.2：键盘事件（keydown/up + Tab 导航 + FocusIn/Out）
+        // 4. scroll.update（消费 pending_wheel + 惯性/回弹 advance）
+        let wheels = std::mem::take(&mut self.pending_wheel);
+        for w in &wheels {
+            crate::scroll::apply_wheel_to_hit(scene, *w);
+        }
+        crate::scroll::advance_all(dt, scene);
+        // 5. 键盘事件（keydown/up + Tab 导航 + FocusIn/Out）
         let keys = std::mem::take(&mut self.pending_keys);
         crate::input::process_keys(scene, &keys, &mut out);
+        // 6. compute_world_transforms（v1d.5 移此：读 scroll_pos，offset 同帧生效）
+        crate::scene::transform::compute_world_transforms(scene);
         self.last_events = out;
-        // 4. 伪类重匹配（按新 hover/active/focused 改 Node.style——视觉变本帧 render 吃到）
+        // 7. 伪类重匹配（按新 hover/active/focused 改 Node.style——视觉变本帧 render 吃到）
         rematch_pseudo_classes(scene);
-        // 5. 渲染
+        // 8. 渲染（+ 合成 scrollbar）
         build_render_nodes(scene, &self.font, &self.textures)
     }
 
@@ -423,5 +436,33 @@ mod tests {
                 crate::tween::Ease::Linear, 1.0, 1.0, 0);
         s.tick_and_render();   // 无 advance_time → dt=0 → elapsed < delay → 不推进
         assert!(s.scene.as_ref().unwrap().anim.0[0].opacity.is_none(), "dt=0 不写 override");
+    }
+
+    /// v1d.5-T10：拖拽滚动容器 → 同 tick world_transforms 已含 scroll_pos（零延迟）。
+    /// process 写 scroll_pos（drag_follow）→ compute_world_transforms 在 process 后读 scroll_pos
+    /// → world matrix 含 T(-scroll_pos) offset。
+    #[cfg(feature = "parse")]
+    #[test]
+    fn drag_follow_visible_same_frame_in_world_transforms() {
+        use crate::transform::Affine2Ext;
+        let font_path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/DejaVuSans.ttf");
+        let html = r#"<div class="scroll"><div class="content"></div></div>"#;
+        let css = r#".scroll{width:200px;height:200px;overflow:scroll;} .content{width:50px;height:400px;}"#;
+        let mut s = Stage::new(font_path, (200.0, 200.0)).unwrap();
+        s.load_inline(html, css).unwrap();
+        // 首 tick 建立 layout + content_size/overlap
+        s.tick_and_render();
+        // feed 拖拽输入（mouse touch_id=-1，dy=20 > SCROLL_THRESHOLD_MOUSE=8）
+        s.advance_time(0.016);
+        s.set_input(&[
+            crate::input::PointerEvent { kind: crate::input::PointerKind::Down, x: 25.0, y: 25.0, button: 0, pad: [0, 0], touch_id: -1 },
+            crate::input::PointerEvent { kind: crate::input::PointerKind::Move, x: 25.0, y: 45.0, button: 0, pad: [0, 0], touch_id: -1 },
+        ]);
+        s.tick_and_render();
+        // 子节点 world.apply 反映 scroll_pos（非 0）
+        let scene = s.scene.as_ref().unwrap();
+        // scroll 容器=NodeId(0)，content 子=NodeId(1)
+        let (_x, y) = scene.world_transforms[1].apply_point(0.0, 0.0);
+        assert!(y != 0.0, "拖拽同帧进 world matrix：y={}", y);
     }
 }
