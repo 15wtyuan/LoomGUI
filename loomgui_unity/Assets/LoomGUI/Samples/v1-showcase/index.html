@@ -186,7 +186,47 @@
         </div>
       </div>
       <div class="sec" id="sec-4"><div class="sec-h">§4 交互事件集</div></div>
-      <div class="sec" id="sec-5"><div class="sec-h">§5 滚动实验室</div></div>
+      <div class="sec" id="sec-5">
+        <div class="sec-h">§5 滚动实验室</div>
+        <div class="card">
+          <div class="card-h"><span class="card-t">5.1 overflow 模式</span><span class="card-x">预期: scroll/auto/hidden</span></div>
+          <div class="card-b">
+            <div class="mini" style="overflow:scroll"><div class="filler"></div></div>
+            <div class="mini" style="overflow:auto"><div class="filler"></div></div>
+            <div class="mini" style="overflow:hidden"><div class="filler"></div></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-h"><span class="card-t">5.2 overflow-x/y</span><span class="card-x">预期: 嵌套水平滚 + 轴锁</span></div>
+          <div class="card-b"><div class="hscroll"><div class="hfiller">item1</div><div class="hfiller">item2</div><div class="hfiller">item3</div><div class="hfiller">item4</div></div></div>
+        </div>
+        <div class="card">
+          <div class="card-h"><span class="card-t">5.3 惯性/回弹/滚轮</span><span class="card-x">主页面即为该体验：拖动/滚轮，松手惯性、边界回弹</span></div>
+          <div class="card-b"><span class="card-x">主 scroll-pane（#main-scroll）即本卡体验载体——拖动本体、滚轮滚动、松手后惯性滑行、触底/触顶边界回弹。</span></div>
+        </div>
+        <div class="card">
+          <div class="card-h"><span class="card-t">5.4 滚动条 + grip</span><span class="card-x">预期: 合成 thumb 可拖</span></div>
+          <div class="card-b">
+            <div class="mini" style="overflow:scroll"><div class="filler"></div></div>
+            <span class="card-x">同 5.1 的 scroll 容器，右侧合成 thumb 自动出现，拖动 thumb 可直接定位滚动位置（grip）。</span>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-h"><span class="card-t">5.5 嵌套+轴锁+仲裁</span><span class="card-x">预期: scroll-vs-drag 阈值赛跑</span></div>
+          <div class="card-b" style="flex-direction:column;gap:12px;width:100%">
+            <div class="mini" id="nested-scroll" style="overflow-y:scroll;height:200px">
+              <div class="hscroll"><div class="hfiller">h1</div><div class="hfiller">h2</div><div class="hfiller">h3</div><div class="hfiller">h4</div></div>
+              <div class="filler" draggable="true">drag me</div>
+              <div class="filler"></div>
+            </div>
+            <span class="card-x">内层竖滚内嵌水平滚 + draggable item：拖动起步时由 core 仲裁（scroll-vs-drag 阈值赛跑 + 轴锁），T7 C# 订阅 DragMove 让 item 动。</span>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-h"><span class="card-t">5.6 SetScrollPos</span><span class="card-x">预期: nav 跳转即该机制</span></div>
+          <div class="card-b"><span class="card-x">顶部 nav 按钮（§1-§8）点击后通过 SetScrollPos 跳转到对应 sec，即本卡演示的滚动定位机制。</span></div>
+        </div>
+      </div>
       <div class="sec" id="sec-6">
         <div class="sec-h">§6 文本工坊</div>
         <div class="card">
