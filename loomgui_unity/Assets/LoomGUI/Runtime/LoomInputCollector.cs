@@ -143,6 +143,39 @@ namespace LoomGUI
             }
         }
 
+        /// v1d.5-T12：采集本帧滚轮 → set_wheel_input。tick 前调；累积式（多次调合并）。
+        /// 新旧输入系统双路径（坑 28/45：滚轮用旧 Input.mouseScrollDelta 或新 Mouse.current.scroll）。
+        /// 归一 delta → ±1/格：旧 Input.mouseScrollDelta 已 ≈ ±1/格；新系统 120 像素/格除 120。
+        /// 鼠标不在 UI 上也可滚——hit test 由 Rust 侧做（只在悬停的 scroll 容器响应）。
+        public static void CollectWheel(LoomStage stage)
+        {
+            if (stage == null || stage.StagePtr == System.IntPtr.Zero) return;
+
+            float dy = 0f;
+#if ENABLE_INPUT_SYSTEM
+            var v = UnityEngine.InputSystem.Mouse.current?.scroll?.ReadValue() ?? Vector2.zero;
+            dy = v.y / 120f;  // 归一：新系统 ~120 像素/格 → ±1/格
+#else
+            dy = Input.mouseScrollDelta.y;  // 旧系统已 ≈ ±1/格
+#endif
+            if (Mathf.Approximately(dy, 0f)) return;
+
+            Vector2 screenPos;
+#if ENABLE_INPUT_SYSTEM
+            screenPos = UnityEngine.InputSystem.Mouse.current?.position?.ReadValue() ?? Vector2.zero;
+#else
+            screenPos = Input.mousePosition;
+#endif
+
+            var ss = new Vector2Int(Screen.width, Screen.height);
+            Rect sa = Screen.safeArea;
+            var pos = ScreenToDesign(screenPos, ss, stage.DesignSize, sa, stage.UseSafeArea);
+
+            var ev = new Bindings.WheelEvent { x = pos.x, y = pos.y, delta_x = 0f, delta_y = dy };
+            // 栈局部值类型直接 & 取址（CS0213：栈上已固定，无需 fixed）。
+            Native.loomgui_stage_set_wheel_input((Bindings.StageHandle*)stage.StagePtr, &ev, 1);
+        }
+
         /// 当前 modifiers 位掩码（bit0=shift/bit1=ctrl/bit2=alt）。core MOD_SHIFT/CTRL/ALT 同值。
         static byte CurrentModifiers()
         {

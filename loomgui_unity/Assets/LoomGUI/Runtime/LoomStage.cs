@@ -84,6 +84,11 @@ namespace LoomGUI
         /// stage.EventHandler.AddListener(nodeId, EventType.Click, OnBtnClick)。
         public LoomEventHandler EventHandler => _eventHandler;
 
+        /// v1d.5-T12：暴露给 LoomInputCollector.CollectWheel + demo 等内部消费者。
+        internal System.IntPtr StagePtr => (System.IntPtr)_stage;
+        internal Vector2 DesignSize => _designSize;
+        internal bool UseSafeArea => _safeArea;
+
         /// v1c.3：UI 挡住时游戏不响应点击（§10.6）。= 任一活跃槽（鼠标 + 触摸）命中非根节点。
         /// 游戏侧每帧/点击时查此 bool 决定是否消费输入（true → 游戏不响应）。
         public bool IsPointerOnUI()
@@ -107,6 +112,14 @@ namespace LoomGUI
         {
             if (_stage == null) return;
             Native.loomgui_stage_set_node_disabled(_stage, nodeId, disabled);
+        }
+
+        /// v1d.5-T11：编程滚动到指定位置。非 scroll 容器 / 越界 node → no-op（不 panic）。
+        /// animated: true → cubic-out 缓动；false → 瞬移。
+        public void SetScrollPos(uint node, float x, float y, bool animated = true)
+        {
+            if (_stage == null) return;
+            Native.loomgui_stage_set_scroll_pos(_stage, node, x, y, animated ? (byte)1 : (byte)0);
         }
 
         /// v1d.3-T10：绑定外部 GO 到 UI 节点（NativeHost-lite spec §3.7）。
@@ -515,6 +528,7 @@ namespace LoomGUI
             {
                 _inputCollector.Collect((System.IntPtr)_stage, _designSize, _safeArea);
                 _inputCollector.CollectKeys((System.IntPtr)_stage);   // v1d.2：键盘采集（tick 前）
+                LoomInputCollector.CollectWheel(this);                 // v1d.5-T12：滚轮采集（tick 前）
             }
 
             // tick → build_blob 写入 Rust 拥有缓存。v1c.4：dt 累积进 time_s（双击窗口）；用
