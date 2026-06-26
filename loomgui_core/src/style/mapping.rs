@@ -1,4 +1,4 @@
-use crate::style::resolved::{ResolvedStyle, TextAlign};
+use crate::style::resolved::{OverflowMode, ResolvedStyle, TextAlign};
 use taffy::geometry::{Rect, Size};
 use taffy::style::{Dimension, LengthPercentage, LengthPercentageAuto};
 
@@ -144,6 +144,17 @@ fn func_to_matrix(name: &str, args: &str) -> Option<Affine2> {
     }
 }
 
+/// overflow 值 → OverflowMode。未知值返回 None（宽松忽略，不报错）。
+fn parse_overflow(value: &str) -> Option<OverflowMode> {
+    match value.trim() {
+        "visible" => Some(OverflowMode::Visible),
+        "hidden" => Some(OverflowMode::Hidden),
+        "scroll" => Some(OverflowMode::Scroll),
+        "auto" => Some(OverflowMode::Auto),
+        _ => None,
+    }
+}
+
 /// 把一条 declaration 应用到 style（覆盖对应字段）。返回是否被识别。
 pub fn apply_decl(style: &mut ResolvedStyle, prop: &str, value: &str) -> bool {
     let ts = &mut style.taffy_style;
@@ -277,15 +288,23 @@ pub fn apply_decl(style: &mut ResolvedStyle, prop: &str, value: &str) -> bool {
             true
         }
         "overflow" => {
-            // v1d.5-T1 临时：仅保持 hidden 语义（两轴 Hidden）。T2 正式解析
-            // scroll/auto + overflow-x/y longhand（本任务不实现）。
-            let hidden = value.trim() == "hidden";
-            if hidden {
-                style.overflow_x = crate::style::resolved::OverflowMode::Hidden;
-                style.overflow_y = crate::style::resolved::OverflowMode::Hidden;
-            } else {
-                style.overflow_x = crate::style::resolved::OverflowMode::Visible;
-                style.overflow_y = crate::style::resolved::OverflowMode::Visible;
+            // shorthand：双轴同值。未知值宽松忽略（不动既有字段，仍返回 true）。
+            if let Some(m) = parse_overflow(value) {
+                style.overflow_x = m;
+                style.overflow_y = m;
+            }
+            true
+        }
+        "overflow-x" => {
+            // longhand：单轴 x。后于 shorthand apply 即覆盖（CSS 同 specificity 源序后写者胜）。
+            if let Some(m) = parse_overflow(value) {
+                style.overflow_x = m;
+            }
+            true
+        }
+        "overflow-y" => {
+            if let Some(m) = parse_overflow(value) {
+                style.overflow_y = m;
             }
             true
         }
@@ -438,6 +457,62 @@ mod tests {
         let mut s = ResolvedStyle::default();
         assert!(apply_decl(&mut s, "pointer-events", "auto"));
         assert!(s.touchable, "pointer-events:auto → touchable=true");
+    }
+
+    #[test]
+    fn overflow_shorthand_sets_both_axes() {
+        // overflow:scroll → overflow_x=overflow_y=Scroll
+        let mut s = ResolvedStyle::default();
+        assert!(apply_decl(&mut s, "overflow", "scroll"));
+        assert_eq!(s.overflow_x, OverflowMode::Scroll);
+        assert_eq!(s.overflow_y, OverflowMode::Scroll);
+    }
+
+    #[test]
+    fn overflow_shorthand_all_values() {
+        for (val, mode) in [
+            ("visible", OverflowMode::Visible),
+            ("hidden", OverflowMode::Hidden),
+            ("scroll", OverflowMode::Scroll),
+            ("auto", OverflowMode::Auto),
+        ] {
+            let mut s = ResolvedStyle::default();
+            assert!(apply_decl(&mut s, "overflow", val), "overflow:{} 被识别", val);
+            assert_eq!(s.overflow_x, mode, "overflow:{} → x", val);
+            assert_eq!(s.overflow_y, mode, "overflow:{} → y", val);
+        }
+    }
+
+    #[test]
+    fn overflow_xy_longhand_overrides_shorthand() {
+        // shorthand 先设双轴 hidden；longhand 后写 override 单轴
+        let mut s = ResolvedStyle::default();
+        assert!(apply_decl(&mut s, "overflow", "hidden"));
+        assert!(apply_decl(&mut s, "overflow-x", "auto"));
+        assert_eq!(s.overflow_x, OverflowMode::Auto, "overflow-x longhand 覆盖");
+        assert_eq!(s.overflow_y, OverflowMode::Hidden, "overflow-y 保持 shorthand");
+    }
+
+    #[test]
+    fn overflow_xy_longhand_y_axis() {
+        let mut s = ResolvedStyle::default();
+        assert!(apply_decl(&mut s, "overflow", "visible"));
+        assert!(apply_decl(&mut s, "overflow-y", "scroll"));
+        assert_eq!(s.overflow_x, OverflowMode::Visible, "overflow-x 保持");
+        assert_eq!(s.overflow_y, OverflowMode::Scroll, "overflow-y longhand");
+    }
+
+    #[test]
+    fn overflow_unknown_value_silently_ignored() {
+        // 未知值宽松忽略：既存字段不变（与现 overflow 解析风格一致）
+        let mut s = ResolvedStyle::default();
+        s.overflow_x = OverflowMode::Scroll;
+        s.overflow_y = OverflowMode::Auto;
+        assert!(apply_decl(&mut s, "overflow", "bogus"));
+        assert_eq!(s.overflow_x, OverflowMode::Scroll, "未知 overflow 不动 x");
+        assert_eq!(s.overflow_y, OverflowMode::Auto, "未知 overflow 不动 y");
+        assert!(apply_decl(&mut s, "overflow-x", "nonsense"));
+        assert_eq!(s.overflow_x, OverflowMode::Scroll, "未知 overflow-x 不动 x");
     }
 
     use super::parse_transform;

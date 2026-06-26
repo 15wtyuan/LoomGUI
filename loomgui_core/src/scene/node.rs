@@ -429,6 +429,29 @@ mod tests {
     }
 
     #[test]
+    fn build_clip_rect_slot_for_scroll_auto_and_single_axis() {
+        // T2 确认：overflow != Visible（任一轴）→ clip slot。覆盖 scroll/auto/单轴。
+        for (x, y, desc) in [
+            (OverflowMode::Scroll, OverflowMode::Scroll, "scroll 双轴"),
+            (OverflowMode::Auto, OverflowMode::Auto, "auto 双轴"),
+            (OverflowMode::Scroll, OverflowMode::Visible, "仅 x 轴 scroll"),
+            (OverflowMode::Visible, OverflowMode::Auto, "仅 y 轴 auto"),
+        ] {
+            let mut s = ResolvedStyle::default();
+            s.overflow_x = x;
+            s.overflow_y = y;
+            let sc = Scene::build(&[(None, NodeKind::Container, s, Vec::new(), None, false, None)]);
+            assert!(sc.nodes[0].clip_rect.is_some(), "{} → clip slot", desc);
+        }
+        // 双轴 Visible → 无 clip slot（对照）
+        let mut vis = ResolvedStyle::default();
+        vis.overflow_x = OverflowMode::Visible;
+        vis.overflow_y = OverflowMode::Visible;
+        let sc = Scene::build(&[(None, NodeKind::Container, vis, Vec::new(), None, false, None)]);
+        assert!(sc.nodes[0].clip_rect.is_none(), "双轴 Visible → 无 clip slot");
+    }
+
+    #[test]
     fn animtable_get_returns_none_for_empty_or_unset() {
         let mut t = AnimTable::default();
         t.ensure(3);
