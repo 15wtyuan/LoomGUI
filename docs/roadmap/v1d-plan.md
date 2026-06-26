@@ -78,26 +78,26 @@
 
 ## 5. 进度勾选
 
-- [ ] **v1d.1** 拖拽 + 长按 + safe-area
-  - [ ] #1 drag 状态机+事件
-  - [ ] #2 drag-vs-click 仲裁
-  - [ ] #11 onLongPress
-  - [ ] #12 safe-area
-- [ ] **v1d.2** 键盘 + 焦点 + Tab + `:focus`
-  - [ ] #3 keydown/up
-  - [ ] #6 focus/Tab/`:focus`
-- [ ] **v1d.3** transform 命中+渲染
-  - [ ] #7 scale/rotation 激活 + CSS `transform` 解析 + world_to_local + blob
-- [x] **v1d.4** GTween 时钟 + 基础 tween
+- [x] **v1d.1** 拖拽 + 长按 + safe-area（家里机 PlayMode 验，修坑 41/42/44/45）
+  - [x] #1 drag 状态机+事件
+  - [x] #2 drag-vs-click 仲裁
+  - [x] #11 onLongPress
+  - [x] #12 safe-area
+- [x] **v1d.2** 键盘 + 焦点 + Tab + `:focus`（家里机 PlayMode 验）
+  - [x] #3 keydown/up
+  - [x] #6 focus/Tab/`:focus`
+- [x] **v1d.3** transform 命中+渲染（家里机 PlayMode 验，修坑 46-49/51/52）
+  - [x] #7 scale/rotation 激活 + CSS `transform` 解析 + world_to_local + blob
+- [x] **v1d.4** GTween 时钟 + 基础 tween（家里机 PlayMode 验，修坑 50/53）
   - [x] #8 clock + TweenManager + easing
-- [ ] **v1d.5** ScrollPane + 滚动条 + 滚轮 + 手势仲裁
-  - [ ] #9 ScrollPane 核心
-  - [ ] #4 滚轮
-  - [ ] #10 手势仲裁
-  - [ ] #2 嵌套仲裁
+- [x] **v1d.5** ScrollPane + 滚动条 + 滚轮 + 手势仲裁（代码完成，待家里机 PlayMode 验，修坑 54/55）
+  - [x] #9 ScrollPane 核心
+  - [x] #4 滚轮
+  - [x] #10 手势仲裁
+  - [x] #2 嵌套仲裁
 
 ## 6. v1d 完成判定
 
-- §5 全勾（#5 IME 按 §2 默认 defer，或改 v1d.2）。
-- v1 验收 **#2**（可滚动容器：惯性+回弹+滚动条）+ **#4**（safe-area 自适应）过。
-- → **v1 ship**，进 v1e（冷帧/换页帧 FFI≤2ms 压测 + FairyBatching 实机）或 v1.x。
+- ✅ **§5 全勾**（v1d.1/.2/.3/.4/.5 全完成；#5 IME 按 §2 默认 defer 随 TextInput v1.x）。
+- v1 验收 **#2**（可滚动容器：惯性+回弹+滚动条）代码完成（v1d.5，待家里机 PlayMode 验 9 点）+ **#4**（safe-area 自适应）已过（v1d.1）。
+- → **v1 ship**（#2 家里机验收过即 ship），进 v1e（冷帧/换页帧 FFI≤2ms 压测 + FairyBatching 实机）或 v1.x（Controller/Gear/Transition/TextInput/虚拟化）。

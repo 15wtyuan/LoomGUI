@@ -153,7 +153,7 @@ impl ScrollPaneState {
 
     /// Up 后启惯性（tweening=2）。is_touch 选阈值；|v| < thresh 该轴不惯性。
     ///
-    /// **坑 46（spec 转录 bug，reviewer 抓）**：fgui ScrollPane.cs:2060 原式
+    /// **坑 54（spec 转录 bug，reviewer 抓）**：fgui ScrollPane.cs:2060 原式
     /// `v2 = Mathf.Abs(v) * _velocityScale`（_velocityScale 默认 1），即 v2 = 线性 |v|，
     /// 变量名 "v2" 误导成 v²。原 T6 brief 按 `v2 = v*v` 实现 → dur 偏长（v=2000 → 5.5s
     /// 而非 fgui 实际 ~1.7s）+ 阈值过敏（|v|>22 触发而非 fgui |v|>500）。修：v2 用 |v|。
@@ -707,7 +707,7 @@ mod tests {
         st.scroll_pos = (0.0, 0.0);
         st.velocity = (0.0, 2000.0); // |v|=2000 > PC 阈值 500
         st.begin_inertia(false); // is_touch=false (PC 阈值 500)
-                                 // 坑 46 修后：v2=|v|=2000 → dur=|log(60/2000)/log(0.967)|/60 ≈ 1.74s
+                                 // 坑 54 修后：v2=|v|=2000 → dur=|log(60/2000)/log(0.967)|/60 ≈ 1.74s
                                  // change=2000·1.74·0.4≈1387px > overlap 1000 → clamp 到 1000
                                  // 1.74s @16ms ≈ 109 步，150 步覆盖 ~2.4s > dur
         for _ in 0..150 {
