@@ -14,9 +14,113 @@
   </div>
   <div class="scroll" id="main-scroll">
     <div class="content">
-      <div class="sec" id="sec-1"><div class="sec-h">§1 元素画廊</div></div>
+      <div class="sec" id="sec-1">
+        <div class="sec-h">§1 元素画廊</div>
+        <div class="card">
+          <div class="card-h"><span class="card-t">1.1 色块矩阵</span><span class="card-x">预期: 8 色块正确呈现</span></div>
+          <div class="card-b">
+            <div class="sw" style="background-color:#1a1d2e"></div>
+            <div class="sw" style="background-color:#252839"></div>
+            <div class="sw" style="background-color:#5fb2c4"></div>
+            <div class="sw" style="background-color:#6fa66c"></div>
+            <div class="sw" style="background-color:#c2605a"></div>
+            <div class="sw" style="background-color:#e0e0e0"></div>
+            <div class="sw" style="background-color:#9aa0b4"></div>
+            <div class="sw" style="background-color:#6c7080"></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-h"><span class="card-t">1.2 img 整图</span><span class="card-x">预期: 图按宽呈现</span></div>
+          <div class="card-b">
+            <img src="icons/home.png" style="width:48px">
+            <img src="icons/home.png" style="width:64px">
+            <img src="icons/home.png" style="width:80px">
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-h"><span class="card-t">1.3 img 尺寸</span><span class="card-x">预期: px/%/auto 三模式</span></div>
+          <div class="card-b">
+            <img src="icons/eye.png" style="width:80px;height:80px">
+            <img src="icons/eye.png" style="width:50%">
+            <img src="icons/eye.png" style="width:auto">
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-h"><span class="card-t">1.4 span 文本</span><span class="card-x">预期: 文本节点</span></div>
+          <div class="card-b">
+            <span>裸文本呈现</span>
+            <div>div 文本</div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-h"><span class="card-t">1.5 button 三态</span><span class="card-x">预期: hover 青/active 按压/disabled 灰</span></div>
+          <div class="card-b">
+            <div class="btn-demo">normal</div>
+            <div class="btn-demo disabled">disabled</div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-h"><span class="card-t">1.6 NativeHost</span><span class="card-x">预期: 外部 GO 跟随 slot</span></div>
+          <div class="card-b">
+            <div id="model-slot" style="width:120px;height:120px;border:1px dashed #5fb2c4"></div>
+          </div>
+        </div>
+      </div>
       <div class="sec" id="sec-2"><div class="sec-h">§2 布局练兵场</div></div>
-      <div class="sec" id="sec-3"><div class="sec-h">§3 视觉样式板</div></div>
+      <div class="sec" id="sec-3">
+        <div class="sec-h">§3 视觉样式板</div>
+        <div class="card">
+          <div class="card-h"><span class="card-t">3.1 border</span><span class="card-x">预期: 边框样式</span></div>
+          <div class="card-b">
+            <div class="tr" style="border:2px solid #5fb2c4">solid</div>
+            <div class="tr" style="border:6px solid #6fa66c">thick</div>
+            <div class="tr" style="border:2px dashed #c2605a">dash</div>
+            <div class="tr" style="border-top:4px solid #e0e0e0">top</div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-h"><span class="card-t">3.2 opacity 阶梯</span><span class="card-x">预期: 1.0/0.7/0.4/0.2</span></div>
+          <div class="card-b">
+            <div class="op" style="opacity:1">1.0</div>
+            <div class="op" style="opacity:0.7">0.7</div>
+            <div class="op" style="opacity:0.4">0.4</div>
+            <div class="op" style="opacity:0.2">0.2</div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-h"><span class="card-t">3.3 transform</span><span class="card-x">预期: 平移/旋转/缩放/剪切</span></div>
+          <div class="card-b">
+            <div class="tr" style="transform:translate(20px,10px)">translate</div>
+            <div class="tr" style="transform:rotate(30deg)">rotate</div>
+            <div class="tr" style="transform:scale(1.4)">scale</div>
+            <div class="tr" style="transform:scale(2,1) rotate(20deg)">剪切</div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-h"><span class="card-t">3.4 文本样式全家</span><span class="card-x">预期: 各样式生效（italic skip）</span></div>
+          <div class="card-b">
+            <span style="font-size:32px">font-size:32px</span>
+            <span style="font-weight:700">font-weight:700</span>
+            <span style="letter-spacing:4px">letter-spacing:4px</span>
+            <span style="text-align:center;width:100%">text-align:center</span>
+            <span style="line-height:2;width:100%">line-height:2 上下留白</span>
+            <span class="skip">font-style: italic（v1 gap，未落地）</span>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-h"><span class="card-t">3.5 调色板</span><span class="card-x">预期: 8 色横条序列</span></div>
+          <div class="card-b">
+            <div class="sw" style="background-color:#1a1d2e"></div>
+            <div class="sw" style="background-color:#252839"></div>
+            <div class="sw" style="background-color:#5fb2c4"></div>
+            <div class="sw" style="background-color:#6fa66c"></div>
+            <div class="sw" style="background-color:#c2605a"></div>
+            <div class="sw" style="background-color:#e0e0e0"></div>
+            <div class="sw" style="background-color:#9aa0b4"></div>
+            <div class="sw" style="background-color:#6c7080"></div>
+          </div>
+        </div>
+      </div>
       <div class="sec" id="sec-4"><div class="sec-h">§4 交互事件集</div></div>
       <div class="sec" id="sec-5"><div class="sec-h">§5 滚动实验室</div></div>
       <div class="sec" id="sec-6"><div class="sec-h">§6 文本工坊</div></div>

@@ -22,3 +22,14 @@
 .warn{background-color:#c2605a;}
 .dim{background-color:#6c7080;}
 .acc{background-color:#5fb2c4;}
+
+/* §1 元素画廊 */
+.sw{width:60px;height:60px;}
+.btn-demo{background-color:#2d3148;border:1px solid #3a3f55;padding:12px 20px;color:#e0e0e0;font-size:18px;}
+.btn-demo:hover{background-color:#3a4258;border:1px solid #5fb2c4;color:#5fb2c4;}
+.btn-demo:active{background-color:#5fb2c4;transform:scale(0.96);color:#1a1d2e;}
+.btn-demo.disabled{background-color:#2d3148;opacity:0.5;color:#6c7080;}
+
+/* §3 视觉样式板 */
+.op,.tr{width:80px;height:60px;background-color:#5fb2c4;color:#1a1d2e;font-size:16px;display:flex;align-items:center;justify-content:center;}
+.skip{color:#6c7080;font-size:14px;}
