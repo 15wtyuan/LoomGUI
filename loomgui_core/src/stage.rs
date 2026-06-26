@@ -75,6 +75,7 @@ impl Stage {
         let sheet = parse_css(css)?;
         let styles = resolve_styles(&tree, &sheet);
         self.tweens.clear();   // v1d.4：旧 tween 指向失效 node_id，随 scene 重建清空
+        if let Some(scene) = self.scene.as_mut() { scene.scroll.clear(); }   // v1d.5-T4：旧 scroll 槽随 scene 重建清空（防悬空 NodeId）
         self.scene = Some(build_scene(&tree, &styles));
         Ok(())
     }
@@ -90,6 +91,7 @@ impl Stage {
         self.textures = crate::asset::build_registry(&atlas_section);
         self.atlases = atlas_section.atlases;
         self.tweens.clear();   // v1d.4：旧 tween 指向失效 node_id，随 scene 重建清空
+        if let Some(s) = self.scene.as_mut() { s.scroll.clear(); }   // v1d.5-T4：旧 scroll 槽随 scene 重建清空（防悬空 NodeId）
         self.scene = Some(scene);
         self.root_size = root_size;
         Ok(())
@@ -353,6 +355,24 @@ mod tests {
         s.set_input(&[crate::input::PointerEvent { kind: crate::input::PointerKind::Move, x: 50.0, y: 50.0, button: 0, pad: [0, 0], touch_id: -1 }]);
         s.tick_and_render();
         assert!(!s.is_pointer_on_ui(), "空 scene → false");
+    }
+
+    /// v1d.5-T4：load 时 scroll 表清空（防 reload 后旧容器 NodeId 悬空，同 tween clear）。
+    /// 塞 scroll_pos 后 reload → scroll 表为空（get 返 None）；重新 ensure 后归零。
+    #[cfg(feature = "parse")]
+    #[test]
+    fn load_clears_scroll_state() {
+        let font_path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/DejaVuSans.ttf");
+        let html = r#"<div class="c"></div>"#;
+        let css = ".c{width:200px;height:100px;overflow:scroll;}";
+        let mut s = Stage::new(font_path, (200.0, 100.0)).unwrap();
+        s.load_inline(html, css).unwrap();
+        // 手动塞 scroll_pos，模拟上一会话残留
+        s.scene.as_mut().unwrap().scroll.ensure(NodeId(0)).scroll_pos = (50.0, 50.0);
+        // reload → scroll 表应被清
+        s.load_inline(html, css).unwrap();
+        assert!(s.scene.as_ref().unwrap().scroll.get(NodeId(0)).is_none(),
+            "reload 后 scroll 表清空，旧 NodeId 槽不存在");
     }
 
     /// v1d.4：tween 经 Stage 公共 API 注册 → advance_time stash dt → tick update 写 anim + 产 complete。
