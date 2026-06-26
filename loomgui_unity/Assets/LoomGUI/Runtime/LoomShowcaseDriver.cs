@@ -12,7 +12,7 @@ namespace LoomGUI
         uint[] _navNodes = new uint[8];
 
         // === 灯阵（T7 §4）===
-        int _clickCount, _hoverCount, _dragCount, _longCount, _keyCount;
+        int _clickCount, _hoverCount, _dragCount, _longCount, _keyCount, _routeCount;
 
         void Awake()
         {
@@ -72,7 +72,8 @@ namespace LoomGUI
             SubscribeLamp("hit-longpress", EventType.LongPress, OnLongHit);
             SubscribeLamp("hit-key", EventType.KeyDown, OnKeyHit);
             // 4.3 disabled：Start 设 disabled，click 不触发。
-            _stage.SetNodeDisabled(_stage.FindNodeById("hit-disabled"), true);
+            uint dn = _stage.FindNodeById("hit-disabled");
+            if (dn != uint.MaxValue) _stage.SetNodeDisabled(dn, true);
             // 4.7 路由：outer/inner 均订阅 Click；inner 调 StopPropagation 止冒泡（outer 不触发）。
             SubscribeLamp("route-outer", EventType.Click, OnRouteOuter);
             SubscribeLamp("route-inner", EventType.Click, OnRouteInner);
@@ -97,20 +98,25 @@ namespace LoomGUI
                 0.2f, Ease.QuadOut, 0f, 0);
         }
 
-        void OnClickHit(EventContext ctx) { LightLamp("click", ++_clickCount); }
+        // 4.1 click + dblclick：双击额外多亮一盏（用 acc 色标记）。
+        void OnClickHit(EventContext ctx)
+        {
+            LightLamp("click", ++_clickCount);
+            if (ctx.isDoubleClick) LightLamp("click", ++_clickCount);   // 双击闪两下区分
+        }
         void OnHoverHit(EventContext ctx) { LightLamp("hover", ++_hoverCount); }
         void OnHoverLeave(EventContext ctx) { LightLamp("hover", ++_hoverCount); }
         void OnDragHit(EventContext ctx) { LightLamp("drag", ++_dragCount); }
         void OnLongHit(EventContext ctx) { LightLamp("longpress", ++_longCount); }
         void OnKeyHit(EventContext ctx) { LightLamp("key", ++_keyCount); }
 
-        // 4.7 路由演示：inner StopPropagation → outer 不收。
-        void OnRouteOuter(EventContext ctx) { LightLamp("hover", ++_hoverCount); }   // 外层命中（inner 未止冒泡时）
+        // 4.7 路由演示：inner StopPropagation → outer 不收。独立 lamp-route 反馈。
+        void OnRouteOuter(EventContext ctx) { LightLamp("route", ++_routeCount); }   // 外层命中（inner 未止冒泡时）
         void OnRouteInner(EventContext ctx)
         {
             ctx.StopPropagation();   // 止冒泡，outer 不触发
-            LightLamp("hover", ++_hoverCount);
+            LightLamp("route", ++_routeCount);
         }
-        void OnRoutePe(EventContext ctx) { LightLamp("hover", ++_hoverCount); }   // pointer-events:none 穿透后命中下层
+        void OnRoutePe(EventContext ctx) { LightLamp("route", ++_routeCount); }   // pointer-events:none 穿透后命中下层
     }
 }

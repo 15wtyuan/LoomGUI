@@ -188,7 +188,7 @@
       <div class="sec" id="sec-4">
         <div class="sec-h">§4 交互事件集</div>
         <div class="card">
-          <div class="card-h"><span class="card-t">4.1 click + dblclick</span><span class="card-x">预期: 单击/双击均亮灯（容器脉冲）</span></div>
+          <div class="card-h"><span class="card-t">4.1 click + dblclick</span><span class="card-x">预期: 单击亮 1 下/双击亮 2 下（容器脉冲）</span></div>
           <div class="card-b" style="flex-direction:column;gap:8px;width:100%">
             <div class="hit" id="hit-click">点我（单击+双击）</div>
             <div class="lamps" id="lamp-click">
@@ -241,16 +241,17 @@
           </div>
         </div>
         <div class="card">
-          <div class="card-h"><span class="card-t">4.7 路由 + pointer-events</span><span class="card-x">预期: bubble + StopProp + 点击穿透</span></div>
+          <div class="card-h"><span class="card-t">4.7 路由 + pointer-events</span><span class="card-x">预期: bubble + StopProp + 属性设置</span></div>
           <div class="card-b" style="flex-direction:column;gap:8px;width:100%">
+            <div class="lamps" id="lamp-route">
+              <div class="lamp"></div><div class="lamp"></div><div class="lamp"></div>
+            </div>
             <div class="outer-r" id="route-outer">
               <div class="inner-r" id="route-inner">内（StopPropagation 止冒泡）</div>
             </div>
-            <div class="pe-stack">
-              <div class="hit" id="route-pe">下层可点</div>
-              <div class="pe-none">穿透（pointer-events:none）</div>
-            </div>
-            <span class="card-x">外/内均订阅 Click；内调 StopPropagation → 外不触发。pe-none 叠在上层，pointer-events:none → 点击穿透到下层。</span>
+            <div class="hit" id="route-pe">可点（route-pe）</div>
+            <div class="pe-none">pointer-events:none 流内块（hit_test 跳过）</div>
+            <span class="card-x">pointer-events:none 节点 hit_test 跳过（点击穿透到下层）。v1 无 position:absolute 叠加，穿透叠加效果不可视，本卡演属性设置 + 路由 capture/bubble/StopPropagation。</span>
           </div>
         </div>
       </div>
