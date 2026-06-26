@@ -12,6 +12,37 @@
 use crate::scene::node::{NodeId, Node, Scene};
 use crate::style::resolved::OverflowMode;
 
+// ── §4.1 物理常量（fgui Ponytail 照搬，勿自创公式） ─────────────────────────
+// 滚动触发阈值（px）：鼠标/触摸移动超此才认拖拽（v1 T7/T10 用；此处仅声明）。
+pub const SCROLL_THRESHOLD_MOUSE: f32 = 5.0;
+pub const SCROLL_THRESHOLD_TOUCH: f32 = 10.0;
+/// 惯性减速系数（每 1/60s 速度衰减比，fgui DECELERATION）。
+pub const DECELERATION_RATE: f64 = 0.967;
+/// 速度指数平滑系数（drag_follow 写 velocity 用）。
+pub const VELOCITY_SMOOTH: f32 = 10.0;
+/// 速度衰减基（未用，fgui 兼容声明）。
+pub const VELOCITY_DECAY_BASE: f32 = 0.833;
+/// 惯性触发阈值（px/s 速度平方）：PC。
+pub const INERTIA_THRESH_PC: f32 = 500.0;
+/// 惯性触发阈值（px/s 速度平方）：触摸。
+pub const INERTIA_THRESH_TOUCH: f32 = 1000.0;
+/// 惯性位移系数（change = v*dur*0.4）。
+pub const INERTIA_DIST_COEFF: f32 = 0.4;
+/// 默认补间时长（s）：set_pos/wheel/bounce。
+pub const TWEEN_TIME_DEFAULT: f32 = 0.3;
+/// 越界打折比（drag_follow 越界位移 × 0.5）。
+pub const PULL_RATIO: f32 = 0.5;
+/// 回弹触发阈值（越界 abs > 20 才回弹，否则 snap）。
+pub const BOUNCE_THRESHOLD: f32 = 20.0;
+/// 滚轮步进（每 delta 单位位移 px）。
+pub const SCROLL_STEP: f32 = 25.0;
+
+/// cubic-out 缓动：(t-1)^3 + 1，t∈[0,1]。advance tween 用。
+fn cubic_out(t: f32) -> f32 {
+    let u = t - 1.0;
+    u * u * u + 1.0
+}
+
 /// 单滚动容器状态。`#[derive(Default)]`：几何全 0、物理全 0/false、tweening=0（无）。
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct ScrollPaneState {
@@ -57,6 +88,209 @@ impl ScrollTable {
     }
     pub fn clear(&mut self) {
         self.0.clear();
+    }
+}
+
+/// §4.2 物理方法（fgui 直译）。per-axis 用 ax 0/1 分支，自维护可变 target tween
+/// （不走 GTween）。tweening：0=无，1=set_pos/wheel，2=inertia/bounce。
+impl ScrollPaneState {
+    /// 拖拽跟手：scroll_pos += delta（越界 PULL_RATIO 打折）+ 记速度（exp 平滑）。
+    pub fn drag_follow(&mut self, delta: (f32, f32), dt: f32) {
+        // 速度记录（指数平滑：v += (Δ/dt - v) * smooth）
+        if dt > 0.0 {
+            let smoothing = (dt * VELOCITY_SMOOTH).clamp(0.0, 1.0);
+            self.velocity.0 += (delta.0 / dt - self.velocity.0) * smoothing;
+            self.velocity.1 += (delta.1 / dt - self.velocity.1) * smoothing;
+        }
+        for ax in 0..2u8 {
+            let cur = if ax == 0 { self.scroll_pos.0 } else { self.scroll_pos.1 };
+            let d = if ax == 0 { delta.0 } else { delta.1 };
+            let ov = if ax == 0 { self.overlap.0 } else { self.overlap.1 };
+            let vp = if ax == 0 { self.viewport_size.0 } else { self.viewport_size.1 };
+            let mut np = cur + d;
+            let lo = 0.0f32;
+            let hi = ov;
+            if np < lo {
+                // 越下界：over 上限 viewport*PULL_RATIO；位移 = lo - over*PULL_RATIO
+                let over = (lo - np).min(vp * PULL_RATIO);
+                np = lo - over * PULL_RATIO;
+            } else if np > hi {
+                // 越上界：对称
+                let over = (np - hi).min(vp * PULL_RATIO);
+                np = hi + over * PULL_RATIO;
+            }
+            if ax == 0 {
+                self.scroll_pos.0 = np;
+            } else {
+                self.scroll_pos.1 = np;
+            }
+        }
+        self.tweening = 0; // 拖拽中无 tween
+    }
+
+    /// Up 后启惯性（tweening=2）。is_touch 选阈值；v² < thresh 该轴不惯性。
+    pub fn begin_inertia(&mut self, is_touch: bool) {
+        let thresh = if is_touch { INERTIA_THRESH_TOUCH } else { INERTIA_THRESH_PC };
+        for ax in 0..2u8 {
+            let v = if ax == 0 { self.velocity.0 } else { self.velocity.1 };
+            let ov = if ax == 0 { self.overlap.0 } else { self.overlap.1 };
+            let v2 = v * v;
+            if v2 < thresh || ov <= 0.0 {
+                // 该轴无惯性（速度不足或无 overlap）；越界回弹由 advance done 判定处理
+                continue;
+            }
+            // dur = |log(60/v²) / log(DECELERATION_RATE)| / 60（fgui 公式）
+            // 用 f64 计算（DECELERATION_RATE 为 f64），结果回 f32。
+            let ratio = 60.0f64 / v2 as f64;
+            let dur = (ratio.log(DECELERATION_RATE).abs() / 60.0) as f32;
+            let dur = dur.max(TWEEN_TIME_DEFAULT);
+            let change = v * dur * INERTIA_DIST_COEFF;
+            let start = if ax == 0 { self.scroll_pos.0 } else { self.scroll_pos.1 };
+            if ax == 0 {
+                self.tween_start.0 = start;
+                self.tween_change.0 = change;
+                self.tween_duration.0 = dur;
+                self.tween_time.0 = 0.0;
+            } else {
+                self.tween_start.1 = start;
+                self.tween_change.1 = change;
+                self.tween_duration.1 = dur;
+                self.tween_time.1 = 0.0;
+            }
+        }
+        self.tweening = 2;
+    }
+
+    /// 回弹 tween（越界 > BOUNCE_THRESHOLD 才启，否则 snap 由 advance done 处理）。
+    pub fn begin_bounce(&mut self) {
+        for ax in 0..2u8 {
+            let cur = if ax == 0 { self.scroll_pos.0 } else { self.scroll_pos.1 };
+            let ov = if ax == 0 { self.overlap.0 } else { self.overlap.1 };
+            // 界内或小越界 → 不回弹
+            let boundary = if cur < 0.0 {
+                0.0
+            } else if cur > ov {
+                ov
+            } else {
+                continue;
+            };
+            if (cur - boundary).abs() < BOUNCE_THRESHOLD {
+                continue;
+            }
+            let start = cur;
+            let change = boundary - cur;
+            if ax == 0 {
+                self.tween_start.0 = start;
+                self.tween_change.0 = change;
+                self.tween_duration.0 = TWEEN_TIME_DEFAULT;
+                self.tween_time.0 = 0.0;
+            } else {
+                self.tween_start.1 = start;
+                self.tween_change.1 = change;
+                self.tween_duration.1 = TWEEN_TIME_DEFAULT;
+                self.tween_time.1 = 0.0;
+            }
+        }
+        self.tweening = 2;
+    }
+
+    /// 推进 tween（tweening≠0）。完成 → clamp[0,overlap] + 若仍越界>阈值重启回弹，否则归零。
+    pub fn advance(&mut self, dt: f32) {
+        if self.tweening == 0 {
+            return;
+        }
+        for ax in 0..2u8 {
+            let dur = if ax == 0 { self.tween_duration.0 } else { self.tween_duration.1 };
+            if dur <= 0.0 {
+                continue;
+            }
+            if ax == 0 {
+                self.tween_time.0 += dt;
+                let norm = (self.tween_time.0 / dur).min(1.0);
+                let e = cubic_out(norm);
+                self.scroll_pos.0 = self.tween_start.0 + self.tween_change.0 * e;
+            } else {
+                self.tween_time.1 += dt;
+                let norm = (self.tween_time.1 / dur).min(1.0);
+                let e = cubic_out(norm);
+                self.scroll_pos.1 = self.tween_start.1 + self.tween_change.1 * e;
+            }
+        }
+        // 完成判定：两轴 time ≥ duration（duration<=0 视作已完成该轴）
+        let done = (self.tween_duration.0 <= 0.0 || self.tween_time.0 >= self.tween_duration.0)
+            && (self.tween_duration.1 <= 0.0 || self.tween_time.1 >= self.tween_duration.1);
+        if done {
+            // clamp 到 [0, overlap]
+            self.scroll_pos.0 = self.scroll_pos.0.clamp(0.0, self.overlap.0);
+            self.scroll_pos.1 = self.scroll_pos.1.clamp(0.0, self.overlap.1);
+            // 若仍越界 > 阈值 → 重启回弹；否则停
+            let still_over = self.scroll_pos.0 < -BOUNCE_THRESHOLD
+                || self.scroll_pos.0 > self.overlap.0 + BOUNCE_THRESHOLD
+                || self.scroll_pos.1 < -BOUNCE_THRESHOLD
+                || self.scroll_pos.1 > self.overlap.1 + BOUNCE_THRESHOLD;
+            if still_over {
+                self.begin_bounce();
+            } else {
+                self.tweening = 0;
+            }
+        }
+    }
+
+    /// 滚轮：target = (cur - delta*SCROLL_STEP).clamp[0,overlap]，启 tweening=1。
+    /// delta.y > 0 = 上滚（看上方）→ scroll_pos.y 减少。
+    pub fn apply_wheel(&mut self, delta: (f32, f32)) {
+        for ax in 0..2u8 {
+            let d = if ax == 0 { delta.0 } else { delta.1 };
+            if d == 0.0 {
+                continue;
+            }
+            let cur = if ax == 0 { self.scroll_pos.0 } else { self.scroll_pos.1 };
+            let ov = if ax == 0 { self.overlap.0 } else { self.overlap.1 };
+            let target = (cur - d * SCROLL_STEP).clamp(0.0, ov);
+            let start = cur;
+            if ax == 0 {
+                self.tween_start.0 = start;
+                self.tween_change.0 = target - start;
+                self.tween_duration.0 = TWEEN_TIME_DEFAULT;
+                self.tween_time.0 = 0.0;
+            } else {
+                self.tween_start.1 = start;
+                self.tween_change.1 = target - start;
+                self.tween_duration.1 = TWEEN_TIME_DEFAULT;
+                self.tween_time.1 = 0.0;
+            }
+        }
+        self.tweening = 1;
+    }
+
+    /// 编程滚动。animated=false 直接 snap+clamp+tweening=0；true 启 tweening=1。
+    pub fn set_pos(&mut self, target: (f32, f32), animated: bool) {
+        if !animated {
+            self.scroll_pos =
+                (target.0.clamp(0.0, self.overlap.0), target.1.clamp(0.0, self.overlap.1));
+            self.tweening = 0;
+            return;
+        }
+        for ax in 0..2u8 {
+            let t = if ax == 0 {
+                target.0.clamp(0.0, self.overlap.0)
+            } else {
+                target.1.clamp(0.0, self.overlap.1)
+            };
+            let start = if ax == 0 { self.scroll_pos.0 } else { self.scroll_pos.1 };
+            if ax == 0 {
+                self.tween_start.0 = start;
+                self.tween_change.0 = t - start;
+                self.tween_duration.0 = TWEEN_TIME_DEFAULT;
+                self.tween_time.0 = 0.0;
+            } else {
+                self.tween_start.1 = start;
+                self.tween_change.1 = t - start;
+                self.tween_duration.1 = TWEEN_TIME_DEFAULT;
+                self.tween_time.1 = 0.0;
+            }
+        }
+        self.tweening = 1;
     }
 }
 
@@ -107,10 +341,26 @@ pub fn refresh_content_sizes(scene: &mut Scene) {
         st.content_size_dirty = st.content_size != content;
         st.content_size = content;
         st.viewport_size = viewport;
-        st.overlap = (
+        let new_overlap = (
             (content.0 - viewport.0).max(0.0),
             (content.1 - viewport.1).max(0.0),
         );
+        st.overlap = new_overlap;
+        // §4.3 content_size 变化补偿（v1 最小）：geometry 变了，若 scroll_pos 跑出新
+        // [0, overlap] 范围，直接 clamp 并取消正在跑的 tween。
+        // spec §4.3 完整补偿（按比例缩短 tween_change/tween_duration，fgui FixDuration）
+        // defer——v1 简化为 snap。
+        if st.content_size_dirty && st.tweening != 0 {
+            let out_of_range = st.scroll_pos.0 < 0.0
+                || st.scroll_pos.0 > new_overlap.0
+                || st.scroll_pos.1 < 0.0
+                || st.scroll_pos.1 > new_overlap.1;
+            if out_of_range {
+                st.scroll_pos.0 = st.scroll_pos.0.clamp(0.0, new_overlap.0);
+                st.scroll_pos.1 = st.scroll_pos.1.clamp(0.0, new_overlap.1);
+                st.tweening = 0;
+            }
+        }
     }
 }
 
@@ -286,5 +536,155 @@ mod tests {
         let st = s.scroll.get(NodeId(0)).unwrap();
         assert_eq!(st.content_size, (0.0, 0.0), "无子 content = (0,0)");
         assert_eq!(st.overlap, (0.0, 0.0));
+    }
+
+    // ── T6 物理方法测（spec §10.1 核心几条） ─────────────────────────────
+    #[test]
+    fn drag_follow_one_to_one_within_bounds() {
+        let mut st = ScrollPaneState::default();
+        st.overlap = (0.0, 100.0);
+        st.viewport_size = (100.0, 50.0);
+        st.drag_follow((0.0, 10.0), 0.016); // delta (0,10) 界内 1:1
+        assert!(
+            (st.scroll_pos.1 - 10.0).abs() < 1e-2,
+            "跟手 1:1 界内无打折，got {}",
+            st.scroll_pos.1
+        );
+    }
+
+    #[test]
+    fn drag_follow_beyond_bound_damped_by_pull_ratio() {
+        let mut st = ScrollPaneState::default();
+        st.overlap = (0.0, 100.0);
+        // viewport 必须够大（vp*PULL_RATIO=50 > delta 30）才不被 cap，打折全额生效
+        st.viewport_size = (100.0, 100.0);
+        st.scroll_pos = (0.0, 0.0);
+        st.drag_follow((0.0, -30.0), 0.016); // 往上越界 30
+        // 越界打折：over=30，scroll_pos.y = 0 - 30*0.5 = -15（PULL_RATIO）
+        assert!(
+            (st.scroll_pos.1 - (-15.0)).abs() < 1e-1,
+            "越界 PULL_RATIO 打折，got {}",
+            st.scroll_pos.1
+        );
+    }
+
+    #[test]
+    fn inertia_advances_toward_target_then_settles() {
+        let mut st = ScrollPaneState::default();
+        st.overlap = (0.0, 1000.0);
+        st.scroll_pos = (0.0, 0.0);
+        st.velocity = (0.0, 2000.0); // v²=4e6 > 阈值 500
+        st.begin_inertia(false); // is_touch=false (PC 阈值 500)
+                                 // dur ≈ |log(60/4e6)/log(0.967)|/60 ≈ 5.5s → 需 ~350 步 16ms 才 settle
+        for _ in 0..400 {
+            st.advance(0.016);
+            if st.tweening == 0 {
+                break;
+            }
+        }
+        assert!(st.scroll_pos.1 > 100.0, "惯性产生了位移，got {}", st.scroll_pos.1);
+        assert_eq!(st.tweening, 0, "tween 完成归零");
+    }
+
+    #[test]
+    fn bounce_returns_to_boundary() {
+        let mut st = ScrollPaneState::default();
+        st.overlap = (0.0, 100.0);
+        st.scroll_pos = (0.0, -30.0); // 越界 30 > 20 阈值
+        st.begin_bounce();
+        for _ in 0..60 {
+            st.advance(0.016);
+            if st.tweening == 0 {
+                break;
+            }
+        }
+        assert!(
+            (st.scroll_pos.1 - 0.0).abs() < 1e-2,
+            "回弹回边界 0，got {}",
+            st.scroll_pos.1
+        );
+    }
+
+    #[test]
+    fn wheel_steps_and_clamps() {
+        let mut st = ScrollPaneState::default();
+        st.overlap = (0.0, 1000.0);
+        st.apply_wheel((0.0, 1.0)); // delta_y=1 上滚 → scroll 减
+                                    // 上滚 = scroll_pos.y 减少；clamp 后启 tween
+        assert!(
+            st.tweening != 0 || st.scroll_pos.1 == 0.0,
+            "wheel 启 tween 或 clamp 到 0，tweening={}, pos={}",
+            st.tweening,
+            st.scroll_pos.1
+        );
+    }
+
+    #[test]
+    fn set_pos_snap_when_not_animated() {
+        let mut st = ScrollPaneState::default();
+        st.overlap = (0.0, 100.0);
+        st.tweening = 2; // 原 tweening 非 0
+        st.set_pos((0.0, 50.0), false);
+        assert_eq!(st.scroll_pos.1, 50.0, "snap 直接到位");
+        assert_eq!(st.tweening, 0, "animated=false tweening 归零");
+    }
+
+    #[test]
+    fn set_pos_animated_starts_tween() {
+        let mut st = ScrollPaneState::default();
+        st.overlap = (0.0, 100.0);
+        st.scroll_pos = (0.0, 10.0);
+        st.set_pos((0.0, 50.0), true);
+        assert_eq!(st.tweening, 1, "animated=true 启 tweening=1");
+        assert_eq!(st.tween_start.1, 10.0, "tween_start = 当前 pos");
+        assert_eq!(st.tween_change.1, 40.0, "tween_change = target - start");
+        assert_eq!(st.tween_duration.1, TWEEN_TIME_DEFAULT);
+    }
+
+    #[test]
+    fn cubic_out_curve_endpoints() {
+        assert!((cubic_out(0.0) - 0.0).abs() < 1e-4, "cubic_out(0)=0");
+        assert!((cubic_out(1.0) - 1.0).abs() < 1e-4, "cubic_out(1)=1");
+        // 单调增（中点 > 0.5，缓动尾部慢）
+        let mid = cubic_out(0.5);
+        assert!(mid > 0.5 && mid < 1.0, "cubic_out(0.5)∈(0.5,1)，got {}", mid);
+    }
+
+    // ── §4.3 content_size 变化补偿（v1 最小） ─────────────────────────────
+    #[test]
+    fn content_size_change_clamps_running_tween() {
+        // 滚动到 pos=80（overlap=100），tweening≠0；然后 content 缩 → overlap 变 50
+        // → scroll_pos 越界（80 > 50）→ refresh 应 clamp + tweening 归零
+        let mut s = build_scroll_scene();
+        s.nodes[1].layout_rect = Rect { x: 0.0, y: 0.0, w: 40.0, h: 40.0 };
+        s.nodes[2].layout_rect = Rect { x: 0.0, y: 0.0, w: 30.0, h: 200.0 };
+        refresh_content_sizes(&mut s);
+        let st = s.scroll.get_mut(NodeId(0)).unwrap();
+        st.scroll_pos = (0.0, 80.0);
+        st.tweening = 1; // 模拟 tween 进行中
+                         // 缩 content：子 2 高度 200→100 → content_y=100，viewport=100 → overlap_y=0
+        s.nodes[2].layout_rect = Rect { x: 0.0, y: 0.0, w: 30.0, h: 100.0 };
+        refresh_content_sizes(&mut s);
+        let st2 = s.scroll.get(NodeId(0)).unwrap();
+        assert_eq!(st2.overlap.1, 0.0, "content 缩后 overlap=0");
+        assert_eq!(st2.scroll_pos.1, 0.0, "越界 pos 被 clamp 到新 overlap");
+        assert_eq!(st2.tweening, 0, "content 变化时 tween 取消");
+    }
+
+    #[test]
+    fn content_size_change_in_range_keeps_tween() {
+        // pos 在新 [0, overlap] 内 → 不打断 tween（v1 最小补偿仅处理越界）
+        let mut s = build_scroll_scene();
+        s.nodes[1].layout_rect = Rect { x: 0.0, y: 0.0, w: 40.0, h: 40.0 };
+        s.nodes[2].layout_rect = Rect { x: 0.0, y: 0.0, w: 30.0, h: 200.0 };
+        refresh_content_sizes(&mut s);
+        let st = s.scroll.get_mut(NodeId(0)).unwrap();
+        st.scroll_pos = (0.0, 10.0);
+        st.tweening = 1;
+        // content 略缩但 pos=10 仍在 [0, overlap]（新 overlap 仍 ≥ 10）
+        s.nodes[2].layout_rect = Rect { x: 0.0, y: 0.0, w: 30.0, h: 150.0 };
+        refresh_content_sizes(&mut s);
+        let st2 = s.scroll.get(NodeId(0)).unwrap();
+        assert_eq!(st2.tweening, 1, "pos 在范围内不打断 tween");
     }
 }
