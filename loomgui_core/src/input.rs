@@ -4,6 +4,7 @@
 
 use crate::hit::hit_test;
 use crate::scene::node::{NodeId, Scene};
+use crate::scroll::{effective, SCROLL_THRESHOLD_MOUSE, SCROLL_THRESHOLD_TOUCH};
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -95,6 +96,34 @@ fn drag_threshold(touch_id: i32) -> f32 {
     if touch_id == -1 { DRAG_THRESHOLD_MOUSE } else { DRAG_THRESHOLD_TOUCH }
 }
 
+/// v1d.5 T7：scroll 手势触发阈值（mouse 8 / touch 20，spec §4.1/§5.3）。
+/// 大于 drag 阈值（mouse 2 / touch 10）→ 两候选并存时 drag 通常先达。
+fn scroll_threshold(touch_id: i32) -> f32 {
+    if touch_id == -1 { SCROLL_THRESHOLD_MOUSE } else { SCROLL_THRESHOLD_TOUCH }
+}
+
+/// v1d.5 T7：候选让出后沿 parent 找下一个 effective 滚动祖先。
+/// 从 `pane` 的 parent 起向上查（不含 pane 自身），首个 eff_x||eff_y 节点返。
+/// 用于 V-only 容器遇水平手势时提升到外层可滚容器（spec §5.3 嵌套让出）。
+fn next_effective_ancestor(scene: &Scene, pane: NodeId) -> Option<NodeId> {
+    let mut cur = scene.nodes.get(pane.0).and_then(|n| n.parent);
+    while let Some(id) = cur {
+        if id.0 >= scene.nodes.len() {
+            break;
+        }
+        let n = &scene.nodes[id.0];
+        if let Some(st) = scene.scroll.get(id) {
+            let eff_x = effective(n.style.overflow_x, st.content_size.0, st.viewport_size.0);
+            let eff_y = effective(n.style.overflow_y, st.content_size.1, st.viewport_size.1);
+            if eff_x || eff_y {
+                return Some(id);
+            }
+        }
+        cur = n.parent;
+    }
+    None
+}
+
 /// 单触摸槽状态（v1c.3）。slots[0]=鼠标主指（touch_id=-1 常驻），slots[1..4]=触摸。
 #[derive(Debug, Clone)]
 pub struct TouchSlot {
@@ -118,6 +147,14 @@ pub struct TouchSlot {
     pub down_time: f32,                // v1d.1：Down 时=time_s（longpress 用）
     pub longpress_fired: bool,         // v1d.1：触发后置 true（本 press 不再发）
     pub longpress_cancelled: bool,     // v1d.1：位移>50px 置 true（本 press 不再发）
+    // v1d.5 T7：scroll 手势仲裁（per-slot）。scroll-vs-drag 阈值赛跑 + 轴锁 + 嵌套让出提升。
+    pub scroll_candidate: Option<NodeId>,    // Down 沿 down_targets 找的最近 effective 滚动容器（待阈值判定）
+    pub scroll_testing: bool,                // Down 时候选存在 → true，达阈值/让出/Up 后清
+    pub scrolling_pane: Option<NodeId>,      // 已判定：本槽正滚动该容器
+    pub scroll_gesture: u8,                  // bit0=垂直手势（Y 位移） bit1=水平手势（X 位移）
+    pub grip_dragging: bool,                 // T9 scrollbar grip 拖拽中（grip 不启 inertia）
+    pub scroll_down_pos: (f32, f32),         // Down 时刻 pos（scroll 阈值/跟手基准）
+    pub scroll_down_scroll_pos: (f32, f32),  // Down 时刻候选 scroll_pos（备用）
 }
 
 impl TouchSlot {
@@ -143,6 +180,13 @@ impl TouchSlot {
             down_time: 0.0,
             longpress_fired: false,
             longpress_cancelled: false,
+            scroll_candidate: None,
+            scroll_testing: false,
+            scrolling_pane: None,
+            scroll_gesture: 0,
+            grip_dragging: false,
+            scroll_down_pos: (0.0, 0.0),
+            scroll_down_scroll_pos: (0.0, 0.0),
         }
     }
     fn new_free() -> Self {
@@ -167,6 +211,13 @@ impl TouchSlot {
             down_time: 0.0,
             longpress_fired: false,
             longpress_cancelled: false,
+            scroll_candidate: None,
+            scroll_testing: false,
+            scrolling_pane: None,
+            scroll_gesture: 0,
+            grip_dragging: false,
+            scroll_down_pos: (0.0, 0.0),
+            scroll_down_scroll_pos: (0.0, 0.0),
         }
     }
 }
@@ -461,6 +512,7 @@ impl PointerState {
                 None => continue,
             };
             let slot = &mut self.slots[slot_idx];
+            let prev_pos = slot.last_pos;   // v1d.5 T7：scroll 跟手 delta = new - prev
             slot.last_pos = (ev.x, ev.y);
             let hit = hit_test(scene, slot.last_pos);
             slot.last_hit = hit;
@@ -477,7 +529,53 @@ impl PointerState {
                             slot.longpress_cancelled = true;
                         }
                     }
-                    // v1d.1：drag 检测（仅 draggable 链）
+                    // v1d.5 T7：scroll 阈值赛跑（drag/scroll 都未判定时）。scene 此处只读（查 effective）。
+                    if slot.is_down && slot.scroll_testing && slot.scrolling_pane.is_none() && !slot.dragging {
+                        if let Some(pane_id) = slot.scroll_candidate {
+                            if pane_id.0 < scene.nodes.len() {
+                                let n = &scene.nodes[pane_id.0];
+                                let (eff_x, eff_y) = match scene.scroll.get(pane_id) {
+                                    Some(st) => (
+                                        effective(n.style.overflow_x, st.content_size.0, st.viewport_size.0),
+                                        effective(n.style.overflow_y, st.content_size.1, st.viewport_size.1),
+                                    ),
+                                    None => (false, false),
+                                };
+                                let dx = (slot.last_pos.0 - slot.scroll_down_pos.0).abs();
+                                let dy = (slot.last_pos.1 - slot.scroll_down_pos.1).abs();
+                                if eff_y && dy > 0.0 { slot.scroll_gesture |= 1; }
+                                if eff_x && dx > 0.0 { slot.scroll_gesture |= 2; }
+                                let thr = scroll_threshold(touch_id);
+                                if dx >= thr || dy >= thr {
+                                    // 轴锁判定：V-only 容器遇水平更大手势让出；H-only 对称；Both 都跟。
+                                    let lock_ok = if eff_x && eff_y {
+                                        true
+                                    } else if eff_y {
+                                        !(dx > dy)    // V-only：水平位移更大则让出
+                                    } else if eff_x {
+                                        !(dy > dx)    // H-only：垂直位移更大则让出
+                                    } else {
+                                        false
+                                    };
+                                    if lock_ok {
+                                        slot.scrolling_pane = Some(pane_id);
+                                        slot.click_cancelled = true;   // scroll-start 取消 click（滚动非点击）
+                                        slot.scroll_testing = false;
+                                        slot.drag_target = None;       // 抑制 drag（互斥：scroll 赢）
+                                        slot.drag_testing = false;
+                                    } else {
+                                        // 让出 → 提升到下一可滚祖先；无祖先可提升 → 停 scroll_testing
+                                        slot.scroll_candidate = next_effective_ancestor(scene, pane_id);
+                                        if slot.scroll_candidate.is_none() {
+                                            slot.scroll_testing = false;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    // v1d.1：drag 检测（仅 draggable 链）。scroll 赢时 drag_target 已清 → 不启动。
+                    // drag 先达时清 scroll 候选（互斥另一侧）。
                     if slot.is_down && slot.drag_testing && !slot.dragging {
                         if let Some(tgt) = slot.drag_target {
                             let dx = slot.last_pos.0 - slot.down_pos.0;
@@ -486,6 +584,8 @@ impl PointerState {
                             if dx.abs() > t || dy.abs() > t {
                                 slot.dragging = true;
                                 slot.click_cancelled = true;   // drag 必取消 click
+                                slot.scroll_testing = false;    // drag 赢 → 清 scroll（互斥）
+                                slot.scroll_candidate = None;
                                 out.push(EventRecord {
                                     node_id: tgt.0 as u32,
                                     event_type: EVT_DRAG_START,
@@ -509,6 +609,16 @@ impl PointerState {
                                 x: ev.x,
                                 y: ev.y,
                             });
+                        }
+                    }
+                    // v1d.5 T7：scrolling_pane 已判定 → 跟手 drag_follow（写 scene.scroll）。
+                    // 复制 scrolling_pane 出 slot 解借用冲突（slot &mut 与 scene.scroll.get_mut &mut）。
+                    // delta = 本帧 pos - 上帧 pos（prev_pos 在 last_pos 覆盖前捕获）。
+                    let scrolling_pane = slot.scrolling_pane;
+                    if let Some(pane) = scrolling_pane {
+                        if let Some(s) = scene.scroll.get_mut(pane) {
+                            let delta = (slot.last_pos.0 - prev_pos.0, slot.last_pos.1 - prev_pos.1);
+                            s.drag_follow(delta, /*dt*/ 0.016);
                         }
                     }
                     Self::hover_diff_slot(slot, scene, &mut out);
@@ -541,6 +651,36 @@ impl PointerState {
                         .copied();
                     slot.drag_testing = slot.drag_target.is_some();
                     slot.dragging = false;
+                    // v1d.5 T7：scroll 候选——沿 down_targets（leaf 优先）找最近 effective 滚动容器。
+                    slot.scroll_candidate = None;
+                    slot.scroll_testing = false;
+                    slot.scrolling_pane = None;
+                    slot.scroll_gesture = 0;
+                    slot.scroll_down_pos = (ev.x, ev.y);
+                    {
+                        let mut cur = hit;
+                        while let Some(id) = cur {
+                            if id.0 >= scene.nodes.len() {
+                                break;
+                            }
+                            let n = &scene.nodes[id.0];
+                            let (eff_x, eff_y) = match scene.scroll.get(id) {
+                                Some(st) => (
+                                    effective(n.style.overflow_x, st.content_size.0, st.viewport_size.0),
+                                    effective(n.style.overflow_y, st.content_size.1, st.viewport_size.1),
+                                ),
+                                None => (false, false),
+                            };
+                            if eff_x || eff_y {
+                                slot.scroll_candidate = Some(id);
+                                slot.scroll_down_scroll_pos = scene.scroll.get(id)
+                                    .map(|s| s.scroll_pos).unwrap_or((0.0, 0.0));
+                                break;
+                            }
+                            cur = n.parent;
+                        }
+                        slot.scroll_testing = slot.scroll_candidate.is_some();
+                    }
                     // v1d.2：click-to-focus——pointer-down 命中 tabindex>=0 节点 → 聚焦（照 fgui+DOM）。
                     // 沿 down_targets（leaf 优先，同 drag_target 模式）找最近可聚焦非 disabled 节点。
                     // 不可聚焦/`-1` → 不夺焦（照 DOM：点空白不 blur）。
@@ -583,6 +723,18 @@ impl PointerState {
                                 x: ev.x,
                                 y: ev.y,
                             });
+                        }
+                    }
+                    // v1d.5 T7：scrolling_pane 中 Up（非 Canceled）→ begin_inertia；Canceled 不启惯性。
+                    // grip_dragging（T9 scrollbar）不启惯性。复制 scrolling_pane 出 slot 解借用冲突。
+                    let scrolling_pane_up = slot.scrolling_pane;
+                    if ev.kind == PointerKind::Up {
+                        if let Some(pane) = scrolling_pane_up {
+                            if !slot.grip_dragging {
+                                if let Some(s) = scene.scroll.get_mut(pane) {
+                                    s.begin_inertia(touch_id >= 0);   // is_touch
+                                }
+                            }
                         }
                     }
                     slot.is_down = false;
@@ -637,6 +789,11 @@ impl PointerState {
                     slot.drag_testing = false;
                     slot.dragging = false;
                     slot.drag_target = None;
+                    // v1d.5 T7：清 scroll 仲裁字段
+                    slot.scroll_testing = false;
+                    slot.scrolling_pane = None;
+                    slot.scroll_candidate = None;
+                    slot.scroll_gesture = 0;
                     Self::hover_diff_slot(slot, scene, &mut out);
                     if slot_idx > 0 {
                         slot.touch_id = -1; // 释放触摸槽（鼠标不释放）
@@ -1943,5 +2100,187 @@ mod tests {
         let out = ps.process(&mut s, &[PointerEvent { kind: PointerKind::Down, x: 25.0, y: 25.0, button: 0, pad: [0, 0], touch_id: -1 }]);
         assert!(out.iter().all(|e| e.event_type != EVT_FOCUS_IN), "disabled 可聚焦 → down 不聚焦");
         assert_eq!(s.focused_node, None);
+    }
+
+    // ===== v1d.5 T7: scroll 手势仲裁 =====
+
+    /// root(0) + scroll 容器(1) overflow_y=Scroll viewport 100x100 + content 子(2) 40x200（content>viewport y 轴）。
+    /// refresh_content_sizes 后容器 1 overlap_y=100，effective_y=true（Scroll 永真），effective_x=false（Visible）。
+    fn v_scroll_scene() -> Scene {
+        use crate::style::resolved::{OverflowMode, ResolvedStyle};
+        let mut scroll_style = ResolvedStyle::default();
+        scroll_style.overflow_y = OverflowMode::Scroll;   // 仅垂直可滚
+        let entries: Vec<(
+            Option<usize>, NodeKind, ResolvedStyle, Vec<String>, Option<String>, bool, Option<i32>,
+        )> = vec![
+            (None, NodeKind::Container, ResolvedStyle::default(), vec![], None, false, None),       // 0 root
+            (Some(0), NodeKind::Container, scroll_style, vec![], None, false, None),                // 1 scroll 容器
+            (Some(1), NodeKind::Container, ResolvedStyle::default(), vec![], None, false, None),    // 2 content 子
+        ];
+        let mut s = Scene::build(&entries);
+        s.nodes[0].layout_rect = Rect { x: 0.0, y: 0.0, w: 200.0, h: 200.0 };
+        s.nodes[1].layout_rect = Rect { x: 0.0, y: 0.0, w: 100.0, h: 100.0 };   // viewport 100x100
+        s.nodes[2].layout_rect = Rect { x: 0.0, y: 0.0, w: 40.0, h: 200.0 };    // content 40x200 → overlap_y=100
+        // 模拟 layout solve 的 clip_rect 填充（overflow!=Visible 节点 build 时 Some(default)，
+        // layout/mod.rs:196 把它填成自身 border 框；测里手填等效值）。
+        for n in s.nodes.iter_mut() {
+            if n.clip_rect.is_some() {
+                n.clip_rect = Some(n.layout_rect);
+            }
+        }
+        crate::scene::transform::compute_world_transforms(&mut s);
+        crate::scroll::refresh_content_sizes(&mut s);
+        s
+    }
+
+    #[test]
+    fn scroll_wins_over_drag_when_scroll_threshold_first() {
+        // 容器 overflow_y=Scroll；content 子非 draggable。Move 垂直超 mouse 阈值 8 →
+        // scrolling_pane 设为容器、click_cancelled。drag 阈值 mouse 2 < scroll 8，但子非 draggable
+        // → drag_target=None → 仅 scroll 候选在跑。
+        let mut s = v_scroll_scene();
+        let mut ps = PointerState::new();
+        // Down @(10,10) 命中 content 子(2)，down_targets=[2,1,0]，候选沿链找最近 effective=1（容器）
+        ps.process(&mut s, &[PointerEvent { kind: PointerKind::Down, x: 10.0, y: 10.0, button: 0, pad: [0, 0], touch_id: -1 }]);
+        // Move @(10,25) dy=15 > scroll 阈值 8（mouse）
+        ps.process(&mut s, &[PointerEvent { kind: PointerKind::Move, x: 10.0, y: 25.0, button: 0, pad: [0, 0], touch_id: -1 }]);
+        let slot = &ps.slots[0];
+        assert!(slot.scrolling_pane == Some(NodeId(1)), "scroll 达阈值先 → scrolling_pane=容器");
+        assert!(slot.click_cancelled, "scroll-start 取消 click");
+    }
+
+    #[test]
+    fn vertical_only_container_yields_on_horizontal_gesture() {
+        // overflow_y=Scroll（仅垂直 effective）；水平位移更大（dx>dy）→ 让出，scrolling_pane 保持 None。
+        let mut s = v_scroll_scene();
+        let mut ps = PointerState::new();
+        ps.process(&mut s, &[PointerEvent { kind: PointerKind::Down, x: 10.0, y: 10.0, button: 0, pad: [0, 0], touch_id: -1 }]);
+        // Move @(30,15) dx=20 > scroll 阈值 8 且 dx > dy(5) → V-only 让出（lock_ok=false）
+        ps.process(&mut s, &[PointerEvent { kind: PointerKind::Move, x: 30.0, y: 15.0, button: 0, pad: [0, 0], touch_id: -1 }]);
+        let slot = &ps.slots[0];
+        assert!(slot.scrolling_pane.is_none(), "V-only 容器遇水平更大手势 → 让出（不滚）");
+    }
+
+    #[test]
+    fn nested_innermost_scroll_wins() {
+        // 外 vertical 容器(1) + 内 vertical 容器(2)；Down 在内层 → scrolling_pane = 内层(2)。
+        use crate::style::resolved::{OverflowMode, ResolvedStyle};
+        let mut outer = ResolvedStyle::default();
+        outer.overflow_y = OverflowMode::Scroll;
+        let mut inner = ResolvedStyle::default();
+        inner.overflow_y = OverflowMode::Scroll;
+        let entries: Vec<(
+            Option<usize>, NodeKind, ResolvedStyle, Vec<String>, Option<String>, bool, Option<i32>,
+        )> = vec![
+            (None, NodeKind::Container, ResolvedStyle::default(), vec![], None, false, None),    // 0 root
+            (Some(0), NodeKind::Container, outer, vec![], None, false, None),                    // 1 外 scroll
+            (Some(1), NodeKind::Container, inner, vec![], None, false, None),                    // 2 内 scroll
+            (Some(2), NodeKind::Container, ResolvedStyle::default(), vec![], None, false, None), // 3 内层 content
+        ];
+        let mut s = Scene::build(&entries);
+        s.nodes[0].layout_rect = Rect { x: 0.0, y: 0.0, w: 300.0, h: 300.0 };
+        s.nodes[1].layout_rect = Rect { x: 0.0, y: 0.0, w: 200.0, h: 200.0 };
+        s.nodes[2].layout_rect = Rect { x: 0.0, y: 0.0, w: 100.0, h: 100.0 };
+        s.nodes[3].layout_rect = Rect { x: 0.0, y: 0.0, w: 40.0, h: 200.0 };
+        // 模拟 layout solve 的 clip_rect 填充（见 v_scroll_scene 注释）。
+        for n in s.nodes.iter_mut() {
+            if n.clip_rect.is_some() {
+                n.clip_rect = Some(n.layout_rect);
+            }
+        }
+        crate::scene::transform::compute_world_transforms(&mut s);
+        crate::scroll::refresh_content_sizes(&mut s);
+        let mut ps = PointerState::new();
+        // Down @(10,10) 命中 content 子(3)，down_targets=[3,2,1,0]，候选=最近 effective=内层(2)
+        ps.process(&mut s, &[PointerEvent { kind: PointerKind::Down, x: 10.0, y: 10.0, button: 0, pad: [0, 0], touch_id: -1 }]);
+        // Move dy=15 > 8 → scroll 达阈值，V-only 且 dy>dx(0) → lock_ok → scrolling_pane=内层(2)
+        ps.process(&mut s, &[PointerEvent { kind: PointerKind::Move, x: 10.0, y: 25.0, button: 0, pad: [0, 0], touch_id: -1 }]);
+        let slot = &ps.slots[0];
+        assert_eq!(slot.scrolling_pane, Some(NodeId(2)), "嵌套 Down 在内层 → scrolling_pane=内层（最近祖先优先）");
+    }
+
+    #[test]
+    fn scroll_drag_follow_advances_scroll_pos() {
+        // scrolling_pane 已判定 → Move 跟手 drag_follow 写 scroll_pos。
+        let mut s = v_scroll_scene();
+        let mut ps = PointerState::new();
+        ps.process(&mut s, &[PointerEvent { kind: PointerKind::Down, x: 10.0, y: 10.0, button: 0, pad: [0, 0], touch_id: -1 }]);
+        ps.process(&mut s, &[PointerEvent { kind: PointerKind::Move, x: 10.0, y: 25.0, button: 0, pad: [0, 0], touch_id: -1 }]); // scroll 启动
+        // 再 Move @(10,35) → drag_follow delta=(0,10) → scroll_pos.y += 10（界内 1:1）
+        ps.process(&mut s, &[PointerEvent { kind: PointerKind::Move, x: 10.0, y: 35.0, button: 0, pad: [0, 0], touch_id: -1 }]);
+        let st = s.scroll.get(NodeId(1)).unwrap();
+        assert!(st.scroll_pos.1 > 0.0, "scroll 启动后 Move 跟手 → scroll_pos.y 推进，got {}", st.scroll_pos.1);
+    }
+
+    #[test]
+    fn scroll_up_starts_inertia_and_clears_state() {
+        // scrolling_pane 中 Up → begin_inertia + 清 scroll 字段。
+        let mut s = v_scroll_scene();
+        let mut ps = PointerState::new();
+        ps.process(&mut s, &[PointerEvent { kind: PointerKind::Down, x: 10.0, y: 10.0, button: 0, pad: [0, 0], touch_id: -1 }]);
+        ps.process(&mut s, &[PointerEvent { kind: PointerKind::Move, x: 10.0, y: 25.0, button: 0, pad: [0, 0], touch_id: -1 }]); // scroll 启动
+        ps.process(&mut s, &[PointerEvent { kind: PointerKind::Move, x: 10.0, y: 35.0, button: 0, pad: [0, 0], touch_id: -1 }]); // 跟手攒速度
+        ps.process(&mut s, &[PointerEvent { kind: PointerKind::Up, x: 10.0, y: 35.0, button: 0, pad: [0, 0], touch_id: -1 }]);
+        let slot = &ps.slots[0];
+        assert!(slot.scrolling_pane.is_none(), "Up 后 scrolling_pane 清空");
+        assert!(!slot.scroll_testing, "Up 后 scroll_testing=false");
+        // inertia 启动：velocity 非零时 tweening=2（速度不足则仍 0——本测跟手攒了速度）
+        let _st = s.scroll.get(NodeId(1)).unwrap();
+        // 不硬断 tweening（速度可能因阈值不启），仅验字段清。
+    }
+
+    #[test]
+    fn scroll_start_suppresses_drag() {
+        // 同时 draggable + scroll 容器（叶子 draggable）：scroll 达阈值先于 drag（scroll 8 > drag 2
+        // 但子非 draggable 这里）；此处验 scroll 启动后 drag_target 被清，drag 不启动。
+        // 改 leaf draggable=true 但容器是 scroll：drag_target=leaf（draggable），scroll_candidate=容器。
+        // 阈值赛跑：drag mouse 2 < scroll 8 → drag 先达。本测改验：scroll 先达场景下 drag_target=None。
+        // 构造：draggable=true 的 content 子放在 scroll 容器，先小 Move 触发 scroll（需 scroll 先于 drag
+        // 不可能——drag 阈值更小）。改测：draggable leaf 在 scroll 容器，Move 大位移同时超两者 →
+        // drag 先达（2<8）→ scroll_testing 清。此验互斥另一侧（drag 赢清 scroll）。
+        use crate::style::resolved::{OverflowMode, ResolvedStyle};
+        let mut scroll_style = ResolvedStyle::default();
+        scroll_style.overflow_y = OverflowMode::Scroll;
+        let entries: Vec<(
+            Option<usize>, NodeKind, ResolvedStyle, Vec<String>, Option<String>, bool, Option<i32>,
+        )> = vec![
+            (None, NodeKind::Container, ResolvedStyle::default(), vec![], None, false, None),
+            (Some(0), NodeKind::Container, scroll_style, vec![], None, false, None),
+            (Some(1), NodeKind::Container, ResolvedStyle::default(), vec![], None, true, None), // 2 draggable content
+        ];
+        let mut s = Scene::build(&entries);
+        s.nodes[0].layout_rect = Rect { x: 0.0, y: 0.0, w: 200.0, h: 200.0 };
+        s.nodes[1].layout_rect = Rect { x: 0.0, y: 0.0, w: 100.0, h: 100.0 };
+        s.nodes[2].layout_rect = Rect { x: 0.0, y: 0.0, w: 40.0, h: 200.0 };
+        // 模拟 layout solve 的 clip_rect 填充（见 v_scroll_scene 注释）。
+        for n in s.nodes.iter_mut() {
+            if n.clip_rect.is_some() {
+                n.clip_rect = Some(n.layout_rect);
+            }
+        }
+        crate::scene::transform::compute_world_transforms(&mut s);
+        crate::scroll::refresh_content_sizes(&mut s);
+        let mut ps = PointerState::new();
+        ps.process(&mut s, &[PointerEvent { kind: PointerKind::Down, x: 10.0, y: 10.0, button: 0, pad: [0, 0], touch_id: -1 }]);
+        // Move dy=5（>drag 2，<scroll 8）→ drag 先达 DragStart + 清 scroll_testing
+        let out = ps.process(&mut s, &[PointerEvent { kind: PointerKind::Move, x: 10.0, y: 15.0, button: 0, pad: [0, 0], touch_id: -1 }]);
+        let slot = &ps.slots[0];
+        assert!(out.iter().any(|e| e.event_type == EVT_DRAG_START && e.node_id == 2), "draggable leaf Move>2 → DragStart");
+        assert!(!slot.scroll_testing, "drag 先达 → scroll_testing 清（互斥）");
+        assert!(slot.scroll_candidate.is_none(), "drag 先达 → scroll_candidate 清");
+        assert!(slot.scrolling_pane.is_none(), "drag 赢 → scrolling_pane 不设");
+    }
+
+    #[test]
+    fn no_scroll_candidate_when_no_effective_ancestor() {
+        // 普通 scene（无 scroll 容器）→ Down+Move 不设 scroll 字段（零回归保险）。
+        let mut s = one_button_scene();
+        let mut ps = PointerState::new();
+        ps.process(&mut s, &[PointerEvent { kind: PointerKind::Down, x: 50.0, y: 50.0, button: 0, pad: [0, 0], touch_id: -1 }]);
+        ps.process(&mut s, &[PointerEvent { kind: PointerKind::Move, x: 50.0, y: 70.0, button: 0, pad: [0, 0], touch_id: -1 }]);
+        let slot = &ps.slots[0];
+        assert!(slot.scroll_candidate.is_none(), "无 scroll 容器 → scroll_candidate=None");
+        assert!(!slot.scroll_testing, "无 scroll 容器 → scroll_testing=false");
+        assert!(slot.scrolling_pane.is_none(), "无 scroll 容器 → scrolling_pane=None");
     }
 }

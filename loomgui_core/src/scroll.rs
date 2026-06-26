@@ -14,8 +14,10 @@ use crate::style::resolved::OverflowMode;
 
 // ── §4.1 物理常量（fgui Ponytail 照搬，勿自创公式） ─────────────────────────
 // 滚动触发阈值（px）：鼠标/触摸移动超此才认拖拽（v1 T7/T10 用；此处仅声明）。
-pub const SCROLL_THRESHOLD_MOUSE: f32 = 5.0;
-pub const SCROLL_THRESHOLD_TOUCH: f32 = 10.0;
+// spec §4.1 / §5.3：mouse 8（fgui sensitivity PC）/ touch 20（fgui touchScrollSensitivity）。
+// T3 曾误填 5/10，T7 按设计 §4.1 修正确值。
+pub const SCROLL_THRESHOLD_MOUSE: f32 = 8.0;
+pub const SCROLL_THRESHOLD_TOUCH: f32 = 20.0;
 /// 惯性减速系数（每 1/60s 速度衰减比，fgui DECELERATION）。
 pub const DECELERATION_RATE: f64 = 0.967;
 /// 速度指数平滑系数（drag_follow 写 velocity 用）。
