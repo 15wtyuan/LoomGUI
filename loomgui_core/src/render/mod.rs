@@ -213,7 +213,7 @@ mod tests {
             nodes: vec![],
             dynamic_rules: Default::default(),
             focused_node: None,
-            world_transforms: Vec::new(), anim: Default::default(),
+            world_transforms: Vec::new(), anim: Default::default(), scroll: Default::default(),
         };
         scene.nodes.push(container_node(
             0,
@@ -257,7 +257,7 @@ mod tests {
 
     #[test]
     fn build_image_uses_registered_tex_id() {
-        let mut scene = Scene { roots: vec![NodeId(0)], nodes: vec![], dynamic_rules: Default::default(), focused_node: None, world_transforms: Vec::new(), anim: Default::default() };
+        let mut scene = Scene { roots: vec![NodeId(0)], nodes: vec![], dynamic_rules: Default::default(), focused_node: None, world_transforms: Vec::new(), anim: Default::default(), scroll: Default::default() };
         let mut a = Node::default();
         a.id = NodeId(0);
         a.kind = NodeKind::Image { src: "logo.png".into() };
@@ -286,7 +286,7 @@ mod tests {
 
     #[test]
     fn build_image_unregistered_is_zero() {
-        let mut scene = Scene { roots: vec![NodeId(0)], nodes: vec![], dynamic_rules: Default::default(), focused_node: None, world_transforms: Vec::new(), anim: Default::default() };
+        let mut scene = Scene { roots: vec![NodeId(0)], nodes: vec![], dynamic_rules: Default::default(), focused_node: None, world_transforms: Vec::new(), anim: Default::default(), scroll: Default::default() };
         let mut a = Node::default();
         a.id = NodeId(0);
         a.kind = NodeKind::Image { src: "logo.png".into() };
@@ -307,7 +307,7 @@ mod tests {
     #[test]
     fn build_image_unregistered_uv_is_full() {
         // 未注册 src → 哨兵 uv (0,0)-(1,1)（与 tex_id=0 白占位配合，UV 无关）。
-        let mut scene = Scene { roots: vec![NodeId(0)], nodes: vec![], dynamic_rules: Default::default(), focused_node: None, world_transforms: Vec::new(), anim: Default::default() };
+        let mut scene = Scene { roots: vec![NodeId(0)], nodes: vec![], dynamic_rules: Default::default(), focused_node: None, world_transforms: Vec::new(), anim: Default::default(), scroll: Default::default() };
         let mut a = Node::default();
         a.id = NodeId(0);
         a.kind = NodeKind::Image { src: "logo.png".into() };
@@ -341,7 +341,7 @@ mod tests {
             nodes: vec![],
             dynamic_rules: Default::default(),
             focused_node: None,
-            world_transforms: Vec::new(), anim: Default::default(),
+            world_transforms: Vec::new(), anim: Default::default(), scroll: Default::default(),
         };
         let mut n = Node::default();
         n.id = NodeId(0);
@@ -393,7 +393,7 @@ mod tests {
             nodes: vec![],
             dynamic_rules: Default::default(),
             focused_node: None,
-            world_transforms: Vec::new(), anim: Default::default(),
+            world_transforms: Vec::new(), anim: Default::default(), scroll: Default::default(),
         };
         let mut n = Node::default();
         n.id = NodeId(0);
@@ -454,7 +454,7 @@ mod tests {
             nodes: vec![],
             dynamic_rules: Default::default(),
             focused_node: None,
-            world_transforms: Vec::new(), anim: Default::default(),
+            world_transforms: Vec::new(), anim: Default::default(), scroll: Default::default(),
         };
         let mut root = container_node(0, None, Rect::default(), None);
         root.clip_rect = Some(Rect::default()); // 开 mask_context=1
@@ -485,7 +485,7 @@ mod tests {
     /// 结果：FrameData 含恰好 1 个 8-vert Mesh payload（两 Image 合并）。
     #[test]
     fn build_merges_adjacent_same_drawstate_meshes() {
-        let mut scene = Scene { roots: vec![NodeId(0)], nodes: vec![], dynamic_rules: Default::default(), focused_node: None, world_transforms: Vec::new(), anim: Default::default() };
+        let mut scene = Scene { roots: vec![NodeId(0)], nodes: vec![], dynamic_rules: Default::default(), focused_node: None, world_transforms: Vec::new(), anim: Default::default(), scroll: Default::default() };
         let mut root = container_node(
             0,
             None,
@@ -545,6 +545,7 @@ mod tests {
             focused_node: None,
             world_transforms: Vec::new(),
             anim: Default::default(),
+            scroll: Default::default(),
         };
         let mut n = container_node(0, None, Rect { x: 0.0, y: 0.0, w: 10.0, h: 10.0 }, Some([1.0, 0.0, 0.0, 1.0]));
         n.style.opacity = 1.0;

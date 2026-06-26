@@ -90,7 +90,7 @@ mod tests {
             nodes: vec![root, a, b],
             dynamic_rules: Default::default(),
             focused_node: None,
-            world_transforms: Vec::new(), anim: Default::default(),
+            world_transforms: Vec::new(), anim: Default::default(), scroll: Default::default(),
         }
     }
 
@@ -101,7 +101,7 @@ mod tests {
             nodes: vec![],
             dynamic_rules: Default::default(),
             focused_node: None,
-            world_transforms: Vec::new(), anim: Default::default(),
+            world_transforms: Vec::new(), anim: Default::default(), scroll: Default::default(),
         };
         compute_world_transforms(&mut s);
         assert_eq!(hit_test(&s, (10.0, 10.0)), None);
@@ -197,6 +197,6 @@ mod tests {
         root.children = vec![NodeId(1)];
         parent.children = vec![NodeId(2)];
         Scene { roots: vec![NodeId(0)], nodes: vec![root, parent, child],
-                dynamic_rules: Default::default(), focused_node: None, world_transforms: Vec::new(), anim: Default::default() }
+                dynamic_rules: Default::default(), focused_node: None, world_transforms: Vec::new(), anim: Default::default(), scroll: Default::default() }
     }
 }

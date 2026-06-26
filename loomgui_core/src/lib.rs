@@ -7,6 +7,7 @@ pub mod layout;
 pub mod parse;
 pub mod render;
 pub mod scene;
+pub mod scroll;
 pub mod stage;
 pub mod style;
 pub mod text;

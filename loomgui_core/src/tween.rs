@@ -295,6 +295,7 @@ mod tests {
             focused_node: None,
             world_transforms: Vec::new(),
             anim: AnimTable::default(),
+            scroll: Default::default(),
         }
     }
 

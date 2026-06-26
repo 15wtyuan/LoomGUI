@@ -171,6 +171,8 @@ pub struct Scene {
     pub world_transforms: Vec<crate::transform::Affine2>,
     /// v1d.4：每节点动画 override（TweenManager.update 填）。index = NodeId.0。运行时态，不进 pkg。
     pub anim: AnimTable,
+    /// v1d.5：每节点滚动状态（refresh_content_sizes / scroll 物理填）。index = NodeId.0。运行时态，不进 pkg。
+    pub scroll: crate::scroll::ScrollTable,
 }
 
 impl Scene {
@@ -184,7 +186,7 @@ impl Scene {
             nodes: Vec::new(),
             dynamic_rules: crate::style::dynamic::DynamicRuleTable::default(),
             focused_node: None,
-            world_transforms: Vec::new(), anim: Default::default(),
+            world_transforms: Vec::new(), anim: Default::default(), scroll: Default::default(),
         };
         for (i, (parent_idx, kind, style, classes, id_attr, draggable, tabindex)) in entries.iter().enumerate() {
             scene.nodes.push(Node {
@@ -354,7 +356,7 @@ mod tests {
             nodes: vec![],
             dynamic_rules: Default::default(),
             focused_node: None,
-            world_transforms: Vec::new(), anim: Default::default(),
+            world_transforms: Vec::new(), anim: Default::default(), scroll: Default::default(),
         };
         assert!(
             s.dynamic_rules.rules.is_empty(),
@@ -376,7 +378,7 @@ mod tests {
             nodes: vec![],
             dynamic_rules: Default::default(),
             focused_node: None,
-            world_transforms: Vec::new(), anim: Default::default(),
+            world_transforms: Vec::new(), anim: Default::default(), scroll: Default::default(),
         };
         assert_eq!(s.focused_node, None, "Scene 默认 focused_node=None");
     }
