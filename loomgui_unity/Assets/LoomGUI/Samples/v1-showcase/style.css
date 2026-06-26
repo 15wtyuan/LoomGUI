@@ -1,0 +1,24 @@
+/* base —— 暗色 dashboard（design-taste 降饱和） */
+.root{width:1080px;height:1920px;background-color:#1a1d2e;}
+.header{background-color:#252839;border-bottom:2px solid #3a3f55;padding:20px;gap:14px;}
+.title{color:#e0e0e0;font-size:36px;font-weight:700;}
+.nav{flex-direction:row;gap:10px;flex-wrap:wrap;}
+.navbtn{background-color:#2d3148;border:1px solid #3a3f55;padding:10px 16px;color:#9aa0b4;font-size:18px;}
+.navbtn:hover{background-color:#3a4258;color:#5fb2c4;border:1px solid #5fb2c4;}
+.navbtn:active{transform:scale(0.96);}
+.scroll{flex-grow:1;overflow-y:scroll;}
+.content{gap:16px;padding:24px;}
+.sec{gap:16px;}
+.sec-h{color:#5fb2c4;font-size:28px;font-weight:700;border-bottom:1px solid #3a3f55;padding-bottom:8px;}
+/* 卡片模板 */
+.card{background-color:#252839;border:1px solid #3a3f55;padding:16px;gap:12px;}
+.card-h{flex-direction:row;justify-content:space-between;align-items:center;}
+.card-t{color:#e0e0e0;font-size:22px;font-weight:700;}
+.card-x{color:#9aa0b4;font-size:14px;}
+.card-b{flex-direction:row;gap:12px;flex-wrap:wrap;align-items:flex-start;}
+.lamp{width:14px;height:14px;background-color:#3a3f55;}
+/* 状态色 */
+.ok{background-color:#6fa66c;}
+.warn{background-color:#c2605a;}
+.dim{background-color:#6c7080;}
+.acc{background-color:#5fb2c4;}
