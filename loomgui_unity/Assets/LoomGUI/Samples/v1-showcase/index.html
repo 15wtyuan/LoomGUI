@@ -187,7 +187,36 @@
       </div>
       <div class="sec" id="sec-4"><div class="sec-h">§4 交互事件集</div></div>
       <div class="sec" id="sec-5"><div class="sec-h">§5 滚动实验室</div></div>
-      <div class="sec" id="sec-6"><div class="sec-h">§6 文本工坊</div></div>
+      <div class="sec" id="sec-6">
+        <div class="sec-h">§6 文本工坊</div>
+        <div class="card">
+          <div class="card-h"><span class="card-t">6.1 CJK 逐字断行</span><span class="card-x">预期: 中文长段逐字可断</span></div>
+          <div class="card-b" style="width:100%"><div class="txt">这是一个用于测试中日韩文本逐字断行行为的长段落，LoomGUI 使用 unicode-linebreak UAX#14 算法对 CJK 字符逐字断行，应当在任意字符后换行而不留大片空白。本段刻意写得足够长以触发容器宽度方向的断行，验证每一个汉字都可独立成断点，而不像英文那样只能从词间空格处断开。</div></div>
+        </div>
+        <div class="card">
+          <div class="card-h"><span class="card-t">6.2 ASCII 按词</span><span class="card-x">预期: 英文长段按词断、不拆词</span></div>
+          <div class="card-b" style="width:100%"><div class="txt">The quick brown fox jumps over the lazy dog. The quick brown fox jumps over the lazy dog. The quick brown fox jumps over the lazy dog. The quick brown fox jumps over the lazy dog.</div></div>
+        </div>
+        <div class="card">
+          <div class="card-h"><span class="card-t">6.3 中英混排</span><span class="card-x">预期: CJK 逐字 + ASCII 按词混合</span></div>
+          <div class="card-b" style="width:100%"><div class="txt">LoomGUI 支持 mixed 中英混排文本 line breaking，CJK 逐字、ASCII 按词。这段文字 mixed 了 English words 和中文汉字，验证 unicode-linebreak 在同一段落内对两种字符类别采用不同的断行策略，最终呈现应当英文按词、中文逐字。</div></div>
+        </div>
+        <div class="card">
+          <div class="card-h"><span class="card-t">6.4 nowrap + 超长词</span><span class="card-x">预期: nowrap 单行不换 / 超长词逐字断</span></div>
+          <div class="card-b" style="flex-direction:column;gap:12px;width:100%">
+            <div class="txt" style="white-space:nowrap">this-is-a-single-line-that-should-not-wrap-overflowing-the-container</div>
+            <div class="txt">超长无空格词测试 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa，此处 ASCII 连续串无断点，理论上由 toMoveChars 逐字断行兜底。</div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-h"><span class="card-t">6.5 行高字距</span><span class="card-x">预期: line-height 1/2 + letter-spacing 差异</span></div>
+          <div class="card-b" style="flex-direction:column;gap:12px;width:100%">
+            <div class="txt" style="line-height:1">紧凑行距 line-height:1，多行文本行间几乎贴合，应当看出与下面松散行距的明显差异。</div>
+            <div class="txt" style="line-height:2">松散行距 line-height:2，多行文本行间留白明显增大，用于对比验证行高属性对排版的影响。</div>
+            <div class="txt" style="letter-spacing:6px">宽字距 letter-spacing:6px，每个汉字与英文字母之间都拉开间距，验证字距属性作用于整段文本。</div>
+          </div>
+        </div>
+      </div>
       <div class="sec" id="sec-7"><div class="sec-h">§7 动效舞台</div></div>
       <div class="sec" id="sec-8"><div class="sec-h">§8 管线 / 分辨率</div></div>
     </div>
