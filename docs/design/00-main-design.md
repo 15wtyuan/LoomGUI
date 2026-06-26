@@ -670,6 +670,7 @@ csbindgen 是为 Unity/IL2CPP 设计的主流绑定生成器（Cysharp MagicPhys
      a. Timers.update(dt)
      b. TweenManager.update(dt)        ← GTween 推进；tweener 回调写节点属性（置 transform_dirty/layout_dirty）
      b'. ScrollPane 物理 update        ← 自维护可变 target tween（§12.7，不走 GTween），写 content 根 transform。**v1d.5 实现**：放 solve 后（需 content_size）+ process 后（拖拽跟手事件驱动）+ compute_world_transforms 前（同帧进 world matrix）；非原文字"紧随 GTween 在 style/layout 前"——见 §12.7 偏离说明
+     b''. dirty hash + Unchanged emit   ← **v1e 实现**：Stage 持 `prev_node_hashes`，render pass（g）逐节点算 hash 与上帧比，相等 → payload=`Unchanged`（blob kind=0，C# `MirrorPool` 遇 `kind!=1&&!=2` 跳过 upload）。静态帧≈0 upload。全链路 v0 预留（NodePayload::Unchanged + blob kind=0 + C# 跳过）兑现，FFI/blob v4/pkg v7/C# MirrorPool 四零改。详见 knowledge-reference §2.24
      c. style dirty → 重 cascade → 置 layout dirty
      d. layout dirty → taffy solve（子树）→ 写 measured_size/layout_rect（含文本 MeasureFunc）
      e. transform_dirty → 刷新命中几何

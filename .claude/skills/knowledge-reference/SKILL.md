@@ -239,6 +239,12 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 - **FFI/version**：version v1d.4→v1d.5；2 新常驻 FFI（`set_wheel_input`/`set_scroll_pos`，csbindgen regen）；**手补 C# 镜像 LoomGUIWheelEvent.cs**（坑 35）。**pkg v7 / blob 保持 v4**（scroll 折进 world matrix）。.dll 重编（1739776→1755136B）。
 - **两机约束（v1d.5 执行）**：core+ffi cargo test 全绿（core 318+ffi 40+snapshot 3=361≈356 报告口径）；C# 本机未编译，家里机 PlayMode（拖拽跟手/Up 惯性/边界回弹/滚轮/grip/auto 不显条·scroll 始终显条/嵌套轴锁/scroll-vs-draggable/SetScrollPos+零回归+500 stress）。subagent-driven 12 task 全 Approved + final review Ready（opus，跨任务 seam offset↔仲裁↔tick↔sentinel↔render/hit 逐链 sound，无 Critical/Important）。spec `docs/superpowers/specs/2026-06-26-v1d.5-scrollpane-design.md`、plan `docs/superpowers/plans/2026-06-26-v1d.5-scrollpane.md`。踩坑：fgui `v2` 变量名误导 v²→|v|（坑 54）、合成 sentinel id 跨链致 apply_wheel OOB（坑 55）。
 
+### 2.24 v1e dirty hash + Unchanged emit（§614-623 blob 契约兑现）— 关 v1-scope §4 性能基线
+- **机制**：Stage 持 `prev_node_hashes: Vec<u64>`（transient，**Stage 字段非 Scene** → 天然不进 pkg）。`build_render_nodes` 签名 `(scene,font,tex, prev_hashes:&[u64]) -> (FrameData, Vec<u64>)`：逐节点 emit payload 后调 `render::dirty::node_hash(&rn)`，与上帧等（且 `prev_hashes.len()==n_nodes` 守基线）→ payload 改回 `NodePayload::Unchanged`。`load_inline/load_package` clear 基线（防 reload NodeId 错位）；首帧/空基线全 emit（零回归）。
+- **node_hash 字段集**（DefaultHasher，f32 走 to_le_bytes）：world_matrix 6 列（**含 scroll_pos**——scroll 子树 world 变→hash 不等→自动重传，不需特殊处理）+ visible/alpha/grayed/color_tint/blend/mask_context/sort_key + payload 摘要（Mesh: texture+verts.len+colors[0]；Text: font_size+color+glyph_count+首字codepoint）。**全链路 v0 预留兑现**：`NodePayload::Unchanged`（node.rs）+ blob kind=0（blob.rs:155）+ C# 读 kind（FrameBlob.cs:36）+ C# `kind!=1&&!=2 continue`（MirrorPool.cs:71）从 v0 全通，v1e 只在 Stage 加 hash 跟踪 → **FFI/blob(v4)/pkg(v7)/C# MirrorPool 四零改**。
+- **合成 scrollbar 强制 emit**（不进 hash 比较，随 scroll_pos 变、数量少）；merge 对 Unchanged passthrough（merge.rs:33）。**ponytail 天花板**：hash 碰撞最坏 1 帧视觉延迟不破正确性（标 `// ponytail:`）；真风险是 hash 字段遗漏（某视觉字段没进→变了不重传→持续错），reviewer 须逐项对照 blob 公共头列。
+- **验收（双轨）**：criterion bench 500 节点——静态帧 476µs（全 Unchanged，比冷帧快 2.7× 证 dirty 生效）/ 冷帧 1.28ms / 换页帧 1.19ms，均 ≤2ms（v1-scope §4 过线）。C# `_frameBuf` 改 ArrayPool（冷帧零 GC，ReadMesh per-node alloc 留观察撞墙再上）。家里机待验：PlayMode Profiler 静态帧≈0 upload + 冷/换页帧≤2ms + GC Alloc 静态帧≈0。
+
 ## 3. 依赖 API 适配踩坑（v0 最大教训）
 
 > **plan/brief 写的 API 草稿常与实际 crate 版本不符**。遇编译错按本节对照，**勿硬改依赖版本**，按 crate 实际源码（`~/.cargo/registry/src/<crate>-<ver>/src/`）调。
@@ -807,8 +813,10 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 **v1d 全收尾 + v1 ship-ready**：v1d.1-.5 全完成（§5 全勾）。v1 验收 6 点代码全完成：#1 按钮+文本+图片（v1a/b）/#2 可滚动容器（v1d.5，待家里机验）/#3 hover/active（v1c.1）/#4 safe-area（v1d.1）/#5 is_pointer_on_ui（v1c.1）/#6 打包器二进制包（v1b.1）。**#2 家里机 PlayMode 9 点验收过 → v1 ship**。
 
 **v1 其余 defer（v0 起，未动）**：
-- v1b 全收尾（A/B/C/mesh/CJK ✅）+ v1c.1 最小交互闭环 ✅ + v1c.2 路由完整化 ✅ + v1c.3 多触摸+CaptureTouch ✅ + v1c.4 click 增强 ✅ + v1d.1 拖拽+长按+safe-area ✅（家里机 PlayMode 验，main @ 013b96f，修坑 44/45）+ v1d.2 键盘+焦点+Tab+:focus ✅（家里机 PlayMode 验）+ v1d.3 transform+NativeHost-lite ✅（家里机 PlayMode 验，修坑 51/52）+ v1d.4 GTween tween 引擎 ✅（家里机 PlayMode 验，修坑 53 首帧 dt spike→demo 按钮触发）+ **v1d.5 ScrollPane+滚轮+手势仲裁 ✅（main @ e8ef32c，待家里机 PlayMode 验，修坑 54/55；关验收 #2，v1d 全收尾）**。
-- **下一个**：v1 ship（#2 家里机验过即 ship）/ v1e perf（冷帧/换页帧 FFI≤2ms + dirty 跳静态≈0 + ArrayPool + Font Box::leak 缓存化 + invalidation set 伪类重匹配）/ v1.x（Controller/Gear/Transition/TextInput/虚拟化/broadcast/IME）。.meta 补 commit（坑 13，家里机）。
+- v1b 全收尾（A/B/C/mesh/CJK ✅）+ v1c.1 最小交互闭环 ✅ + v1c.2 路由完整化 ✅ + v1c.3 多触摸+CaptureTouch ✅ + v1c.4 click 增强 ✅ + v1d.1 拖拽+长按+safe-area ✅（家里机 PlayMode 验，main @ 013b96f，修坑 44/45）+ v1d.2 键盘+焦点+Tab+:focus ✅（家里机 PlayMode 验）+ v1d.3 transform+NativeHost-lite ✅（家里机 PlayMode 验，修坑 51/52）+ v1d.4 GTween tween 引擎 ✅（家里机 PlayMode 验，修坑 53 首帧 dt spike→demo 按钮触发）+ v1d.5 ScrollPane+滚轮+手势仲裁 ✅（main @ e8ef32c，待家里机 PlayMode 验，修坑 54/55；关验收 #2，v1d 全收尾）+ **v1e FFI 同步热路径性能优化 ✅（main @ b52a2a5，Rust 侧完成 + bench 过线；家里机待验 Profiler；Codex §4.3/§6.5 性能债务兑现）**。
+- **下一个**：v1 ship（#2 家里机验过即 ship）/ v1.x（Controller/Gear/Transition/TextInput/虚拟化/broadcast/IME）。v1e 范围外推后（撞墙再上）：文本测量 cache / Font Box::leak 缓存化 / invalidation set 伪类重匹配 / Tab 链缓存 / AncestorChain 池化 / FairyBatching 实机 / ReadMesh per-node ArrayPool。.meta 补 commit（坑 13，家里机）。
+
+**v1e（main @ b52a2a5）**：FFI 同步热路径性能债务兑现（Codex §4.3/§6.5）。4 项 → ①dirty hash + Unchanged emit（§2.24，全链路 v0 预留兑现，FFI/blob v4/pkg v7/C# MirrorPool 四零改）静态帧≈0 upload ②冷帧/换页帧 emit ≤2ms（criterion bench：静态 476µs / 冷 1.28ms / 换页 1.19ms 全过线）③C# `_frameBuf` ArrayPool 冷帧零 GC（ReadMesh 留观察）④bench + 家里机 Profiler 双轨验收。subagent-driven 7 task 全 Approved。spec `docs/superpowers/specs/2026-06-26-v1e-perf-design.md`、plan `docs/superpowers/plans/2026-06-26-v1e-perf.md`。家里机待验：PlayMode Profiler 静态帧≈0 upload + 冷/换页帧≤2ms + GC Alloc 静态帧≈0。
 - virtualization/shape mask/NativeHost 完整版：v1.x。
 
 完整 defer 表见各 spec §7；v1a Phase 1 实现 ledger 见 `.git/sdd/progress.md`。
