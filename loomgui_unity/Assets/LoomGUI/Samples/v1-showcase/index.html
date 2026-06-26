@@ -66,7 +66,71 @@
           </div>
         </div>
       </div>
-      <div class="sec" id="sec-2"><div class="sec-h">§2 布局练兵场</div></div>
+      <div class="sec" id="sec-2">
+        <div class="sec-h">§2 布局练兵场</div>
+        <div class="card">
+          <div class="card-h"><span class="card-t">2.1 flex-direction</span><span class="card-x">预期: row 横排 / column 竖排</span></div>
+          <div class="card-b" style="flex-direction:column;gap:8px;width:100%">
+            <div class="flx" style="flex-direction:row"><span>r1</span><span>r2</span><span>r3</span></div>
+            <div class="flx" style="flex-direction:column;align-items:stretch"><span>c1</span><span>c2</span><span>c3</span></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-h"><span class="card-t">2.2 flex-wrap</span><span class="card-x">预期: wrap 换行 / nowrap 溢出</span></div>
+          <div class="card-b" style="flex-direction:column;gap:8px;width:100%">
+            <div class="flx" style="flex-direction:row;flex-wrap:wrap;width:200px"><span>w1</span><span>w2</span><span>w3</span><span>w4</span><span>w5</span></div>
+            <div class="flx" style="flex-direction:row;flex-wrap:nowrap;width:200px"><span>n1</span><span>n2</span><span>n3</span><span>n4</span><span>n5</span></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-h"><span class="card-t">2.3 justify-content</span><span class="card-x">预期: 主轴 6 分布</span></div>
+          <div class="card-b" style="flex-direction:column;gap:8px;width:100%">
+            <div class="flx" style="justify-content:flex-start"><span>S</span><span>S</span><span>S</span></div>
+            <div class="flx" style="justify-content:center"><span>C</span><span>C</span><span>C</span></div>
+            <div class="flx" style="justify-content:flex-end"><span>E</span><span>E</span><span>E</span></div>
+            <div class="flx" style="justify-content:space-between"><span>B</span><span>B</span><span>B</span></div>
+            <div class="flx" style="justify-content:space-around"><span>A</span><span>A</span><span>A</span></div>
+            <div class="flx" style="justify-content:space-evenly"><span>V</span><span>V</span><span>V</span></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-h"><span class="card-t">2.4 align-items + align-self</span><span class="card-x">预期: 交叉轴对齐 + self 覆盖</span></div>
+          <div class="card-b" style="flex-direction:column;gap:8px;width:100%">
+            <div class="flx" style="align-items:flex-start;height:80px"><span>S</span><span>S</span><span>S</span></div>
+            <div class="flx" style="align-items:center;height:80px"><span>C</span><span>C</span><span>C</span></div>
+            <div class="flx" style="align-items:flex-end;height:80px"><span>E</span><span>E</span><span>E</span></div>
+            <div class="flx" style="align-items:stretch;height:80px"><span>T</span><span>T</span><span>T</span></div>
+            <div class="flx" style="align-items:flex-start;height:80px"><span>A</span><span style="align-self:center">★</span><span>A</span></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-h"><span class="card-t">2.5 gap vs margin</span><span class="card-x">预期: gap 等距 vs margin 不折叠</span></div>
+          <div class="card-b" style="flex-direction:column;gap:8px;width:100%">
+            <div class="flx" style="gap:16px"><span>g</span><span>g</span><span>g</span></div>
+            <div class="flx" style="gap:0"><span style="margin:0 8px">m</span><span style="margin:0 8px">m</span><span style="margin:0 8px">m</span></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-h"><span class="card-t">2.6 flex grow/shrink/basis</span><span class="card-x">预期: grow 占余比 / shrink 收缩</span></div>
+          <div class="card-b" style="flex-direction:column;gap:8px;width:100%">
+            <div class="flx" style="gap:6px"><span style="flex-grow:1">g1</span><span style="flex-grow:2">g2</span><span style="flex-grow:0;flex-basis:60px;width:60px">60</span></div>
+            <div class="flx" style="gap:6px;width:160px"><span style="flex-shrink:1">s1</span><span style="flex-shrink:0;width:48px">s0</span><span style="flex-shrink:1">s2</span><span style="flex-shrink:1">s3</span><span style="flex-shrink:1">s4</span></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-h"><span class="card-t">2.7 尺寸单位</span><span class="card-x">预期: px / % / auto + min-width + aspect</span></div>
+          <div class="card-b" style="flex-direction:column;gap:8px;width:100%">
+            <div class="flx" style="gap:6px"><span style="width:120px">120</span><span style="width:50%">50%</span><span style="width:auto">auto</span></div>
+            <div class="flx" style="gap:6px"><span style="min-width:80px;width:40px">min80</span><span style="aspect-ratio:2;width:40px">a2</span></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-h"><span class="card-t">2.8 order</span><span class="card-x">预期: DOM abc → 视觉 3/1/2</span></div>
+          <div class="card-b" style="flex-direction:column;gap:8px;width:100%">
+            <div class="flx"><span style="order:3">a</span><span style="order:1">b</span><span style="order:2">c</span></div>
+          </div>
+        </div>
+      </div>
       <div class="sec" id="sec-3">
         <div class="sec-h">§3 视觉样式板</div>
         <div class="card">
