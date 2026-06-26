@@ -195,4 +195,24 @@ mod tests {
         compute_world_transforms(&mut b);
         assert_eq!(a.world_transforms, b.world_transforms, "scroll_pos=0 no-op：与无 scroll 表项等价");
     }
+
+    // I1 fix：嵌套 scroll 累积——3 层 scroll 容器，offset 逐层叠加。
+    #[test]
+    fn nested_scroll_offsets_accumulate() {
+        // scrollA(0,10) ⊃ scrollB(0,20) ⊃ leaf（均 overflow:scroll）
+        // leaf world.apply(0,0) = (0, -30)（吃 A 的 -10 + B 的 -20，累积）
+        let mut s = scene_with(vec![
+            scroll_node(0, None, Rect { x: 0.0, y: 0.0, w: 100.0, h: 100.0 }),
+            scroll_node(1, Some(0), Rect { x: 0.0, y: 0.0, w: 80.0, h: 80.0 }),
+            node(2, Some(1), Rect { x: 0.0, y: 0.0, w: 10.0, h: 10.0 }),
+        ]);
+        s.nodes[0].children = vec![NodeId(1)];
+        s.nodes[1].children = vec![NodeId(2)];
+        s.scroll.ensure(NodeId(0)).scroll_pos = (0.0, 10.0);
+        s.scroll.ensure(NodeId(1)).scroll_pos = (0.0, 20.0);
+        compute_world_transforms(&mut s);
+        let (x, y) = s.world_transforms[2].apply_point(0.0, 0.0);
+        assert!((x - 0.0).abs() < 1e-3 && (y - (-30.0)).abs() < 1e-3,
+            "嵌套累积：A(-10) + B(-20) = -30");
+    }
 }
