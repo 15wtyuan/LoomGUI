@@ -284,7 +284,8 @@ impl Stage {
         // 7. 伪类重匹配（按新 hover/active/focused 改 Node.style——视觉变本帧 render 吃到）
         rematch_pseudo_classes(scene);
         // 8. 渲染（+ 合成 scrollbar）
-        build_render_nodes(scene, &self.font, &self.textures)
+        let (frame, _new_hashes) = build_render_nodes(scene, &self.font, &self.textures, &[]);
+        frame
     }
 
     pub fn render_json(&mut self) -> String {
