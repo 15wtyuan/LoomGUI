@@ -256,6 +256,7 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 - `Size::MAX` → `Size::MAX_CONTENT`。
 - 根 size setter 用 `Dimension::Length`（`Style.size` 是 `Size<Dimension>`）。
 - `Style` **无 `order` 字段**（CSS order 无法存 taffy；留 `ResolvedStyle.order` 待 v1 消费）。
+- **`Style.overflow: Point<Overflow>`**（taffy 0.5，Overflow=Visible/Clip/Hidden/Scroll）——CSS flex §4.5 automatic min-size：overflow≠Visible 的 flex item min-size=0（不被 content 撑开）。**必须显式设**（LoomGUI OverflowMode→taffy Overflow 同步），否则默认 Visible→min-size=min-content→scroll 容器被 content 撑开 overlap=0（坑 59）。构造 `taffy::geometry::Point { x, y }`。
 
 ### 3.2 ttf-parser 0.20（text/layout.rs）
 - **`glyph_hor_advance(GlyphId) -> Option<u16>`**（非 `glyph_advance_width`，返回 u16 非 i16）。
@@ -703,6 +704,24 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 **解决**：`<i>`→`<span>`（CSS `.flx i`→`.flx span`）；删 position:absolute，pointer-events 演示改流内块 + 说明 v1 无叠加。
 **教训**：写 sample HTML/CSS 前对照 FENCE_TAGS（标签）+ mapping.rs 白名单（属性）。**标签违规易发现**（打包失败），**属性违规隐蔽**（静默死 CSS，reviewer 须逐条扫 CSS 声明）。这是 AI 可预测性的打包期第一道反馈——围栏验证器工作正常。
 
+### 坑 58：scroll offset 被 blob re-base 抵消——"控件不动仅文字动"（v1d.5 家里机验收）
+**症状**：scroll 拖动时只有 Text 跟手，Mesh 控件（卡片背景/色块）纹丝不动。
+**根因**：scroll offset 注入 `world_matrix.m_tx`。blob 纯平移 re-base `vert - world.tx`（坑 49）把 scroll 从 GO 挪进 vert → 渲染 `GO(world.tx)+vert(剩余)` 抵消回 layout。Text 不走 re-base（pen GO-local + GO at world.tx）所以跟随。
+**解决**：render 纯平移 `rect = (wm[4],wm[5],w,h)`（world.tx 位置）非绝对 layout_rect → vert=world 位置 → re-base 减 world.tx 正好 top-local → 渲染=world.tx=layout-scroll。零回归（无 scroll 时 world.tx=layout）。
+**教训**：scroll offset 与 v1d.3「绝对 vert + re-base 减 world.tx」冲突；改 scroll 进 world_matrix 后必验「Mesh 控件跟手」（不只 Text），抵消在 blob 层极隐蔽。
+
+### 坑 59：overflow 容器被 content 撑开 + 子被 shrink——overlap=0 拖不动（v1d.5 家里机验收）
+**症状**：scroll 容器 overlap=0（拖不动）—— main-scroll viewport=content=7311（被撑开）；mini `.filler{height:300}` 被 shrink 到 viewport（不溢出）。
+**根因**：CSS flex §4.5 规定 overflow≠visible 的 flex item automatic min-size=0（不被 content 撑开）；LoomGUI 没设 taffy `Style.overflow`（用自己字段）→ taffy 默认 Visible → min-size=min-content → 容器被撑。同理 overflow 容器的直接空内容子（filler min-content=0）被 flex-shrink 收缩到 viewport。
+**解决**：① layout build 设 `style.overflow = map(overflow_x/y)`（LoomGUI OverflowMode→taffy Overflow，Auto→Scroll）让 taffy flex automatic min=0；② build 加 `parent_overflow` 参数，overflow 容器直接子 `flex_shrink=0`。
+**教训**：taffy 0.5 实现了 CSS flex §4.5（style/mod.rs:124 注释明说），但**需设 `Style.overflow` 字段触发**——LoomGUI 用自己 overflow 字段时必须同步设 taffy Style.overflow。dump_scroll 实测 overlap（别猜代码）。
+
+### 坑 60：scroll 调试套娃——先验 layout 再改物理（v1d.5 家里机验收）
+**症状**：scroll 家里机拖动异常，逐层修 6 个套娃 bug：① drag 方向反（`drag_follow +=delta` 应 `-=delta`，与 apply_wheel 一致）② x 轴 overlap=0 仍 apply delta 致斜拖抖 ③ overflow 容器撑开（坑 59）④ overflow 子 shrink（坑 59）⑤ scrollbar sentinel 进 batch reorder 致 `scene.nodes[cur]` 越界 panic ⑥ re-base 抵消（坑 58）。
+**根因**：scroll 跨 layout/render/blob/MirrorPool/merge 五层，bug 互相掩盖（方向反掩盖 overlap=0；overlap=0 掩盖 re-base 抵消）。
+**解决**：逐层 TDD + `dump_scroll` example 实测 overlap 定位"哪层错"；scrollbar 合成 sentinel（坑 55）在 `build_render_nodes` 末尾 merge 之后追加（不进 batch reorder）。
+**教训**：scroll 这种跨层特性，PlayMode 报「拖不动/晃动」先写 example 实测 core scroll 状态（overlap/scroll_pos/content_size）再改，避免盲改物理（方向/惯性）掩盖 layout 根因。
+
 ## 6. 调试/验证技巧
 
 - **★ 实现 v1+ 后端/渲染/对象模型前，先参考 `temp/FairyGUI-unity/` 源码**（对照机制、避免走歪——本 session 因没先看 fgui 的 sortingOrder/rect-mask/MaterialManager，初版设计走了弯路：误用 z 排序、误以为 rect mask 要独立 GO、把绘制序想复杂）。
@@ -714,6 +733,7 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 - 字体路径：`format!("{}/tests/fixtures/DejaVuSans.ttf", env!("CARGO_MANIFEST_DIR"))`。
 - 改 `ResolvedStyle` 默认/映射后，跑 layout + snapshot 测试看布局变化。
 - taffy 布局调试：看 `Node.layout_rect`（solve 回写的绝对坐标）。
+- **scroll overlap 实测**（v1d.5，坑 60）：写 `examples/dump_scroll.rs`（`load_package` + `tick_and_render` + 遍历 `scene.scroll.0` dump content/viewport/overlap/scroll_pos）。PlayMode 报「拖不动/晃动」先实测 core overlap——overlap=0 是 layout 问题（overflow 撑开/子 shrink，坑 59），非物理（方向/惯性，坑 58/60）。别猜代码。
 - 查 crate 实际 API：`~/.cargo/registry/src/<crate>-<ver>/src/`。
 - **PlayMode 命中诊断**（v1c.1）：Unity 侧加 diag log——`LoomInputCollector.Collect` Down 时 log `design=(dx,dy)` + `LoomStage.LateUpdate` log `mouse/screen/evLen/onUI`。core 侧独立验：写临时 `examples/dump_xxx.rs` 跑 `Stage::tick_and_render` 后 `hit_test(scene, design_pt)`。**core 命中但 PlayMode onUI=false → 坐标映射或 set_input 传输问题**（如输入系统不匹配坑 28）；**core 也不命中 → AABB/坐标换算**。例：坑 29 诊断时 core `hit_test(270,46)→Some(btn1)` 但 PlayMode onUI=false，定位到 Collect 未被调（LoomInputCollector 组件没挂 GO）。
 - **命中 y 偏移诊断**（v1c.1）：「按钮下半段响应上半段不响应」= Text 子节点 AABB 盖父上半段（`<div>文字</div>` 自动 Text 子 `layout_rect` 与父重叠上半）→ 逆等效序命中 Text 而非父。dump 节点 AABB 确认子是否盖父 + 对照坑 29（hover 祖先链）根治。
@@ -822,7 +842,7 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 
 **v1d.5 defer（→ v1.x）**：虚拟化 `<l-list>`、分页/吸附/下拉刷新、滚动条 fade/箭头/点轨道/CSS 定制、shift+滚轮水平、ScrollToView、EVT_SCROLL 事件、滚轮嵌套透传、软裁剪/形状遮罩、padding-edge scroll math（v1 用 border box 简化）。
 
-**v1d 全收尾 + v1 ship-ready**：v1d.1-.5 全完成（§5 全勾）。v1 验收 6 点代码全完成：#1 按钮+文本+图片（v1a/b）/#2 可滚动容器（v1d.5，待家里机验）/#3 hover/active（v1c.1）/#4 safe-area（v1d.1）/#5 is_pointer_on_ui（v1c.1）/#6 打包器二进制包（v1b.1）。**#2 家里机 PlayMode 9 点验收过 → v1 ship**。
+**v1d 全收尾 + v1 ship-ready**：v1d.1-.5 全完成（§5 全勾）。v1 验收 6 点代码全完成：#1 按钮+文本+图片（v1a/b）/#2 可滚动容器（v1d.5，待家里机验）/#3 hover/active（v1c.1）/#4 safe-area（v1d.1）/#5 is_pointer_on_ui（v1c.1）/#6 打包器二进制包（v1b.1）。**#2 家里机 PlayMode 验收发现 scroll 6 bug 链（坑 58-60：drag 方向反/x 抖/overflow 撑开/子 shrink/sentinel batch 越界/re-base 抵消），已修 326 测绿但未提交（input/scroll/stage/layout/render + dump_scroll example），用户浏览器对照 + 复验中**。另：清理冗余 demo（db422dc）+ v1e Unchanged 消失修复（7bcc4fd）已提交。
 
 **v1 其余 defer（v0 起，未动）**：
 - v1b 全收尾（A/B/C/mesh/CJK ✅）+ v1c.1 最小交互闭环 ✅ + v1c.2 路由完整化 ✅ + v1c.3 多触摸+CaptureTouch ✅ + v1c.4 click 增强 ✅ + v1d.1 拖拽+长按+safe-area ✅（家里机 PlayMode 验，main @ 013b96f，修坑 44/45）+ v1d.2 键盘+焦点+Tab+:focus ✅（家里机 PlayMode 验）+ v1d.3 transform+NativeHost-lite ✅（家里机 PlayMode 验，修坑 51/52）+ v1d.4 GTween tween 引擎 ✅（家里机 PlayMode 验，修坑 53 首帧 dt spike→demo 按钮触发）+ v1d.5 ScrollPane+滚轮+手势仲裁 ✅（main @ e8ef32c，待家里机 PlayMode 验，修坑 54/55；关验收 #2，v1d 全收尾）+ **v1e FFI 同步热路径性能优化 ✅（main @ b52a2a5，Rust 侧完成 + bench 过线；家里机待验 Profiler；Codex §4.3/§6.5 性能债务兑现）**。
