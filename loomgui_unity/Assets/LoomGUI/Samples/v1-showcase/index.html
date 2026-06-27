@@ -1,3 +1,24 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>LoomGUI v1 Showcase</title>
+<link rel="stylesheet" href="style.css">
+<style>
+/* 浏览器预览覆盖（LoomGUI 打包用外部 style.css；scraper select body 不读 head <style>）*/
+body { margin:0; background:#0d0e15; display:flex; justify-content:center; }
+/* 复刻 LoomGUI 契约（resolved.rs:69）：div 永远是 flex 容器，默认 column。
+   style.css/inline 写 flex-direction:row 处覆盖为横排——浏览器对 block div 无视 flex-direction，
+   故须全局把 div 提升为 flex。特异性 (0,0,1) < class (0,1,0) < inline，安全。*/
+div { display:flex; flex-direction:column; }
+/* taffy Style::DEFAULT 的 box-sizing 是 BorderBox（resolved.rs:73 未显式设）；浏览器默认 content-box。
+   统一为 border-box，否则 .flx(height:36+padding:4) 等 padding+固定尺寸元素尺寸不一致。*/
+* { box-sizing:border-box; }
+/* 浏览器无 tween，sec 可见（LoomGUI 靠 Driver StaggeredEntrance tween 拉亮 opacity:0）*/
+.sec { opacity:1 !important; }
+</style>
+</head>
+<body>
 <div class="root">
   <div class="header">
     <div class="title">LoomGUI v1 Showcase</div>
@@ -412,3 +433,5 @@
     </div>
   </div>
 </div>
+</body>
+</html>
