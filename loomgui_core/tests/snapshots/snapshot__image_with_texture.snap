@@ -1,6 +1,5 @@
 ---
 source: loomgui_core/tests/snapshot.rs
-assertion_line: 79
 expression: json
 ---
 [
@@ -82,19 +81,19 @@ expression: json
           ],
           [
             0.0,
-            0.0
-          ],
-          [
-            1.0,
-            0.0
+            1.0
           ],
           [
             1.0,
             1.0
+          ],
+          [
+            1.0,
+            0.0
           ],
           [
             0.0,
-            1.0
+            0.0
           ]
         ],
         "colors": [

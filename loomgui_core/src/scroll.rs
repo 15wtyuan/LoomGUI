@@ -129,6 +129,7 @@ impl ScrollPaneState {
             let cur = if ax == 0 { self.scroll_pos.0 } else { self.scroll_pos.1 };
             let d = if ax == 0 { delta.0 } else { delta.1 };
             let ov = if ax == 0 { self.overlap.0 } else { self.overlap.1 };
+            if ov <= 0.0 { continue; }  // v1d.5 fix：无 overlap 轴不动（overflow-y 容器 x overlap=0 → 防 drag 斜拖 x 抖）
             let vp = if ax == 0 { self.viewport_size.0 } else { self.viewport_size.1 };
             let mut np = cur + d;
             let lo = 0.0f32;
@@ -698,6 +699,17 @@ mod tests {
             "越界 PULL_RATIO 打折，got {}",
             st.scroll_pos.1
         );
+    }
+
+    #[test]
+    fn drag_follow_skips_zero_overlap_axis() {
+        // v1d.5 fix：overflow-y 容器 x 轴 overlap=0 → drag 不动 x（防斜拖 x 抖动）。
+        let mut st = ScrollPaneState::default();
+        st.overlap = (0.0, 100.0);  // x overlap=0（仅垂直可滚）
+        st.viewport_size = (100.0, 100.0);
+        st.drag_follow((50.0, 10.0), 0.016);  // x delta=50 但 overlap.x=0
+        assert!(st.scroll_pos.0 == 0.0, "overlap=0 轴 drag 不动（防抖），got {}", st.scroll_pos.0);
+        assert!((st.scroll_pos.1 - 10.0).abs() < 1e-2, "y 轴正常跟手，got {}", st.scroll_pos.1);
     }
 
     #[test]

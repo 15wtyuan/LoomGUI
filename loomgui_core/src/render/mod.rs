@@ -112,7 +112,12 @@ pub fn build_render_nodes(
         rn.world_matrix = wm;
         rn.visible = true;
         let rect = if crate::transform::is_pure_translation(&wm) {
-            n.layout_rect
+            // v1d.5 scroll：world.tx 含 scroll offset（world = T(layout−scroll)）。
+            // rect 用 world.tx 位置 → quad 产 world 位置 vert → blob re-base 减 world.tx → 正好 top-local
+            // → MirrorPool GO at world.tx → 渲染 = world.tx = layout−scroll（scroll 跟随）。
+            // 修复前 rect=layout（绝对）→ vert=layout → re-base 减 world.tx(含 scroll) → scroll 抵消
+            // → 控件不动（仅 Text 动，Text 不走 re-base）。无 scroll 时 world.tx=layout → 零回归。
+            crate::scene::node::Rect { x: wm[4], y: wm[5], w: n.layout_rect.w, h: n.layout_rect.h }
         } else {
             crate::scene::node::Rect { x: 0.0, y: 0.0, w: n.layout_rect.w, h: n.layout_rect.h }
         };
@@ -129,8 +134,12 @@ pub fn build_render_nodes(
                     Some(m) => (m.tex_id, m.uv_min, m.uv_max),
                     None => (0u32, [0.0, 0.0], [1.0, 1.0]),
                 };
-                let (v, uvc, col, idx) =
-                    crate::render::mesh::quad(rect, [1.0, 1.0, 1.0, 1.0], uv_min, uv_max);
+                // v 翻转：design y-down + LoomStage scale (sf,-sf,sf) 把 design 顶映到屏幕上；
+                // mesh::quad 固定 TL→(umin,vmin)（texture 底）→ 图片上下颠倒。交换 v：TL→(umin,vmax)（texture 顶）。
+                let (v, uvc, col, idx) = crate::render::mesh::quad(
+                    rect, [1.0, 1.0, 1.0, 1.0],
+                    [uv_min[0], uv_max[1]], [uv_max[0], uv_min[1]],
+                );
                 rn.payload = NodePayload::Mesh { verts: v, uvs: uvc, colors: col, indices: idx, texture: tex_id, program: 0 };
             }
             NodeKind::Text { content } => {
@@ -159,8 +168,12 @@ pub fn build_render_nodes(
         }
     }
     let clips = batch::assign_sort_keys(scene, &mut nodes);
-    // v1d.5 T9：合成 scrollbar thumb（强制 emit，不进 hash 比较——随 scroll_pos 变，数量少）。
+    // max_sort 在 reorder/merge 前算（内容 sort_key；scrollbar 用 max+1 排内容后）。
     let max_sort = nodes.iter().map(|n| n.sort_key).max().unwrap_or(0);
+    batch::reorder_for_batching(scene, &mut nodes);
+    let mut nodes = merge::merge_meshes(nodes);
+    // v1d.5 T9：合成 scrollbar thumb（merge 后追加——sentinel id = container|V/H_THUMB_FLAG 高位，
+    // batch.rs reorder 用 node 索引 scene.nodes，sentinel 越界；故不参与 batch，独立 quad 末尾追加）。
     for id in 0..scene.nodes.len() {
         let nid = NodeId(id);
         let n = &scene.nodes[id];
@@ -179,8 +192,6 @@ pub fn build_render_nodes(
             }
         }
     }
-    batch::reorder_for_batching(scene, &mut nodes);
-    let nodes = merge::merge_meshes(nodes);
     (FrameData { nodes, clips }, new_hashes)
 }
 
@@ -306,9 +317,9 @@ mod tests {
             NodePayload::Mesh { texture, uvs, .. } => {
                 assert_eq!(*texture, tid, "注册后 Image.texture == 注册分配的 tex_id");
                 assert_ne!(*texture, 0, "已注册 tex_id 不应为 0");
-                // UV 按 region 烤：TL/BR 命中 uv_min/uv_max。
-                assert_eq!(uvs[0], [0.25, 0.0], "TL == uv_min");
-                assert_eq!(uvs[2], [0.5, 1.0], "BR == uv_max");
+                // UV 按 region 烤 + v 翻转（design y-down 配 Unity y-up）：TL=(umin,vmax)，BR=(umax,vmin)。
+                assert_eq!(uvs[0], [0.25, 1.0], "TL == (uv_min.u, uv_max.v)");
+                assert_eq!(uvs[2], [0.5, 0.0], "BR == (uv_max.u, uv_min.v)");
             }
             _ => panic!("expected Mesh"),
         }
@@ -350,8 +361,8 @@ mod tests {
         let (frame, _) = build_render_nodes(&scene, &font, &tex, &[]);
         match &frame.nodes[0].payload {
             NodePayload::Mesh { uvs, .. } => {
-                assert_eq!(uvs[0], [0.0, 0.0], "未注册 TL == (0,0)");
-                assert_eq!(uvs[2], [1.0, 1.0], "未注册 BR == (1,1)");
+                assert_eq!(uvs[0], [0.0, 1.0], "未注册 TL == (0,1)（v 翻转）");
+                assert_eq!(uvs[2], [1.0, 0.0], "未注册 BR == (1,0)（v 翻转）");
             }
             _ => panic!("expected Mesh"),
         }
@@ -562,6 +573,40 @@ mod tests {
             .expect("merged node 存在");
         assert!(crate::transform::is_identity(&merged.world_matrix));
         assert!((merged.alpha - 1.0).abs() < 1e-6, "merged alpha=1 防 blob 二次烤");
+    }
+
+    #[test]
+    fn image_uv_flips_v_for_design_y_down() {
+        // §1.2：design y-down + LoomStage scale (sf,-sf,sf) 把 design 顶映到屏幕上；
+        // mesh::quad 固定 TL→(umin,vmin)（texture 底）→ Unity 上下颠倒。须 swap v：TL→(umin,vmax)。
+        let mut scene = Scene {
+            roots: vec![NodeId(0)], nodes: vec![],
+            dynamic_rules: Default::default(), focused_node: None,
+            world_transforms: Vec::new(), anim: Default::default(), scroll: Default::default(),
+        };
+        let mut root = Node::default();
+        root.id = NodeId(0); root.kind = NodeKind::Container;
+        root.layout_rect = Rect { x: 0.0, y: 0.0, w: 100.0, h: 100.0 };
+        let mut img = Node::default();
+        img.id = NodeId(1); img.parent = Some(NodeId(0));
+        img.kind = NodeKind::Image { src: "a.png".into() };
+        img.layout_rect = Rect { x: 0.0, y: 0.0, w: 10.0, h: 10.0 };
+        root.children = vec![NodeId(1)];
+        scene.nodes.push(root);
+        scene.nodes.push(img);
+        let font = test_font().expect("need test font");
+        let mut tex = TextureRegistry::default();
+        tex.insert("a.png", TexMeta { tex_id: 1, uv_min: [0.25, 0.25], uv_max: [0.75, 0.75], width: 10, height: 10 });
+        crate::scene::transform::compute_world_transforms(&mut scene);
+        let (frame, _) = build_render_nodes(&scene, &font, &tex, &[]);
+        let img_rn = frame.nodes.iter()
+            .find(|n| matches!(&n.payload, NodePayload::Mesh { verts, texture, .. } if *texture == 1 && verts.len() == 4))
+            .expect("img 4-vert mesh");
+        if let NodePayload::Mesh { uvs, .. } = &img_rn.payload {
+            // vert 序 TL,TR,BR,BL（mesh::quad）；TL（design 顶左）→ (umin, vmax) = (0.25, 0.75)。
+            assert!((uvs[0][0] - 0.25).abs() < 1e-3, "TL u=0.25，got {}", uvs[0][0]);
+            assert!((uvs[0][1] - 0.75).abs() < 1e-3, "TL v=0.75（texture 顶，配 design 顶），got {}", uvs[0][1]);
+        }
     }
 
     /// v1d.4：build_render_nodes 读 anim.opacity/bg_color override（replace-override）。

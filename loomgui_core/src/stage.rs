@@ -469,7 +469,7 @@ mod tests {
         use crate::transform::Affine2Ext;
         let font_path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/DejaVuSans.ttf");
         let html = r#"<div class="scroll"><div class="content"></div></div>"#;
-        let css = r#".scroll{width:200px;height:200px;overflow:scroll;} .content{width:50px;height:400px;}"#;
+        let css = r#".scroll{width:200px;height:200px;overflow:scroll;} .content{width:50px;height:400px;flex-shrink:0;}"#;
         let mut s = Stage::new(font_path, (200.0, 200.0)).unwrap();
         s.load_inline(html, css).unwrap();
         // 首 tick 建立 layout + content_size/overlap
@@ -483,7 +483,7 @@ mod tests {
         s.tick_and_render();
         // 子节点 world.apply 反映 scroll_pos（非 0）
         let scene = s.scene.as_ref().unwrap();
-        // scroll 容器=NodeId(0)，content 子=NodeId(1)
+        // content 子=NodeId(1)；drag 下拖 → scroll_pos.y 减（越界打折负值）→ world y 反映（≠0）
         let (_x, y) = scene.world_transforms[1].apply_point(0.0, 0.0);
         assert!(y != 0.0, "拖拽同帧进 world matrix：y={}", y);
     }

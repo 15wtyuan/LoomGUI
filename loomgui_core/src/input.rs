@@ -637,8 +637,12 @@ impl PointerState {
                                 }
                             }
                         } else if let Some(s) = scene.scroll.get_mut(pane) {
-                            let delta = (slot.last_pos.0 - prev_pos.0, slot.last_pos.1 - prev_pos.1);
-                            s.drag_follow(delta, /*dt*/ 0.016);
+                            // 触屏拖动：手指位移 → scroll_pos 反向（下拖看上方 = scroll_pos 减），
+                            // 与 apply_wheel 一致（wheel delta.y>0 → scroll_pos -= delta*STEP，scroll.rs:271）。
+                            // design y 向下（ScreenToDesign）→ 下拖 design delta.y>0 → scroll_pos 应减。
+                            // 修复前传 +位移 → 方向反（内容反向移 + 越界回弹 = "拖不动、四处晃动"）。
+                            let scroll_delta = (prev_pos.0 - slot.last_pos.0, prev_pos.1 - slot.last_pos.1);
+                            s.drag_follow(scroll_delta, /*dt*/ 0.016);
                         }
                     }
                     Self::hover_diff_slot(slot, scene, &mut out);
@@ -2243,10 +2247,10 @@ mod tests {
         let mut ps = PointerState::new();
         ps.process(&mut s, &[PointerEvent { kind: PointerKind::Down, x: 10.0, y: 10.0, button: 0, pad: [0, 0], touch_id: -1 }]);
         ps.process(&mut s, &[PointerEvent { kind: PointerKind::Move, x: 10.0, y: 25.0, button: 0, pad: [0, 0], touch_id: -1 }]); // scroll 启动
-        // 再 Move @(10,35) → drag_follow delta=(0,10) → scroll_pos.y += 10（界内 1:1）
+        // 再 Move @(10,35) → design 下拖 +10 → scroll_pos.y 减（看上方，触屏跟手；与 apply_wheel 一致）
         ps.process(&mut s, &[PointerEvent { kind: PointerKind::Move, x: 10.0, y: 35.0, button: 0, pad: [0, 0], touch_id: -1 }]);
         let st = s.scroll.get(NodeId(1)).unwrap();
-        assert!(st.scroll_pos.1 > 0.0, "scroll 启动后 Move 跟手 → scroll_pos.y 推进，got {}", st.scroll_pos.1);
+        assert!(st.scroll_pos.1 < 0.0, "下拖 design +y → scroll_pos.y 减（看上方），got {}", st.scroll_pos.1);
     }
 
     #[test]

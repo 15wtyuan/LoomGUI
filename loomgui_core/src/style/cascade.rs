@@ -1,4 +1,4 @@
-use crate::parse::css::{Rule, StyleSheet};
+use crate::parse::css::{parse_inline_style, Rule, StyleSheet};
 use crate::parse::dom::{ElementId, ElementTree};
 use crate::parse::selector::{match_element, parse_selector, Specificity};
 use crate::style::mapping::apply_decl;
@@ -40,6 +40,13 @@ pub fn resolve_styles(tree: &ElementTree, sheet: &StyleSheet) -> Vec<ResolvedSty
         rules.sort_by_key(|r| specificity_of(r));
         for rule in rules {
             for decl in &rule.declarations {
+                apply_decl(&mut style, &decl.prop, &decl.value);
+            }
+        }
+        // inline style（specificity 最高，> id > class）：sheet rules 之后 apply，最后胜出。
+        // v1d.5+ 补 v0 缺口——色块 style="background-color:..." / §2 flx style="flex-direction:..." 等。
+        if let Some(style_str) = el.attrs.get("style") {
+            for decl in parse_inline_style(style_str) {
                 apply_decl(&mut style, &decl.prop, &decl.value);
             }
         }
@@ -118,5 +125,31 @@ mod tests {
             [136.0 / 255.0, 136.0 / 255.0, 136.0 / 255.0, 1.0],
             "base 该是 .btn 灰，不该被伪类规则污染（修复前会被 :focus 紫污染）"
         );
+    }
+
+    #[test]
+    fn inline_style_applies_background_color() {
+        // §1 色块：<div class="sw" style="background-color:#1a1d2e"> —— 颜色靠 inline
+        // （.sw class 只给 width/height；不解析 inline → bg 缺失 → 透明看不见）。
+        let html = r#"<div class="root"><div class="sw" style="background-color:#1a1d2e"></div></div>"#;
+        let css = r#".sw { width: 60px; height: 60px; }"#;
+        let tree = parse_html(html).unwrap();
+        let sheet = parse_css(css).unwrap();
+        let styles = resolve_styles(&tree, &sheet);
+        let sw_id = tree.nodes[tree.roots[0].0].children[0];
+        let bg = styles[sw_id.0].background_color.expect(".sw inline bg");
+        assert_eq!(bg, [0x1a as f32 / 255.0, 0x1d as f32 / 255.0, 0x2e as f32 / 255.0, 1.0]);
+    }
+
+    #[test]
+    fn inline_style_overrides_class_rule() {
+        // CSS specificity：inline > id > class。inline 必须最后 apply 胜出。
+        let html = r#"<div class="root"><div class="a" style="color:#00ff00"></div></div>"#;
+        let css = r#".a { color: #ff0000; }"#;
+        let tree = parse_html(html).unwrap();
+        let sheet = parse_css(css).unwrap();
+        let styles = resolve_styles(&tree, &sheet);
+        let id = tree.nodes[tree.roots[0].0].children[0];
+        assert_eq!(styles[id.0].color, [0.0, 1.0, 0.0, 1.0], "inline 绿胜 class 红");
     }
 }

@@ -119,6 +119,22 @@ pub fn parse_css(css: &str) -> Result<StyleSheet, String> {
     Ok(StyleSheet { rules })
 }
 
+/// 解析元素 inline `style="..."` 属性值（无 selector 的 declaration list，如
+/// `"background-color:#1a1d2e; flex-direction:row"`）→ Declaration 列表。
+/// 复用 DeclParser + RuleBodyParser（与 parse_block 同源）——inline style 本质即
+/// declaration list，RuleBodyParser 不强制外层 `{}`。
+pub fn parse_inline_style(style: &str) -> Vec<Declaration> {
+    let mut input = ParserInput::new(style);
+    let mut parser = Parser::new(&mut input);
+    let mut decl_parser = DeclParser;
+    let body = RuleBodyParser::new(&mut parser, &mut decl_parser);
+    let mut decls = Vec::new();
+    for d in body.flatten() {
+        decls.push(d);
+    }
+    decls
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -138,5 +154,16 @@ mod tests {
         let ss = parse_css("div {  padding : 4px ; }").unwrap();
         assert_eq!(ss.rules[0].declarations[0].prop, "padding");
         assert_eq!(ss.rules[0].declarations[0].value, "4px");
+    }
+
+    #[test]
+    fn parse_inline_style_parses_declarations() {
+        // §1 色块 style="background-color:#1a1d2e" 等 inline 属性解析。
+        let decls = parse_inline_style("background-color:#1a1d2e; flex-direction:row");
+        assert_eq!(decls.len(), 2);
+        assert_eq!(decls[0].prop, "background-color");
+        assert_eq!(decls[0].value, "#1a1d2e");
+        assert_eq!(decls[1].prop, "flex-direction");
+        assert_eq!(decls[1].value, "row");
     }
 }
