@@ -35,6 +35,7 @@ namespace LoomGUI
                         mat.SetVector("_ClipBox", cb);
                 }
                 if (matrixFlag) mat.EnableKeyword("OBJECT_MATRIX");
+                if (program == 1) mat.EnableKeyword("ALPHA_MASK");   // text: font atlas 是 alpha-mask（rgb 黑，glyph 在 alpha）
                 _cache[key] = mat;
             }
             return mat;

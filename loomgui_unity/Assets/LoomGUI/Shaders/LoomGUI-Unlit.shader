@@ -24,6 +24,7 @@ Shader "LoomGUI/Unlit"
             #pragma fragment frag
             #pragma multi_compile _ CLIPPED
             #pragma multi_compile _ OBJECT_MATRIX
+            #pragma multi_compile _ ALPHA_MASK
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
 
             struct Attr { float4 pos : POSITION; float4 color : COLOR; float2 uv : TEXCOORD0; };
@@ -66,7 +67,20 @@ Shader "LoomGUI/Unlit"
                 return o;
             }
             half4 frag(Vary i) : SV_Target {
-                half4 col = SAMPLE_TEXTURE2D(_MainTex, sampler_MainTex, i.uv) * i.color;
+                // vertex color 来自 CSS（sRGB 编码）；Linear 项目 Unity 不自动转 vertex color → 须手动 sRGB→linear，
+                // 否则颜色偏浅/灰蒙蒙（#1a1d2e sRGB 0.10 当 linear 显示 ~0.35）。texture 是 sRGB format 自动转，不重复。alpha 线性不转。
+                half4 vcol = i.color;
+                // sRGB → linear（精确 sRGB 公式；CSS 颜色 sRGB，Linear 项目 Unity 不自动转 vertex color）。
+                half3 sc = vcol.rgb;
+                vcol.rgb = (sc <= 0.04045) ? sc / 12.92 : pow((sc + 0.055) / 1.055, 2.4);
+                half4 tex = SAMPLE_TEXTURE2D(_MainTex, sampler_MainTex, i.uv);
+                #if defined(ALPHA_MASK)
+                // text（program:1）：font atlas 是 alpha-mask（glyph 在 alpha，rgb 黑）→ rgb 用 vcol，alpha = vcol.a * tex.a。
+                half4 col = half4(vcol.rgb, vcol.a * tex.a);
+                #else
+                // image/mesh（program:0）：彩色 texture → tex.rgb × vcol。
+                half4 col = tex * vcol;
+                #endif
                 #ifdef CLIPPED
                 float2 f = abs(i.clipPos);
                 col.a *= step(max(f.x, f.y), 1.0);

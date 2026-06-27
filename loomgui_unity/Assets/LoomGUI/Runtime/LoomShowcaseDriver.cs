@@ -27,8 +27,12 @@ namespace LoomGUI
             if (_stage == null) { Debug.LogError("[Showcase] 无 LoomStage"); return; }
         }
 
+        // #1a1d2e = .root 背景色（showcase 深蓝底）。主相机配同色，letterbox 与 root 无缝。
+        static readonly Color RootBg = new Color(26f / 255f, 29f / 255f, 46f / 255f, 1f);
+
         void Start()
         {
+            ConfigureCameraBackground();
             _scrollNode = _stage.FindNodeById("main-scroll");
             for (int i = 0; i < 8; i++)
             {
@@ -55,6 +59,18 @@ namespace LoomGUI
                 _stage.Tween(node, TweenProp.Opacity,
                     new float[] { 0f, 0, 0, 0 }, new float[] { 1f, 0, 0, 0 },
                     0.4f, Ease.CubicOut, i * 0.04f, 0);
+            }
+        }
+
+        // 主相机默认 Skybox（蓝灰渐变）；root shrink-to-fit + safeArea letterbox 后透出 → 整体灰蒙蒙。
+        // LoomUICamera clearFlags=Depth 不清色、叠在主相机上。改主相机纯色 = root bg，letterbox 统一深色。
+        void ConfigureCameraBackground()
+        {
+            var cam = Camera.main;
+            if (cam != null)
+            {
+                cam.clearFlags = CameraClearFlags.SolidColor;
+                cam.backgroundColor = RootBg;
             }
         }
 
