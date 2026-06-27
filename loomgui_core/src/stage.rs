@@ -396,7 +396,7 @@ mod tests {
         let font_path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/DejaVuSans.ttf");
         let mut s = Stage::new(font_path, (200.0, 100.0)).unwrap();
         // 手搓空 scene
-        s.scene = Some(crate::scene::node::Scene { roots: vec![], nodes: vec![], dynamic_rules: Default::default(), focused_node: None, world_transforms: Vec::new(), anim: Default::default(), scroll: Default::default() });
+        s.scene = Some(crate::scene::node::Scene { roots: vec![], nodes: vec![], dynamic_rules: Default::default(), focused_node: None, world_transforms: Vec::new(), anim: Default::default(), scroll: Default::default(), text_layouts: Vec::new() });
         s.set_input(&[crate::input::PointerEvent { kind: crate::input::PointerKind::Move, x: 50.0, y: 50.0, button: 0, pad: [0, 0], touch_id: -1 }]);
         s.tick_and_render();
         assert!(!s.is_pointer_on_ui(), "空 scene → false");

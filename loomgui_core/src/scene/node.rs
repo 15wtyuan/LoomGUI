@@ -173,6 +173,13 @@ pub struct Scene {
     pub anim: AnimTable,
     /// v1d.5：每节点滚动状态（refresh_content_sizes / scroll 物理填）。index = NodeId.0。运行时态，不进 pkg。
     pub scroll: crate::scroll::ScrollTable,
+    /// 坑 67：每节点 text 测量结果（layout solve 填，render 复用——消除双测量不一致）。
+    /// index = NodeId.0，仅 Text 节点 Some。运行时态，不进 pkg。
+    ///
+    /// 根因：layout 闭包用 taffy 选定 max_width 测（短文本 intrinsic≈available → taffy 传 None
+    /// 不换行；长文本 → Some(available) 换行），render 原用 rect.w（stretch 后的 available 整数宽）
+    /// 重测，短文本因 intrinsic 亚像素超 available 误判换行。修复：render 复用 layout 结果，不重测。
+    pub text_layouts: Vec<Option<crate::text::layout::TextLayout>>,
 }
 
 impl Scene {
@@ -186,7 +193,7 @@ impl Scene {
             nodes: Vec::new(),
             dynamic_rules: crate::style::dynamic::DynamicRuleTable::default(),
             focused_node: None,
-            world_transforms: Vec::new(), anim: Default::default(), scroll: Default::default(),
+            world_transforms: Vec::new(), anim: Default::default(), scroll: Default::default(), text_layouts: Vec::new(),
         };
         for (i, (parent_idx, kind, style, classes, id_attr, draggable, tabindex)) in entries.iter().enumerate() {
             scene.nodes.push(Node {
@@ -225,6 +232,8 @@ impl Scene {
                 None => scene.roots.push(NodeId(i)),
             }
         }
+        // text_layouts 随 nodes 长度对齐（None 占位，layout::solve 填实际 TextLayout）。
+        scene.text_layouts = vec![None; scene.nodes.len()];
         scene
     }
 
@@ -356,7 +365,7 @@ mod tests {
             nodes: vec![],
             dynamic_rules: Default::default(),
             focused_node: None,
-            world_transforms: Vec::new(), anim: Default::default(), scroll: Default::default(),
+            world_transforms: Vec::new(), anim: Default::default(), scroll: Default::default(), text_layouts: Vec::new(),
         };
         assert!(
             s.dynamic_rules.rules.is_empty(),
@@ -378,7 +387,7 @@ mod tests {
             nodes: vec![],
             dynamic_rules: Default::default(),
             focused_node: None,
-            world_transforms: Vec::new(), anim: Default::default(), scroll: Default::default(),
+            world_transforms: Vec::new(), anim: Default::default(), scroll: Default::default(), text_layouts: Vec::new(),
         };
         assert_eq!(s.focused_node, None, "Scene 默认 focused_node=None");
     }

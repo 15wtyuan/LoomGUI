@@ -144,10 +144,22 @@ pub fn build_render_nodes(
             }
             NodeKind::Text { content } => {
                 let s = &n.style;
-                let mut layout = measure_text(
-                    content, s.font_size, s.line_height, s.letter_spacing,
-                    s.text_align, s.white_space_nowrap, Some(rect.w), font,
-                );
+                // 坑 67：复用 layout 阶段 TextLayout（taffy 选定 max_width 测），不重测。
+                // render 原用 rect.w（stretch 后 available 整数宽）重测，短文本 intrinsic
+                // 亚像素超 available（如 152.052 > 152）→ 误判换行 → 末字"换行"到无高度的第 2 行。
+                // 复用 layout 结果（短文本 None=不换行，长文本 available=换行）消除不一致。
+                // fallback（text_layouts 空，如 test 未走 solve）：用 rect.w 测，保向后兼容。
+                let mut layout = scene
+                    .text_layouts
+                    .get(n.id.0)
+                    .cloned()
+                    .flatten()
+                    .unwrap_or_else(|| {
+                        measure_text(
+                            content, s.font_size, s.line_height, s.letter_spacing,
+                            s.text_align, s.white_space_nowrap, Some(rect.w), font,
+                        )
+                    });
                 let off_x = resolve_lp(s.taffy_style.border.left) + resolve_lp(s.taffy_style.padding.left);
                 let off_y = resolve_lp(s.taffy_style.border.top) + resolve_lp(s.taffy_style.padding.top);
                 if off_x != 0.0 || off_y != 0.0 {
@@ -227,7 +239,9 @@ mod tests {
     use super::*;
     use crate::asset::texture::{TexMeta, TextureRegistry};
     use crate::scene::node::*;
-    use crate::style::resolved::TextAlign;
+    use crate::style::resolved::{ResolvedStyle, TextAlign};
+    use crate::text::layout::measure_text;
+    use taffy::style::Dimension;
 
     /// 测试字体：仓库内 DejaVuSans.ttf（跨平台一致），缺则跳过。
     fn test_font() -> Option<Font> {
@@ -254,7 +268,7 @@ mod tests {
             nodes: vec![],
             dynamic_rules: Default::default(),
             focused_node: None,
-            world_transforms: Vec::new(), anim: Default::default(), scroll: Default::default(),
+            world_transforms: Vec::new(), anim: Default::default(), scroll: Default::default(), text_layouts: Vec::new(),
         };
         scene.nodes.push(container_node(
             0,
@@ -298,7 +312,7 @@ mod tests {
 
     #[test]
     fn build_image_uses_registered_tex_id() {
-        let mut scene = Scene { roots: vec![NodeId(0)], nodes: vec![], dynamic_rules: Default::default(), focused_node: None, world_transforms: Vec::new(), anim: Default::default(), scroll: Default::default() };
+        let mut scene = Scene { roots: vec![NodeId(0)], nodes: vec![], dynamic_rules: Default::default(), focused_node: None, world_transforms: Vec::new(), anim: Default::default(), scroll: Default::default(), text_layouts: Vec::new() };
         let mut a = Node::default();
         a.id = NodeId(0);
         a.kind = NodeKind::Image { src: "logo.png".into() };
@@ -327,7 +341,7 @@ mod tests {
 
     #[test]
     fn build_image_unregistered_is_zero() {
-        let mut scene = Scene { roots: vec![NodeId(0)], nodes: vec![], dynamic_rules: Default::default(), focused_node: None, world_transforms: Vec::new(), anim: Default::default(), scroll: Default::default() };
+        let mut scene = Scene { roots: vec![NodeId(0)], nodes: vec![], dynamic_rules: Default::default(), focused_node: None, world_transforms: Vec::new(), anim: Default::default(), scroll: Default::default(), text_layouts: Vec::new() };
         let mut a = Node::default();
         a.id = NodeId(0);
         a.kind = NodeKind::Image { src: "logo.png".into() };
@@ -348,7 +362,7 @@ mod tests {
     #[test]
     fn build_image_unregistered_uv_is_full() {
         // 未注册 src → 哨兵 uv (0,0)-(1,1)（与 tex_id=0 白占位配合，UV 无关）。
-        let mut scene = Scene { roots: vec![NodeId(0)], nodes: vec![], dynamic_rules: Default::default(), focused_node: None, world_transforms: Vec::new(), anim: Default::default(), scroll: Default::default() };
+        let mut scene = Scene { roots: vec![NodeId(0)], nodes: vec![], dynamic_rules: Default::default(), focused_node: None, world_transforms: Vec::new(), anim: Default::default(), scroll: Default::default(), text_layouts: Vec::new() };
         let mut a = Node::default();
         a.id = NodeId(0);
         a.kind = NodeKind::Image { src: "logo.png".into() };
@@ -382,7 +396,7 @@ mod tests {
             nodes: vec![],
             dynamic_rules: Default::default(),
             focused_node: None,
-            world_transforms: Vec::new(), anim: Default::default(), scroll: Default::default(),
+            world_transforms: Vec::new(), anim: Default::default(), scroll: Default::default(), text_layouts: Vec::new(),
         };
         let mut n = Node::default();
         n.id = NodeId(0);
@@ -434,7 +448,7 @@ mod tests {
             nodes: vec![],
             dynamic_rules: Default::default(),
             focused_node: None,
-            world_transforms: Vec::new(), anim: Default::default(), scroll: Default::default(),
+            world_transforms: Vec::new(), anim: Default::default(), scroll: Default::default(), text_layouts: Vec::new(),
         };
         let mut n = Node::default();
         n.id = NodeId(0);
@@ -495,7 +509,7 @@ mod tests {
             nodes: vec![],
             dynamic_rules: Default::default(),
             focused_node: None,
-            world_transforms: Vec::new(), anim: Default::default(), scroll: Default::default(),
+            world_transforms: Vec::new(), anim: Default::default(), scroll: Default::default(), text_layouts: Vec::new(),
         };
         let mut root = container_node(0, None, Rect::default(), None);
         root.clip_rect = Some(Rect::default()); // 开 mask_context=1
@@ -526,7 +540,7 @@ mod tests {
     /// 结果：FrameData 含恰好 1 个 8-vert Mesh payload（两 Image 合并）。
     #[test]
     fn build_merges_adjacent_same_drawstate_meshes() {
-        let mut scene = Scene { roots: vec![NodeId(0)], nodes: vec![], dynamic_rules: Default::default(), focused_node: None, world_transforms: Vec::new(), anim: Default::default(), scroll: Default::default() };
+        let mut scene = Scene { roots: vec![NodeId(0)], nodes: vec![], dynamic_rules: Default::default(), focused_node: None, world_transforms: Vec::new(), anim: Default::default(), scroll: Default::default(), text_layouts: Vec::new() };
         let mut root = container_node(
             0,
             None,
@@ -582,7 +596,7 @@ mod tests {
         let mut scene = Scene {
             roots: vec![NodeId(0)], nodes: vec![],
             dynamic_rules: Default::default(), focused_node: None,
-            world_transforms: Vec::new(), anim: Default::default(), scroll: Default::default(),
+            world_transforms: Vec::new(), anim: Default::default(), scroll: Default::default(), text_layouts: Vec::new(),
         };
         let mut root = Node::default();
         root.id = NodeId(0); root.kind = NodeKind::Container;
@@ -620,7 +634,7 @@ mod tests {
             focused_node: None,
             world_transforms: Vec::new(),
             anim: Default::default(),
-            scroll: Default::default(),
+            scroll: Default::default(), text_layouts: Vec::new(),
         };
         let mut n = container_node(0, None, Rect { x: 0.0, y: 0.0, w: 10.0, h: 10.0 }, Some([1.0, 0.0, 0.0, 1.0]));
         n.style.opacity = 1.0;
@@ -724,7 +738,7 @@ mod tests {
         let mut scene = Scene {
             roots: vec![NodeId(0)], nodes: vec![],
             dynamic_rules: Default::default(), focused_node: None,
-            world_transforms: Vec::new(), anim: Default::default(), scroll: Default::default(),
+            world_transforms: Vec::new(), anim: Default::default(), scroll: Default::default(), text_layouts: Vec::new(),
         };
         scene.nodes.push(container_node(0, None, Rect { x: 0.0, y: 0.0, w: 10.0, h: 10.0 }, Some([1.0,0.0,0.0,1.0])));
         let font = test_font().expect("need font");
@@ -741,7 +755,7 @@ mod tests {
         let mut scene = Scene {
             roots: vec![NodeId(0)], nodes: vec![],
             dynamic_rules: Default::default(), focused_node: None,
-            world_transforms: Vec::new(), anim: Default::default(), scroll: Default::default(),
+            world_transforms: Vec::new(), anim: Default::default(), scroll: Default::default(), text_layouts: Vec::new(),
         };
         scene.nodes.push(container_node(0, None, Rect { x: 0.0, y: 0.0, w: 10.0, h: 10.0 }, Some([1.0,0.0,0.0,1.0])));
         let font = test_font().expect("need font");
@@ -761,7 +775,7 @@ mod tests {
         let mut scene = Scene {
             roots: vec![NodeId(0)], nodes: vec![],
             dynamic_rules: Default::default(), focused_node: None,
-            world_transforms: Vec::new(), anim: Default::default(), scroll: Default::default(),
+            world_transforms: Vec::new(), anim: Default::default(), scroll: Default::default(), text_layouts: Vec::new(),
         };
         scene.nodes.push(container_node(0, None, Rect { x: 0.0, y: 0.0, w: 10.0, h: 10.0 }, Some([1.0,0.0,0.0,1.0])));
         let font = test_font().expect("need font");
@@ -780,7 +794,7 @@ mod tests {
         let mut scene = Scene {
             roots: vec![NodeId(0)], nodes: vec![],
             dynamic_rules: Default::default(), focused_node: None,
-            world_transforms: Vec::new(), anim: Default::default(), scroll: Default::default(),
+            world_transforms: Vec::new(), anim: Default::default(), scroll: Default::default(), text_layouts: Vec::new(),
         };
         scene.nodes.push(container_node(0, None, Rect { x: 0.0, y: 0.0, w: 10.0, h: 10.0 }, Some([1.0,0.0,0.0,1.0])));
         let font = test_font().expect("need font");
@@ -792,5 +806,72 @@ mod tests {
         let (f2, _) = build_render_nodes(&scene, &font, &TextureRegistry::default(), &stale);
         assert!(f2.nodes.iter().all(|n| !matches!(n.payload, NodePayload::Unchanged)),
             "prev_hashes 长度不符 → 全 emit（防错位）");
+    }
+
+    /// 坑 67 方案 A：render 复用 layout 阶段 TextLayout，不重测。
+    /// 验证：solve 填 scene.text_layouts，build_render_nodes 的 Text payload 行数
+    /// == text_layouts 行数（render 直接读，不再 measure_text）。
+    /// showcase 72 个短标题"末字换行"修复由 dump_text 端到端验收（before=2 after=1）。
+    #[test]
+    fn render_text_payload_matches_layout_text_layout() {
+        let font = match test_font() {
+            Some(f) => f,
+            None => { eprintln!("skip: no test font"); return; }
+        };
+        let content = "the layout reuse check text";
+        let fs = 16.0;
+        let mut root_s = ResolvedStyle::default();
+        root_s.taffy_style.size.width = Dimension::Length(120.0);
+        let mut text_s = ResolvedStyle::default();
+        text_s.font_size = fs;
+        let entries = vec![
+            (None, NodeKind::Container, root_s, vec![], None, false, None),
+            (Some(0), NodeKind::Text { content: content.into() }, text_s, vec![], None, false, None),
+        ];
+        let mut scene = Scene::build(&entries);
+        let tex = TextureRegistry::default();
+        crate::layout::solve(&mut scene, &font, (120.0, 100.0), &tex);
+        assert!(scene.text_layouts[1].is_some(), "solve 应为 Text 节点填 text_layouts");
+        let layout_lines = scene.text_layouts[1].as_ref().unwrap().lines.len();
+        crate::scene::transform::compute_world_transforms(&mut scene);
+        let (frame, _) = build_render_nodes(&scene, &font, &tex, &[]);
+        let render_lines = match &frame.nodes[1].payload {
+            NodePayload::Text { layout, .. } => layout.lines.len(),
+            _ => panic!("expected Text payload"),
+        };
+        assert_eq!(render_lines, layout_lines, "render 应复用 layout TextLayout（行数一致，不重测）");
+    }
+
+    /// 方案 A 回归：长文本（intrinsic 远超 container）仍正确换行。
+    /// 防修复"复用 layout TextLayout"后长文本变成单行溢出。
+    #[test]
+    fn render_long_text_still_wraps_with_layout_reuse() {
+        let font = match test_font() {
+            Some(f) => f,
+            None => { eprintln!("skip: no test font"); return; }
+        };
+        let content = "The quick brown fox jumps over the lazy dog again and again";
+        let fs = 16.0;
+        let intrinsic = measure_text(content, fs, 0.0, 0.0, TextAlign::Left, false, None, &font).text_width;
+        let container_w = 100.0;
+        assert!(intrinsic > container_w, "测试前置：长文本 intrinsic 应远超 container");
+        let mut root_s = ResolvedStyle::default();
+        root_s.taffy_style.size.width = Dimension::Length(container_w);
+        let mut text_s = ResolvedStyle::default();
+        text_s.font_size = fs;
+        let entries = vec![
+            (None, NodeKind::Container, root_s, vec![], None, false, None),
+            (Some(0), NodeKind::Text { content: content.into() }, text_s, vec![], None, false, None),
+        ];
+        let mut scene = Scene::build(&entries);
+        let tex = TextureRegistry::default();
+        crate::layout::solve(&mut scene, &font, (container_w, 100.0), &tex);
+        crate::scene::transform::compute_world_transforms(&mut scene);
+        let (frame, _) = build_render_nodes(&scene, &font, &tex, &[]);
+        let lines = match &frame.nodes[1].payload {
+            NodePayload::Text { layout, .. } => layout.lines.len(),
+            _ => panic!("expected Text payload"),
+        };
+        assert!(lines >= 2, "长文本 intrinsic={:.1} container={} 应换行，got {} 行", intrinsic, container_w, lines);
     }
 }

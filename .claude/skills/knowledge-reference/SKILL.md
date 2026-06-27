@@ -758,11 +758,25 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 **解决**：改 parse-time style 逻辑（cascade/resolve/mapping/parse）必须 `cargo run -p loomgui_pkg` 重打 pkg（html/css 未变也要）；纯 runtime（render/layout measure/scroll/anim）改 .dll 即可。
 **教训**：分 parse-time（进 pkg base_style）vs runtime（用 pkg）逻辑；前者改重打 pkg，后者改 .dll。`dump_sw` example 验 pkg 里节点 base_style 值确认是否进包。
 
-### 坑 67：text 换行浮点边界（v1-showcase 验收，**待修**）
-**症状**：card-t `"1.2 img 整图"` 的"图"字换行；多个标题同样。
-**根因**：layout 给 text `rect.w = measure text_width`（精确 122.3643）；render `build_render_nodes` 用 `Some(rect.w)` 重 measure，浮点累加 advance 在相等边界微超 max（`cur_w+cw`≈122.36431 > 122.3643）→ 末字误断。manual `measure(s,Some(122.4))` fit / `Some(122.0)` 换行。
-**解决**：**待修**（曾用 `rect.w+0.5` 硬编码 hack 已还原）。候选：① layout 返 `text_width.ceil()`（CSS px 整数，rect.w 严格>text_width）② measure 换行加浮点 epsilon（`cur_w+cw > max_w + 1e-3`）③ build_render_nodes 不重 measure 复用 layout 结果。
-**教训**：text 用 measure 宽作 flex basis，render 用同宽再 measure 在浮点相等边界敏感；TDD 写 `measure_text(s, Some(prev_text_width))` 应 lines=1 防回归。
+### 坑 67：layout/render 双测量 text 换行不一致（v1-showcase 验收，**已修·方案 A**）
+**症状**：showcase 72 个短标题（`"1.2 img 整图"` / `"预期: ..."` 等）末字"换行"——末字溢出到无高度的第 2 行。
+**根因**（深度查证，推翻早先"浮点边界"猜测）：`measure_text` 被**独立调用两次**，max_width 来源不同——
+- **layout**（taffy 闭包）：taffy 按需传 `known.width`。短文本（max-content 略 ≤ available）**只传 None**→1 行（rect.h=1 行高）；长文本（max-content ≫ available）传 `Some(available)`→多行。
+- **render**（`build_render_nodes`）：**永远用 `rect.w`**（stretch 后的 available 整数宽）重测。短文本 intrinsic（152.052）亚像素超 available（152）→ 严格 `>` 判 → 误判 2 行 → 与 layout 的 rect.h(1 行) 不一致 → 末字溢出。
+- 关键：`rect.w`（available）可能 < intrinsic，**render 不能用 rect.w 作 max_width**。
+**解决**（方案 A：消除双测量，layout 为唯一测量权威）：① `Scene.text_layouts: Vec<Option<TextLayout>>`（与 world_transforms 并列的 solve-填 transient 字段）② layout 闭包"Some 优先"存 TextLayout（短文本只 None→存 None 1 行；长文本 None+Some→存 Some 多行；taffy 末尾补测 None 不覆盖）③ render 读 `scene.text_layouts`（fallback `measure_text(rect.w)` 保 test 向后兼容）。dump_text 验收：72 短标题 before(measure rect.w)=2 → after(text_layouts)=1；长文本 6/4/5/4 行不变。
+**教训**：双测量（layout+render 各 measure）是不一致之源；text 的 `rect.w`(stretch available) ≠ taffy 选定 max_width（短文本 None）；render 必须复用 layout 结果而非用 rect.w 重测。早先"浮点边界/epsilon/ceil"候选**全是症状层猜测**，未触根因（max_width 来源不一致）——systematic-debugging 的 dump 边界取证（`[LM] known=None` 揭示 taffy 真实传参）才定位真因。
+
+### 坑 68：img Percent 压扁 + width:auto→0 不渲染（v1-showcase §1.3 验收）
+**症状**：§1.3 `width:50%` 图只放大宽、高不变（压扁）；`width:auto` 第三张图不渲染（html 三图：1=80×80、2=50%、3=auto）。
+**根因**（两独立 bug）：
+- **Percent 压扁**：layout measure 闭包对 Image 直接返 build 时算的 intrinsic (iw,ih)，**不消费 taffy 传的 `known.width`**。dump_img + 闭包 instrument 揭示：Percent width 的 Image，taffy **第二次传 `known.width=Some(解析宽)`**（如 500），闭包忽略 → taffy 用 Percent 定 width=500、用 measure 返的 height=intrinsic 64（没等比）→ rect=(500,64) 压扁。
+- **auto→0**：`parse_dimension`（mapping.rs）没 handle `"auto"`，走 `parse_lp` fallback `Length(0.0)` → `width:auto` 解析成 `Dimension::Length(0.0)` → rect=(0,0) 不渲染。（`parse_length` 处理 auto 但不用于 width/height。）
+**解决**：
+- Percent：`MeasureContext::Image` 改存原始 `{iw,ih,w_dim,h_dim}`（不再 build 时算 w/h），闭包消费 `known` 解析——width `Some(v)`→v（Percent/fit 解析后）、`None`+`Length`→css、`Auto`+`height Length`→等比 height、否则 intrinsic；height `Length`→值否则等比 width。覆盖坑 65 全 case + Percent。
+- auto：`parse_dimension` 加 `if s=="auto" { return Dimension::Auto }`。
+- 坑 66 适用：parse_dimension 是 parse-time，**改后必须重打 pkg**（base_style 打包期烤），否则旧 pkg 仍 Length(0.0)。
+**教训**：① Image measure 必须消费 taffy `known`（Percent/fit 解析宽在那），build 时算 w/h 对 Percent 走不通。② parse-time 改动 → 重打 pkg（坑 66）。③ `width:auto` 是 CSS 默认，parse 必须 Auto≠Length(0)。诊断利器：`dump_img`（css.w/css.h/rect/tex 四列）+ 闭包 instrument `[IMG] known.w={:?}`。
 
 ## 6. 调试/验证技巧
 
@@ -799,7 +813,7 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 - **CJK 字体获取 fallback**（v1b.5）：brief 列的字体下载源常全 404 → 用 **GitHub tree API** 找 repo 内实际 .ttc 路径（`https://api.github.com/repos/<owner>/<repo>/git/trees/<branch>?recursive=1` grep `.ttc`）。文泉驿微米黑 live 源：`chai2010/wqy-microhei-go/data/wqy-microhei-0.2.0-beta/wqy-microhei.ttc`。
 - **断行 layout 独立验证**（v1b.5）：sample 不换行时写临时 `examples/` 验 `solve` 后 Text 节点 `layout_rect.w`——应=约束宽（240）非 root_size。区分「断行逻辑坏」vs「max_width 喂错」（sample 根节点 measure 覆盖，坑 26）。
 - **.dll 被 Unity 锁挡 merge**（v1b.5）：ff-merge 报 `unable to unlink .dll: Invalid argument` + working tree dirty .dll → Unity 开着锁 native .dll（坑 10 同源）。解：关 Unity，或 `git checkout HEAD -- <dll>` 还原 working tree 到 main 版本再 merge（merge 带 v1b.5 新 .dll 过来）。pre-existing 脏 .asset（DefaultVolumeProfile/ProjectSettings）`git stash push --` 单独隔离。
-- **dump_text measure 对比**（v1-showcase 验收，坑 67）：text 换行时写 `examples/dump_text.rs` 调 `measure_text(s, font_size, 0.0, ..., None/Some(max))` 对比 full(None) text_width vs 各 max_width 的 lines——定位是 rect.w<full（flex 宽不足）还是浮点边界（rect.w=full 精确相等）。line_height 传 **0.0**（默认 em，非 px；传 px 会 height=font_size×line_height×lines 算错）。dump scene nodes 看 `card-t` 等 `layout_rect.w` 精确值（print `{:.4}`）。
+- **dump_text 双测量对比**（v1-showcase 验收，坑 67 方案 A）：`examples/dump_text.rs` 加载 showcase pkg + CJK 字体（wqy-microhei.ttc），tick_and_render 后对每 Text 节点对比 **before**=`measure_text(Some(rect.w)).lines`（修复前 render 行为）vs **after**=`scene.text_layouts[node].lines`（修复后 render 复用）。修复前 72 短标题 before=2/after=1（bug），长文本 before=after 多行（不误伤）。**定位 taffy 传参**（关键取证）：临时在 layout measure 闭包加 `eprintln!("[LM] {:<16} known={:?} ln={}", content, known.width, layout.lines.len())`，揭示短文本 taffy 只传 `None`（判 max-content ≤ available）、长文本传 `Some(available)`——这是「render 不能用 rect.w 作 max_width」的根因证据。line_height 传 **0.0**（默认 em）。
 - **chrome MCP 验 html 契约**（v1-showcase 验收）：showcase html 不能直接浏览器开（div 默认 block，css 没写 display:flex，flex-direction 无效）→ index.html 加 `<head>` 预览覆盖（`div{display:flex;flex-direction:column}` 复刻 LoomGUI「div 永远 flex」契约 + `*{box-sizing:border-box}` 复刻 taffy 默认 border-box），scraper select body 不读 head → pkg 不变。chrome-devtools MCP `evaluate_script` 读容器 computed style + 子元素 rect（同 y 横排/同 x 竖排）判断渲染，比截图精确。
 - **红色实验验渲染**（v1-showcase 验收）：怀疑某节点没渲染时，临时改其 bg 为红色（style.css + 重打 pkg）→ 重进 PlayMode 看是否变红。红=节点渲染正常（"灰"是颜色空间/对比度/感知），灰=没渲染（GO/material/camera/未进 render tree）。core 端 `dump_sw` example 验 pkg 里节点 base_style/bg 值确认数据对。
 - **改 parse-time 逻辑要重打 pkg**（坑 66）：改 cascade/resolve/mapping/parse 后重编 .dll 不够——`base_style` 是打包期产物，`cargo run -p loomgui_pkg` 重打 pkg 才进包（html/css 未变也要）。判据：runtime 用 pkg 的逻辑改 .dll，parse-time 进 pkg 的逻辑改要重打。
@@ -888,7 +902,7 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 
 **v1d.5 defer（→ v1.x）**：虚拟化 `<l-list>`、分页/吸附/下拉刷新、滚动条 fade/箭头/点轨道/CSS 定制、shift+滚轮水平、ScrollToView、EVT_SCROLL 事件、滚轮嵌套透传、软裁剪/形状遮罩、padding-edge scroll math（v1 用 border box 简化）。
 
-**v1d 全收尾 + v1 ship-ready**：v1d.1-.5 全完成（§5 全勾）。v1 验收 6 点代码全完成：#1 按钮+文本+图片（v1a/b）/#2 可滚动容器（v1d.5，待家里机验）/#3 hover/active（v1c.1）/#4 safe-area（v1d.1）/#5 is_pointer_on_ui（v1c.1）/#6 打包器二进制包（v1b.1）。**#2 家里机 PlayMode 验收发现 scroll 6 bug 链（坑 58-60：drag 方向反/x 抖/overflow 撑开/子 shrink/sentinel batch 越界/re-base 抵消），已修 332 测绿并提交 2138e52（core: input/scroll/stage/layout/render + dump_scroll）**。**v1-showcase color/img 家里机验收续修**（同批 + 后续 commit）：坑 61 inline style 解析（cascade + `parse_inline_style`）/ 坑 62 Linear 项目 vertex color sRGB→linear（shader 手写 SRGBToLinear）/ 坑 63 font atlas alpha-mask 文字黑（shader `ALPHA_MASK` keyword，MaterialManager `program:1` 启用）/ 坑 64 img UV v 翻转 / 坑 65 img 等比缩放 / letterbox 灰（Main Camera SolidColor #1a1d2e，Driver `ConfigureCameraBackground`）—— 提交 2138e52(core) + 6ce8db3(unity color) + a16f872(showcase 重打 pkg/dll)。**坑 67 text 换行浮点边界 defer**（曾 `rect.w+0.5` 硬编码 hack 已还原；候选 `text_width.ceil()` / measure epsilon / `build_render_nodes` 不重 measure 复用 layout 结果）。浏览器对照：index.html 加 head 预览（`div{display:flex;flex-direction:column}` + `*{box-sizing:border-box}` 复刻 LoomGUI 契约，scraper select body 不读 head → pkg 不变）。另：清理冗余 demo（db422dc）+ v1e Unchanged 消失修复（7bcc4fd）已提交。
+**v1d 全收尾 + v1 ship-ready**：v1d.1-.5 全完成（§5 全勾）。v1 验收 6 点代码全完成：#1 按钮+文本+图片（v1a/b）/#2 可滚动容器（v1d.5，待家里机验）/#3 hover/active（v1c.1）/#4 safe-area（v1d.1）/#5 is_pointer_on_ui（v1c.1）/#6 打包器二进制包（v1b.1）。**#2 家里机 PlayMode 验收发现 scroll 6 bug 链（坑 58-60：drag 方向反/x 抖/overflow 撑开/子 shrink/sentinel batch 越界/re-base 抵消），已修 332 测绿并提交 2138e52（core: input/scroll/stage/layout/render + dump_scroll）**。**v1-showcase color/img 家里机验收续修**（同批 + 后续 commit）：坑 61 inline style 解析（cascade + `parse_inline_style`）/ 坑 62 Linear 项目 vertex color sRGB→linear（shader 手写 SRGBToLinear）/ 坑 63 font atlas alpha-mask 文字黑（shader `ALPHA_MASK` keyword，MaterialManager `program:1` 启用）/ 坑 64 img UV v 翻转 / 坑 65 img 等比缩放 / letterbox 灰（Main Camera SolidColor #1a1d2e，Driver `ConfigureCameraBackground`）—— 提交 2138e52(core) + 6ce8db3(unity color) + a16f872(showcase 重打 pkg/dll)。**坑 67 layout/render 双测量 text 换行已修·方案 A**（Scene 加 `text_layouts` transient 字段；layout 闭包「Some 优先」存 TextLayout；render 复用不重测，fallback measure 保 test 兼容。推翻早先「浮点边界/epsilon/ceil」症状层猜测——真因是 max_width 来源不一致：layout 用 taffy 选定 known.width，render 用 rect.w。dump_text 验收 72 短标题 before=2→after=1，长文本不变；339 测绿；dump_text.rs 保留为 text 换行诊断 example）。浏览器对照：index.html 加 head 预览（`div{display:flex;flex-direction:column}` + `*{box-sizing:border-box}` 复刻 LoomGUI 契约，scraper select body 不读 head → pkg 不变）。另：清理冗余 demo（db422dc）+ v1e Unchanged 消失修复（7bcc4fd）已提交。
 
 **v1 其余 defer（v0 起，未动）**：
 - v1b 全收尾（A/B/C/mesh/CJK ✅）+ v1c.1 最小交互闭环 ✅ + v1c.2 路由完整化 ✅ + v1c.3 多触摸+CaptureTouch ✅ + v1c.4 click 增强 ✅ + v1d.1 拖拽+长按+safe-area ✅（家里机 PlayMode 验，main @ 013b96f，修坑 44/45）+ v1d.2 键盘+焦点+Tab+:focus ✅（家里机 PlayMode 验）+ v1d.3 transform+NativeHost-lite ✅（家里机 PlayMode 验，修坑 51/52）+ v1d.4 GTween tween 引擎 ✅（家里机 PlayMode 验，修坑 53 首帧 dt spike→demo 按钮触发）+ v1d.5 ScrollPane+滚轮+手势仲裁 ✅（main @ e8ef32c，待家里机 PlayMode 验，修坑 54/55；关验收 #2，v1d 全收尾）+ **v1e FFI 同步热路径性能优化 ✅（main @ b52a2a5，Rust 侧完成 + bench 过线；家里机待验 Profiler；Codex §4.3/§6.5 性能债务兑现）**。

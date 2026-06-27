@@ -30,7 +30,8 @@
 use crate::asset::texture::TextureRegistry;
 use crate::scene::node::{NodeId, NodeKind, Rect, Scene};
 use crate::style::resolved::{OverflowMode, TextAlign};
-use crate::text::layout::{measure_text, Font};
+use crate::text::layout::{measure_text, Font, TextLayout};
+use std::collections::HashMap;
 use taffy::prelude::*;
 
 /// LoomGUI OverflowMode → taffy Overflow（Auto→Scroll，taffy 0.5 无 Auto）。
@@ -58,8 +59,14 @@ enum MeasureContext {
         align: TextAlign,
         nowrap: bool,
     },
-    /// Image 叶子：intrinsic 占位尺寸（声明 size 或 64x64）。
-    Image { w: f32, h: f32 },
+    /// Image 叶子：intrinsic 像素 + css width/height 维度。闭包消费 taffy 的 known 解析
+    /// Percent/fit（坑 65 + 坑 68：Percent width taffy 传 known.width=Some(解析宽)，闭包据此等比 height）。
+    Image {
+        iw: f32,
+        ih: f32,
+        w_dim: taffy::style::Dimension,
+        h_dim: taffy::style::Dimension,
+    },
 }
 
 /// 就地 solve：建 taffy 树 → 注册测量上下文 → compute_layout → 回写 layout_rect/clip_rect。
@@ -114,19 +121,17 @@ pub fn solve(scene: &mut Scene, font: &Font, root_size: (f32, f32), textures: &T
                 })
             }
             NodeKind::Image { src } => {
-                // v1b.2 + §1.2 等比：两维 Length → 各自用；只设一维 → 另一维按 intrinsic 比例；
-                // 都 auto → intrinsic（Percent 在 measure 期无父宽，退 intrinsic，solve 后被父覆盖）。
+                // 存 intrinsic + css 维度；等比与 Percent 解析留到 measure 闭包（消费 taffy known）。
+                // v1b.2 + 坑 68：Percent width 在 measure 期 taffy 传 known.width=Some(解析宽)，
+                // 闭包据此算等比 height（之前 build 时算 w/h，Percent 走不通 → 50% 压扁）。
                 let s = &node.style.taffy_style;
                 let (iw, ih) = textures.get(src).map(|m| (m.width as f32, m.height as f32)).unwrap_or((64.0, 64.0));
-                let w_css = if let Dimension::Length(v) = s.size.width { Some(v) } else { None };
-                let h_css = if let Dimension::Length(v) = s.size.height { Some(v) } else { None };
-                let (w, h) = match (w_css, h_css) {
-                    (Some(w), Some(h)) => (w, h),
-                    (Some(w), None) => (w, w * ih / iw),
-                    (None, Some(h)) => (h * iw / ih, h),
-                    (None, None) => (iw, ih),
-                };
-                Some(MeasureContext::Image { w, h })
+                Some(MeasureContext::Image {
+                    iw,
+                    ih,
+                    w_dim: s.size.width,
+                    h_dim: s.size.height,
+                })
             }
             _ => None,
         };
@@ -150,6 +155,16 @@ pub fn solve(scene: &mut Scene, font: &Font, root_size: (f32, f32), textures: &T
     }
 
     let root_tid = build(scene, &mut taffy_tree, &mut taffy_ids, scene.roots[0], textures, false);
+
+    // 坑 67：taffy NodeId → scene NodeId 反查，供 measure 闭包按 taffy nid 把 TextLayout
+    // 存进 scene 索引的 text_layouts。render 复用，消除 layout/render 双测量不一致。
+    let mut taffy_to_scene: HashMap<taffy::NodeId, NodeId> = HashMap::new();
+    for (scene_idx, tid) in taffy_ids.iter().enumerate() {
+        if let Some(tid) = tid {
+            taffy_to_scene.insert(*tid, NodeId(scene_idx));
+        }
+    }
+    let mut text_layouts: Vec<Option<TextLayout>> = vec![None; scene.nodes.len()];
 
     // 设根 size：覆盖为调用方给的 root_size（viewport）。
     // Style.size 字段类型是 Size<Dimension>（不是 LengthPercentageAuto）。
@@ -175,13 +190,30 @@ pub fn solve(scene: &mut Scene, font: &Font, root_size: (f32, f32), textures: &T
             Size::MAX_CONTENT,
             |known: Size<Option<f32>>,
              _avail: Size<AvailableSpace>,
-             _nid: taffy::NodeId,
+             nid: taffy::NodeId,
              node_ctx: Option<&mut MeasureContext>,
              _style: &Style|
              -> Size<f32> {
                 match node_ctx {
                     None => Size::ZERO,
-                    Some(MeasureContext::Image { w, h }) => Size { width: *w, height: *h },
+                    Some(MeasureContext::Image { iw, ih, w_dim, h_dim }) => {
+                        let (iw, ih, wd, hd) = (*iw, *ih, *w_dim, *h_dim);
+                        // width：known.width（Percent/fit 解析后，taffy 传）> css Length > 等比 height > intrinsic。
+                        //   Percent width：taffy 第二次传 known.width=Some(解析宽)（坑 68 实测）。
+                        let w = match (known.width, wd, hd) {
+                            (Some(v), _, _) => v,
+                            (None, Dimension::Length(v), _) => v,
+                            (None, Dimension::Auto, Dimension::Length(h)) => h * iw / ih,
+                            (None, _, _) => iw,
+                        };
+                        // height：css Length > known.height > 等比 width（CSS img height:auto 默认）。
+                        let h = match (hd, known.height) {
+                            (Dimension::Length(v), _) => v,
+                            (_, Some(v)) => v,
+                            _ => w * ih / iw,
+                        };
+                        Size { width: w, height: h }
+                    }
                     Some(MeasureContext::Text { content, font_size, line_height, letter_spacing, align, nowrap }) => {
                         let layout = measure_text(
                             content,
@@ -193,6 +225,16 @@ pub fn solve(scene: &mut Scene, font: &Font, root_size: (f32, f32), textures: &T
                             known.width,
                             font,
                         );
+                        // 坑 67：存 TextLayout 供 render 复用。Some（available 测量）优先——
+                        // 短文本 taffy 只传 None（max-content ≤ available，不换行），长文本传
+                        // Some(available)（换行）。一旦存了 Some，后续 None 不覆盖（taffy 末尾
+                        // 可能补测 None，见 dump_text 诊断：长文本 [None,None,Some,Some,None]）。
+                        if let Some(sid) = taffy_to_scene.get(&nid) {
+                            let slot = &mut text_layouts[sid.0];
+                            if slot.is_none() || known.width.is_some() {
+                                *slot = Some(layout.clone());
+                            }
+                        }
                         Size { width: layout.text_width, height: layout.text_height }
                     }
                 }
@@ -225,6 +267,8 @@ pub fn solve(scene: &mut Scene, font: &Font, root_size: (f32, f32), textures: &T
         }
     }
     write_back(scene, &taffy_tree, &taffy_ids, scene.roots[0], (0.0, 0.0));
+    // 坑 67：layout 阶段 TextLayout 缓存交还 scene，供 render 复用（不重测）。
+    scene.text_layouts = text_layouts;
 }
 
 #[cfg(all(test, feature = "parse"))]

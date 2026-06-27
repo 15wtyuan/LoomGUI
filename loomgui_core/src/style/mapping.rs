@@ -31,6 +31,10 @@ pub fn parse_lp(s: &str) -> LengthPercentage {
 }
 
 pub fn parse_dimension(s: &str) -> Dimension {
+    let s = s.trim();
+    if s == "auto" {
+        return Dimension::Auto;
+    }
     match parse_lp(s) {
         LengthPercentage::Length(v) => Dimension::Length(v),
         LengthPercentage::Percent(v) => Dimension::Percent(v),
@@ -410,6 +414,15 @@ mod tests {
     fn parse_length_px_pct_auto() {
         assert!(matches!(parse_lp("100px"), LengthPercentage::Length(100.0)));
         assert!(matches!(parse_lp("50%"), LengthPercentage::Percent(0.5)));
+    }
+    /// 坑 68 回归：`width:auto` 必须解析成 `Dimension::Auto`（fit-content），
+    /// 不能 fallback 到 `Length(0.0)`（→ img rect=(0,0) 不渲染）。
+    #[test]
+    fn parse_dimension_auto_is_auto_not_zero() {
+        use taffy::style::Dimension;
+        assert!(matches!(parse_dimension("auto"), Dimension::Auto), "auto → Auto");
+        assert!(matches!(parse_dimension("80px"), Dimension::Length(80.0)));
+        assert!(matches!(parse_dimension("50%"), Dimension::Percent(0.5)));
     }
     #[test]
     fn four_value_expand() {
