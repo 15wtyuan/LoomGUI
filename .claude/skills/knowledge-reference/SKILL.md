@@ -778,6 +778,18 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 - 坑 66 适用：parse_dimension 是 parse-time，**改后必须重打 pkg**（base_style 打包期烤），否则旧 pkg 仍 Length(0.0)。
 **教训**：① Image measure 必须消费 taffy `known`（Percent/fit 解析宽在那），build 时算 w/h 对 Percent 走不通。② parse-time 改动 → 重打 pkg（坑 66）。③ `width:auto` 是 CSS 默认，parse 必须 Auto≠Length(0)。诊断利器：`dump_img`（css.w/css.h/rect/tex 四列）+ 闭包 instrument `[IMG] known.w={:?}`。
 
+### 坑 69：滚动松手物理（对照 fgui，v1-showcase 验收）
+**症状**：bug1 小拖松手回原位；bug2 快速拖到顶/底"先露一大块空白再突然回弹"。
+**根因**：begin_inertia 硬阈值 `v2>500` 全速 inertia（界内小拖 v≈625 冲越界 snap 回原位）+ inertia `change` 未运行时截断（pos 冲远越界，dur 结束才 clamp snap）。
+**解决**（对照 fgui `ScrollPane.cs`）：① begin_inertia 二次 ratio `((v2-thresh)/thresh)²` 削弱低速（`UpdateTargetAndDuration:2066`）+ 越界松手直接 bounce 不 inertia（`__touchEnd:1649` flag）；② advance 运行时越界>20px 截断 + 启回弹 tween（`RunTween:2276`）——inertia target **不预 clamp**，弹性过冲靠运行时检测。
+**教训**：fgui inertia target 故意不 clamp（`LoopCheckingTarget:1867` 只对循环滚动 `_loop≠0` 生效），弹性过冲靠 `RunTween` 每帧检测越界>20 截断——这才是 fgui 手感来源。bug1 真因是硬阈值全速（非单一"越界 snap"）。初版 target-clamp 方案能修 bug 但丢失弹性过冲（到边界硬停），用户反馈"回弹弱"后改运行时截断才对。
+
+### 坑 70：drag 越界双重打折致回弹弱（对照 fgui，v1-showcase 验收）
+**症状**：坑 69 方案 B 验收反馈"回弹效果稍微弱了点"。
+**根因**：drag_follow 越界 `over=min(|np|,vp*0.5); np=-over*0.5` **双重打折**，最大越界 `vp*0.25`；fgui `__touchMove:1521` `min(位移*0.5, vp*PULL_RATIO)` 单打折，最大 `vp*0.5`——LoomGUI 少一半。
+**解决**：改 `dampened=min((lo-np)*PULL_RATIO, vp*PULL_RATIO)` 单打折（对照 fgui），最大越界 `vp*0.5`，回弹幅度翻倍。
+**教训**：fgui `PULL_RATIO=0.5`（`:90`）是位移打折比，LoomGUI 误实现成"先 cap 再打折"双重作用。对照 fgui 时 `min(a*c, b*c)` ≠ `min(a,b)*c`——抄公式先展开代数确认。
+
 ## 6. 调试/验证技巧
 
 - **★ 实现 v1+ 后端/渲染/对象模型前，先参考 `temp/FairyGUI-unity/` 源码**（对照机制、避免走歪——本 session 因没先看 fgui 的 sortingOrder/rect-mask/MaterialManager，初版设计走了弯路：误用 z 排序、误以为 rect mask 要独立 GO、把绘制序想复杂）。
@@ -818,6 +830,7 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 - **chrome MCP 验 html 契约**（v1-showcase 验收）：showcase html 不能直接浏览器开（div 默认 block，css 没写 display:flex，flex-direction 无效）→ index.html 加 `<head>` 预览覆盖（`div{display:flex;flex-direction:column}` 复刻 LoomGUI「div 永远 flex」契约 + `*{box-sizing:border-box}` 复刻 taffy 默认 border-box），scraper select body 不读 head → pkg 不变。chrome-devtools MCP `evaluate_script` 读容器 computed style + 子元素 rect（同 y 横排/同 x 竖排）判断渲染，比截图精确。
 - **红色实验验渲染**（v1-showcase 验收）：怀疑某节点没渲染时，临时改其 bg 为红色（style.css + 重打 pkg）→ 重进 PlayMode 看是否变红。红=节点渲染正常（"灰"是颜色空间/对比度/感知），灰=没渲染（GO/material/camera/未进 render tree）。core 端 `dump_sw` example 验 pkg 里节点 base_style/bg 值确认数据对。
 - **改 parse-time 逻辑要重打 pkg**（坑 66）：改 cascade/resolve/mapping/parse 后重编 .dll 不够——`base_style` 是打包期产物，`cargo run -p loomgui_pkg` 重打 pkg 才进包（html/css 未变也要）。判据：runtime 用 pkg 的逻辑改 .dll，parse-time 进 pkg 的逻辑改要重打。
+- **fgui ScrollPane 物理参照行号**（坑 69/70）：`temp/FairyGUI-unity/Assets/Scripts/UI/ScrollPane.cs`（2320 行）。松手物理：`__touchEnd:1610`（越界 flag→直接 bounce / 界内→inertia）、`UpdateTargetAndDuration:2048`（二次 ratio `((v2-thresh)/thresh)²` 削弱低速 + `dur=log(60/v2_eff)/log(decel)`，坑 54 `v2=|v|·scale` 非 v²）、`RunTween:2245`（cubic_out 推进 + 运行时越界>20 截断启回弹 tween = 弹性过冲）、`__touchMove:1430`（drag 越界打折 `min(位移*0.5, vp*PULL_RATIO)`）。常量：`PULL_RATIO=0.5`(:90)、`TWEEN_TIME_DEFAULT=0.3`(:89)、过冲阈值 20（RunTween 硬编码 `>20+threshold`）。**fgui pos 负**（`container.y∈[-overlap,0]`），LoomGUI `scroll_pos` 正（`[0,overlap]`）——对照时符号反转。
 
 ## 7. 已知问题/未完成（v0 ledger）
 
