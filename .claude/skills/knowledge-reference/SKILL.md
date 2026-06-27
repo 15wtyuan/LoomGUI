@@ -89,7 +89,7 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 - **measure 陷阱（v1b.2 测设计）**：`solve` 把**根节点** taffy size 强制覆盖为 root_size（`set_style`）→ Image 作根时 intrinsic 被 viewport 覆盖（测须包 Container 根、Image 作子叶）；默认 `align-items:Stretch`（column 容器）会把无显式宽子项 cross 轴拉伸 → 测无 CSS 尺寸的 Image 须设 `align_self:FlexStart` 禁 stretch。
 
 ### 2.6 render（§8）
-- `build_render_nodes(scene, font, &TextureRegistry)`：Container/Button→Mesh quad(背景色，全图 UV `[0,0],[1,1]`)，Image→Mesh quad（**tex_id 查注册表 + UV region**：v1b.3 按 atlas 子区 `uv_min/uv_max` 烤 4 角 UV，未注册=0 哨兵+全图 UV→白占位；v1b.2 前 v0 占位是 hash(src) 已删），Text→TextLayout 装 Text payload。`mesh::quad(rect,color,uv_min,uv_max)` 接 uv_rect（vert TL,TR,BR,BL ↔ sprite 角；v1b.2 全图即 0,0,1,1）。
+- `build_render_nodes(scene, font, &TextureRegistry)`：Container/Button→Mesh quad(背景色，全图 UV `[0,0],[1,1]`)，Image→Mesh quad（**tex_id 查注册表 + UV region**：v1b.3 按 atlas 子区 `uv_min/uv_max` 烤 4 角 UV，未注册=0 哨兵+全图 UV→白占位；v1b.2 前 v0 占位是 hash(src) 已删），Text→TextLayout 装 Text payload。`mesh::quad(rect,color,uv_min,uv_max)` 接 uv_rect（vert TL,TR,BR,BL ↔ sprite 角；v1b.2 全图即 0,0,1,1）。**v1-showcase 坑 64：Image 调用 swap v**（`[uv_min[0],uv_max[1]], [uv_max[0],uv_min[1]]`）——design y-down + LoomStage y-flip，TL 须映 texture 顶 (umin,vmax)；mesh::quad 本身不改（背景色块 UV 全图无方向）。
 - `assign_sort_keys`：DFS 单计数器 sort_key，clip 的 Container 是 BatchingRoot 开新 mask_context。
 - **v1b.4 AABB 保序重排 + mesh 合并**（§8.5）：`build_render_nodes` 末尾 `assign_sort_keys → reorder_for_batching → merge_meshes`。`reorder_for_batching`（batch.rs）= fgui `DoFairyBatching`（Container.cs:877-941）稳定插入排序 core 化——同 DrawState((texture,program,mask_context)) 不相交元素前移聚拢，相交保相对序（坑 23）；Text(program=1) batch break 不重排。`merge_meshes`（merge.rs）按 sort_key 扫连续同 DrawState Mesh→拼 merged payload。**锚 node_id**（merged=min batch，坑 24）解动画 GO 抖动；**merged transform=0/alpha=1** 让 blob.rs:70 re-base（减 0）+ blob.rs:90 alpha 烤（×1）对 merged 无效 → **blob/MirrorPool 零改**（§2.8 列结构不动，spec §9）；colors 只烤 alpha 分量（rgb 不动，color_tint 不传，坑 9）。
 
@@ -108,7 +108,7 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 - `FrameBlob`（BitConverter 解析 v2 blob，`IsValid` 校验 magic+version）→ `MirrorPool.Sync`（`Dictionary<uint,RenderObj>` O(n) stale-flag diff）。**flatten（Phase 2）**：所有 GO 挂**根**（非巢状——local_x/local_y 是绝对 design 坐标，巢状 SetParent 会双计父位置，坑见 §2.11/Phase 1 单节点未暴露），`localPosition=绝对`、`sortingOrder=sort_key`；kind=1 Mesh / kind=2 Text（→TextRasterizer）/ kind=0 跳过。**buffer 复用**：RenderObj 持可复用 List，`SetVertices(List)` 零 alloc（T7，500 节点压测）。
 - `MaterialManager`：key=(program, texture, mask_context)——mask_context 进 key → 每 ctx 独立 Material 持各自 `_ClipBox`；ctx>0 → `EnableKeyword("CLIPPED")`（`#pragma multi_compile`）+ `SetClipBox`。**tint×alpha baked 进顶点色（Rust 侧）**，材质只带 texture+clip_box+blend。
 - `LoomStage`（`[ExecuteAlways]` MonoBehaviour）：LateUpdate `tick→borrow_frame→Marshal.Copy→FrameBlob→MirrorPool.Sync`。根 GO `localScale=(sf,-sf,sf)`（shrink-to-fit sf=min(sw/dw,sh/dh) + y-flip 合一）+ `localPosition=(-sw/2,sh/2,0)`；UI 相机正交 `orthoSize=sh/2` `cullingMask=1<<6`(LoomUI) **独立于根**（不 SetParent）。shader `Cull Off`（根翻转 winding）。Phase 2：`[SerializeField] Font _font`（EnsureFont 兜底 AssetDatabase 加载 DejaVu）、`Font.textureRebuilt+=OnRebuilt`（OnDestroy 解绑）、`ResetStatics`（`SubsystemRegistration` 调 `loomgui_shutdown`+`TextRasterizer.ResetStatic`）、**Awake 清 root 下 loom_node 孤儿 GO**（ExecuteAlways 防累积，坑 11）。
-- URP unlit shader：`col=tex2D×v.color`、`Cull Off`、`ZWrite Off`、`Blend[_Src][_Dst]` property、`CLIPPED` variant（rect mask `_ClipBox` discard，Phase 2 启用）。图片 v1a 占位 1×1 白贴图；**Text Phase 2 ✅**（font atlas）。
+- URP unlit shader：`col=tex2D×v.color`、`Cull Off`、`ZWrite Off`、`Blend[_Src][_Dst]` property、`CLIPPED` variant（rect mask `_ClipBox` discard，Phase 2 启用）。图片 v1a 占位 1×1 白贴图；**Text Phase 2 ✅**（font atlas）。**v1-showcase 坑 62/63（Linear 项目颜色管理）**：frag 手写 `SRGBToLinear`（vcolor.rgb——CSS sRGB 值在 Linear 项目不自动转 → 灰蒙蒙；URP Color.hlsl include 路径不稳故手写）+ `ALPHA_MASK` keyword（`#pragma multi_compile`，MaterialManager `program==1` text 启用）：text=`half4(vcol.rgb, vcol.a*tex.a)`（font atlas 是 alpha-mask，rgb 黑），image=`tex×vcol`（彩色 texture rgb）。
 
 ### 2.10 文字渲染链（v1a Phase 2，§9/§14）
 - **Rust 笔位权威 + Unity 纯光栅**（偏离 fgui 的 advance/行高，§9.1 跨平台根）。blob text_arena 每 text 节点 = `font_size:u32|color:f32×4|glyph_count:u32|glyphs[{codepoint:u32,pen_x:f32,pen_y:f32}]`；pen=GO-local（content 偏移 Rust 烤进），pen_y=`line.y+line.baseline`，**不 re-base**（pen 已节点局部，与 mesh re-base 不同）。
@@ -722,6 +722,48 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 **解决**：逐层 TDD + `dump_scroll` example 实测 overlap 定位"哪层错"；scrollbar 合成 sentinel（坑 55）在 `build_render_nodes` 末尾 merge 之后追加（不进 batch reorder）。
 **教训**：scroll 这种跨层特性，PlayMode 报「拖不动/晃动」先写 example 实测 core scroll 状态（overlap/scroll_pos/content_size）再改，避免盲改物理（方向/惯性）掩盖 layout 根因。
 
+### 坑 61：cascade 不解析 inline `style="..."`（v0 缺口，v1-showcase 验收）
+**症状**：`<div class="sw" style="background-color:#1a1d2e">` 色块透明看不见；§2 flx `style="flex-direction:column"` 被忽略（class row 兜底）。
+**根因**：v0 cascade 只处理 StyleSheet rules，不解析元素 `style` attr（dom.rs attrs 收集了但 resolve 没用，cascade.rs 测试注释明写「v0 style 属性未在 dom 层解析」）。
+**解决**：`css::parse_inline_style`（复用 DeclParser+RuleBodyParser，无 selector 的 declaration list）+ `cascade::resolve_styles` sheet rules 后 apply inline（specificity 最高，最后胜出）。
+**教训**：inline style 是 CSS 契约，v0 缺口致 showcase 大量 `style=` 静默失效；加时复用 cssparser（手写 split 对 `url()`/注释脆弱）。
+
+### 坑 62：Linear 项目 vertex color 没 sRGB→linear → 整体灰蒙蒙（v1-showcase 验收）
+**症状**：v1-showcase 整体偏浅灰（灰蒙蒙），vs html 浏览器深蓝 dashboard；两边 letterbox 蓝（Main Camera 改 #1a1d2e）但中间 root 区灰。
+**根因**：项目 Linear color space，CSS 颜色是 sRGB 编码（#1a1d2e=0.102）；Unity 不自动把 vertex color sRGB→linear → 当 linear 值 → 显示成 sRGB(0.102 linear)=0.35（浅灰蓝）。
+**解决**：shader `frag` 手写 SRGBToLinear（精确 `(c<=0.04045)?c/12.92:pow((c+0.055)/1.055,2.4)`）应用于 vcolor.rgb（alpha 不转）；texture sRGB format 自动转不重复。
+**教训**：Linear 项目 UI shader，vertex color（CSS sRGB）须手动 sRGB→linear；URP Color.hlsl include 路径不稳（`Couldn't open include file`），手写公式最稳。判据：背景色对但整体偏浅发灰 = color space 问题。
+
+### 坑 63：font atlas alpha-mask（rgb 黑）→ 文字黑（v1-showcase 验收）
+**症状**：坑 62 修后背景对了，但文字全黑看不清（html 是白）。
+**根因**：font atlas 是 alpha-mask（字形在 alpha，rgb=黑）；shader `col=tex×vcol` 把 tex.rgb(黑)×vcol(白)=黑。core text color 正确（dump 验 #e0e0e0）传到 Unity。
+**解决**：shader 加 `ALPHA_MASK` keyword（`#pragma multi_compile`，MaterialManager `program==1` 启用）：frag 分支 text=`half4(vcol.rgb, vcol.a*tex.a)`（用 vcol 色 + tex.a 字形 coverage），image=`tex*vcol`（彩色 texture rgb）。
+**教训**：font atlas 单通道 alpha-mask 不能当普通 RGB texture 乘；text/image 须 shader 分支（program:1 text vs program:0 image）。诊断：TextRasterizer 加 Debug.Log 验 textColor 传对 → 黑在 shader/atlas 端。
+
+### 坑 64：img UV v 翻转（design y-down ↔ Unity y-up，v1-showcase 验收）
+**症状**：`<img>` 在 Unity 上下颠倒（text 不颠倒）。
+**根因**：design y-down + LoomStage `localScale=(sf,-sf,sf)`（y-flip）→ img quad TL（design 顶）应映 texture 顶 (umin,vmax)；`mesh::quad` 固定 TL→(umin,vmin)（texture 底）→ 颠倒。text 走 TextRasterizer 用 `uvBottomLeft/uvTopLeft` 故不颠。
+**解决**：render img 调 `quad(rect, white, [uv_min[0],uv_max[1]], [uv_max[0],uv_min[1]])`（swap v）；mesh::quad 不改（背景色块 UV 全图无方向）。
+**教训**：img/纹理 quad UV 须配 design→Unity y-flip（TL→texture 顶）；text 独立 UV 路径不受影响。
+
+### 坑 65：img 只设一维 → 另一维没等比（v1-showcase 验收）
+**症状**：`<img style="width:48px">` 只宽变，高度没变（html 宽高一起等比）。
+**根因**：layout img w/h 独立取（CSS Length > texture 原值 > 64），只设 width 时 h=texture 原 height（非等比）。
+**解决**：layout img `match (w_css, h_css)`：两维都设→各自；只 width→`h=w*ih/iw`；只 height→`w=h*iw/ih`；都 auto→intrinsic。
+**教训**：img 尺寸按 CSS 等比规则（只设一维按 intrinsic ratio），非两维独立取 texture 原值。
+
+### 坑 66：改 parse-time style 逻辑必须重打 pkg（base_style 打包期烤，v1-showcase 验收）
+**症状**：改 cascade（inline style 解析）后重编 .dll，色块仍不显示；重打 pkg 才对。
+**根因**：`Node.base_style` 是**打包期 resolve_styles 产物**（不变，rematch 基线）；`Stage::load_package` runtime 不重 resolve（只 rematch 动态规则）。改 cascade/mapping/parse 只重编 .dll 不够。
+**解决**：改 parse-time style 逻辑（cascade/resolve/mapping/parse）必须 `cargo run -p loomgui_pkg` 重打 pkg（html/css 未变也要）；纯 runtime（render/layout measure/scroll/anim）改 .dll 即可。
+**教训**：分 parse-time（进 pkg base_style）vs runtime（用 pkg）逻辑；前者改重打 pkg，后者改 .dll。`dump_sw` example 验 pkg 里节点 base_style 值确认是否进包。
+
+### 坑 67：text 换行浮点边界（v1-showcase 验收，**待修**）
+**症状**：card-t `"1.2 img 整图"` 的"图"字换行；多个标题同样。
+**根因**：layout 给 text `rect.w = measure text_width`（精确 122.3643）；render `build_render_nodes` 用 `Some(rect.w)` 重 measure，浮点累加 advance 在相等边界微超 max（`cur_w+cw`≈122.36431 > 122.3643）→ 末字误断。manual `measure(s,Some(122.4))` fit / `Some(122.0)` 换行。
+**解决**：**待修**（曾用 `rect.w+0.5` 硬编码 hack 已还原）。候选：① layout 返 `text_width.ceil()`（CSS px 整数，rect.w 严格>text_width）② measure 换行加浮点 epsilon（`cur_w+cw > max_w + 1e-3`）③ build_render_nodes 不重 measure 复用 layout 结果。
+**教训**：text 用 measure 宽作 flex basis，render 用同宽再 measure 在浮点相等边界敏感；TDD 写 `measure_text(s, Some(prev_text_width))` 应 lines=1 防回归。
+
 ## 6. 调试/验证技巧
 
 - **★ 实现 v1+ 后端/渲染/对象模型前，先参考 `temp/FairyGUI-unity/` 源码**（对照机制、避免走歪——本 session 因没先看 fgui 的 sortingOrder/rect-mask/MaterialManager，初版设计走了弯路：误用 z 排序、误以为 rect mask 要独立 GO、把绘制序想复杂）。
@@ -757,6 +799,10 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 - **CJK 字体获取 fallback**（v1b.5）：brief 列的字体下载源常全 404 → 用 **GitHub tree API** 找 repo 内实际 .ttc 路径（`https://api.github.com/repos/<owner>/<repo>/git/trees/<branch>?recursive=1` grep `.ttc`）。文泉驿微米黑 live 源：`chai2010/wqy-microhei-go/data/wqy-microhei-0.2.0-beta/wqy-microhei.ttc`。
 - **断行 layout 独立验证**（v1b.5）：sample 不换行时写临时 `examples/` 验 `solve` 后 Text 节点 `layout_rect.w`——应=约束宽（240）非 root_size。区分「断行逻辑坏」vs「max_width 喂错」（sample 根节点 measure 覆盖，坑 26）。
 - **.dll 被 Unity 锁挡 merge**（v1b.5）：ff-merge 报 `unable to unlink .dll: Invalid argument` + working tree dirty .dll → Unity 开着锁 native .dll（坑 10 同源）。解：关 Unity，或 `git checkout HEAD -- <dll>` 还原 working tree 到 main 版本再 merge（merge 带 v1b.5 新 .dll 过来）。pre-existing 脏 .asset（DefaultVolumeProfile/ProjectSettings）`git stash push --` 单独隔离。
+- **dump_text measure 对比**（v1-showcase 验收，坑 67）：text 换行时写 `examples/dump_text.rs` 调 `measure_text(s, font_size, 0.0, ..., None/Some(max))` 对比 full(None) text_width vs 各 max_width 的 lines——定位是 rect.w<full（flex 宽不足）还是浮点边界（rect.w=full 精确相等）。line_height 传 **0.0**（默认 em，非 px；传 px 会 height=font_size×line_height×lines 算错）。dump scene nodes 看 `card-t` 等 `layout_rect.w` 精确值（print `{:.4}`）。
+- **chrome MCP 验 html 契约**（v1-showcase 验收）：showcase html 不能直接浏览器开（div 默认 block，css 没写 display:flex，flex-direction 无效）→ index.html 加 `<head>` 预览覆盖（`div{display:flex;flex-direction:column}` 复刻 LoomGUI「div 永远 flex」契约 + `*{box-sizing:border-box}` 复刻 taffy 默认 border-box），scraper select body 不读 head → pkg 不变。chrome-devtools MCP `evaluate_script` 读容器 computed style + 子元素 rect（同 y 横排/同 x 竖排）判断渲染，比截图精确。
+- **红色实验验渲染**（v1-showcase 验收）：怀疑某节点没渲染时，临时改其 bg 为红色（style.css + 重打 pkg）→ 重进 PlayMode 看是否变红。红=节点渲染正常（"灰"是颜色空间/对比度/感知），灰=没渲染（GO/material/camera/未进 render tree）。core 端 `dump_sw` example 验 pkg 里节点 base_style/bg 值确认数据对。
+- **改 parse-time 逻辑要重打 pkg**（坑 66）：改 cascade/resolve/mapping/parse 后重编 .dll 不够——`base_style` 是打包期产物，`cargo run -p loomgui_pkg` 重打 pkg 才进包（html/css 未变也要）。判据：runtime 用 pkg 的逻辑改 .dll，parse-time 进 pkg 的逻辑改要重打。
 
 ## 7. 已知问题/未完成（v0 ledger）
 
@@ -842,7 +888,7 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 
 **v1d.5 defer（→ v1.x）**：虚拟化 `<l-list>`、分页/吸附/下拉刷新、滚动条 fade/箭头/点轨道/CSS 定制、shift+滚轮水平、ScrollToView、EVT_SCROLL 事件、滚轮嵌套透传、软裁剪/形状遮罩、padding-edge scroll math（v1 用 border box 简化）。
 
-**v1d 全收尾 + v1 ship-ready**：v1d.1-.5 全完成（§5 全勾）。v1 验收 6 点代码全完成：#1 按钮+文本+图片（v1a/b）/#2 可滚动容器（v1d.5，待家里机验）/#3 hover/active（v1c.1）/#4 safe-area（v1d.1）/#5 is_pointer_on_ui（v1c.1）/#6 打包器二进制包（v1b.1）。**#2 家里机 PlayMode 验收发现 scroll 6 bug 链（坑 58-60：drag 方向反/x 抖/overflow 撑开/子 shrink/sentinel batch 越界/re-base 抵消），已修 326 测绿但未提交（input/scroll/stage/layout/render + dump_scroll example），用户浏览器对照 + 复验中**。另：清理冗余 demo（db422dc）+ v1e Unchanged 消失修复（7bcc4fd）已提交。
+**v1d 全收尾 + v1 ship-ready**：v1d.1-.5 全完成（§5 全勾）。v1 验收 6 点代码全完成：#1 按钮+文本+图片（v1a/b）/#2 可滚动容器（v1d.5，待家里机验）/#3 hover/active（v1c.1）/#4 safe-area（v1d.1）/#5 is_pointer_on_ui（v1c.1）/#6 打包器二进制包（v1b.1）。**#2 家里机 PlayMode 验收发现 scroll 6 bug 链（坑 58-60：drag 方向反/x 抖/overflow 撑开/子 shrink/sentinel batch 越界/re-base 抵消），已修 332 测绿并提交 2138e52（core: input/scroll/stage/layout/render + dump_scroll）**。**v1-showcase color/img 家里机验收续修**（同批 + 后续 commit）：坑 61 inline style 解析（cascade + `parse_inline_style`）/ 坑 62 Linear 项目 vertex color sRGB→linear（shader 手写 SRGBToLinear）/ 坑 63 font atlas alpha-mask 文字黑（shader `ALPHA_MASK` keyword，MaterialManager `program:1` 启用）/ 坑 64 img UV v 翻转 / 坑 65 img 等比缩放 / letterbox 灰（Main Camera SolidColor #1a1d2e，Driver `ConfigureCameraBackground`）—— 提交 2138e52(core) + 6ce8db3(unity color) + a16f872(showcase 重打 pkg/dll)。**坑 67 text 换行浮点边界 defer**（曾 `rect.w+0.5` 硬编码 hack 已还原；候选 `text_width.ceil()` / measure epsilon / `build_render_nodes` 不重 measure 复用 layout 结果）。浏览器对照：index.html 加 head 预览（`div{display:flex;flex-direction:column}` + `*{box-sizing:border-box}` 复刻 LoomGUI 契约，scraper select body 不读 head → pkg 不变）。另：清理冗余 demo（db422dc）+ v1e Unchanged 消失修复（7bcc4fd）已提交。
 
 **v1 其余 defer（v0 起，未动）**：
 - v1b 全收尾（A/B/C/mesh/CJK ✅）+ v1c.1 最小交互闭环 ✅ + v1c.2 路由完整化 ✅ + v1c.3 多触摸+CaptureTouch ✅ + v1c.4 click 增强 ✅ + v1d.1 拖拽+长按+safe-area ✅（家里机 PlayMode 验，main @ 013b96f，修坑 44/45）+ v1d.2 键盘+焦点+Tab+:focus ✅（家里机 PlayMode 验）+ v1d.3 transform+NativeHost-lite ✅（家里机 PlayMode 验，修坑 51/52）+ v1d.4 GTween tween 引擎 ✅（家里机 PlayMode 验，修坑 53 首帧 dt spike→demo 按钮触发）+ v1d.5 ScrollPane+滚轮+手势仲裁 ✅（main @ e8ef32c，待家里机 PlayMode 验，修坑 54/55；关验收 #2，v1d 全收尾）+ **v1e FFI 同步热路径性能优化 ✅（main @ b52a2a5，Rust 侧完成 + bench 过线；家里机待验 Profiler；Codex §4.3/§6.5 性能债务兑现）**。
