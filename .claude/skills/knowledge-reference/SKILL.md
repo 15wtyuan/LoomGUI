@@ -338,17 +338,11 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 
 ## 5. v0 踩坑记录
 
-### 坑 1：taffy 0.5 `MeasureFunc::Boxed` 不存在
-**症状**：layout brief 写 `MeasureFunc::Boxed` 闭包，编译报无此变体。
-**根因**：taffy 0.5.2 改用 `TaffyTree<NodeContext>` + `compute_layout_with_measure` FnMut 分发。
-**解决**：见 §3.1。`Arc<Font>` carry 作废（FnMut 借用合法）。
-**教训**：brief 的 API 草稿是起点非权威，按编译器 + crate 实际版本调。
+### 坑 1：taffy 0.5 `MeasureFunc::Boxed` 不存在（API 详见 §3.1）
+brief 写 `MeasureFunc::Boxed` 编译失败 → 0.5.2 改 `TaffyTree<NodeContext>` + `compute_layout_with_measure` FnMut（`Arc<Font>` carry 作废，FnMut 借用合法）。**教训**：brief API 草稿是起点非权威，按编译器 + crate 实际版本调。
 
-### 坑 2：ttf-parser 0.20 advance/kerning API 改名
-**症状**：`glyph_advance_width`/`kerning_for` 编译失败。
-**根因**：0.20 改名 `glyph_hor_advance`（返 u16）；kerning 移到 `kern::Subtable`。
-**解决**：见 §3.2。
-**教训**：ttf-parser 跨版本 API 变动大，查 `~/.cargo/registry` 源码确认。
+### 坑 2：ttf-parser 0.20 advance/kerning API 改名（API 详见 §3.2）
+`glyph_advance_width`/`kerning_for` 编译失败 → 0.20 改 `glyph_hor_advance`(返 u16) + kerning 移 `kern::Subtable`。**教训**：ttf-parser 跨版本 API 变动大，查 `~/.cargo/registry` 源码确认。
 
 ### 坑 3：默认 flex-direction 没落地 column
 **症状**：未显式写 flex-direction 的 div 水平排列，违反 §4.1。
@@ -435,10 +429,7 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 **教训**：Rust FFI 返字符串一律 ptr+len（不靠 NUL）；C# 侧禁用 NUL-scan 读法。任何新 len-based 串返回（font/资源名）照此。
 
 ### 坑 17：bump blob version 须同步所有手搓 C# fixture，漏一个 4 字节 skew（v1b.2）
-**症状**：blob v2→v3 加 tex_id 列，Rust `blob.rs` + C# `FrameBlob.cs` 都改了，但 `FrameBlobV2Tests.BuildMinimalV2Blob` 只升 header（14 列）没补 tex_id 列写 → data 13 列 vs header 14 列 → 4 字节 skew，`ReadMesh` 把 idx_count 读成 vert_count，`ClipCount` 读越界。
-**根因**：手搓 blob byte[] 的 C# 测 fixture 散落多文件多 builder（FrameBlobTests/FrameBlobV2Tests×2/MirrorPoolFlattenTests/MirrorPoolTests×2）；version bump 后 `ExpectedVersion` 变，所有产「应被接受」blob 的 builder 都要升，task review 只抽查漏了一个。
-**解决**：bump version 时 grep 全 C# 测目录 `version=2u`/`HeaderLen = 88`/`elemSize = {`（13 项）/`13 \* 4`，逐 builder 升（version/HeaderLen/offs 数组/elemSize 项数/loop 边界/补 tex_id 列写）；Rust 侧 `num_col_offsets=columns.len()` 自动传播，C# arena offset 基准 `12+14*4` 也要改。
-**教训**：blob 是 Rust↔C# 字节契约，version bump = 全仓 fixture 同步事件；靠 grep 枚举所有 builder，不能只改抽查的。reviewer 字节级核每个 builder 的 header 列数==data 列数。
+v2→v3 加 tex_id 列，某 C# builder 只升 header（14 列）没补 data 列写 → 4 字节 skew，`ReadMesh` 读串。手搓 blob fixture 散落多文件多 builder，version bump 后 review 只抽查漏一个。**解决**：grep 全 C# 测目录 `version=Nu`/`HeaderLen`/`elemSize = {`/`N \* 4` 逐 builder 升（version/HeaderLen/offs/elemSize 项数/loop 边界/补列写）；Rust `num_col_offsets=columns.len()` 自动传播，C# arena offset 基准 `12+N*4` 也改。**教训**：blob 是 Rust↔C# 字节契约，version bump = 全仓 fixture 同步事件，grep 枚举所有 builder 不能只改抽查的。
 
 ### 坑 18：`using System;` 引入 System.Object，裸 `Object` 与 UnityEngine.Object 歧义（v1b.2）
 **症状**：LoomStage.cs 加 `using System;`（为 `Encoding`/`Exception`）后，6 处裸 `Object.Destroy`/`DestroyImmediate` 编译报 CS0104 `'Object' is an ambiguous reference between 'UnityEngine.Object' and 'object'`。
@@ -525,12 +516,8 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 **解决**：测断言改为 `out.iter().all(|e| e.event_type != EVT_ROLL_OVER && e.event_type != EVT_ROLL_OUT)`（无 hover 事件，Move 允许）。
 **教训**：写测断言要精确反映验的语义——「幂等」≠「无事件」。Move/scroll 等每次产的事件不能和 hover/diff 状态变化混在 `is_empty` 断言里。
 
-### 坑 32：implementer 为让 brief 测通过改实现（超 scope 破坏语义）（v1c.2）
-
-**症状**：T1 implementer 为让坑 31 的 brief 测 `out.is_empty()` 通过，改 Move handler 加 `ancestor_chain 不变时抑制 EVT_MOVE`——超 brief scope + 破坏 §7.1 恒产 + 会破坏 v1d drag（onTouchMove 驱动，同节点内移动也要收）。
-**根因**：implementer 把 brief 测当权威，brief 测与既有语义冲突时**改实现适配测**（方向反了）。
-**解决**：fix 恢复 Move 无条件 emit + 改测断言（坑 31）。
-**教训**：brief 测 vs 既有语义冲突时，**改测不改实现**（除非 plan 明确要求改语义）。implementer 按 brief verbatim 转录遇测-实现冲突应 flag DONE_WITH_CONCERNS 让 controller adjudicate，而非自作主张改实现。controller review 要验「超 brief scope 的改动」。
+### 坑 32：implementer 为让 brief 测通过改实现（已恢复，v1c.2）
+implementer 为坑 31 brief 测 `out.is_empty()` 通过，改 Move handler 抑制 EVT_MOVE——超 scope + 破坏 §7.1 恒产 + 影响drag。fix 恢复 Move 无条件 emit + 改测断言（坑 31）。**教训**：brief 测 vs 既有语义冲突**改测不改实现**；implementer 遇冲突应 flag DONE_WITH_CONCERNS 让 controller adjudicate，controller review 验「超 brief scope 改动」。
 
 ### 坑 33：C# EventBridge internal 测跨 namespace 不可见（v1c.2）
 
@@ -546,13 +533,8 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 **解决**：`PointerKind` 加 `#[repr(u8)]` → 1B 判别，PointerEvent 回 16B。C# PointerEvent.kind 对齐 byte。
 **教训**：FFI 边界的 C-like enum **必须显式 `#[repr(uN)]`**（u8/u16/u32），否则判别 isize 跨平台不稳 + 撑大 struct。永远 `size_of::<T>()` 断言 ABI struct 尺寸，别信草稿。本坑由 T3 implementer 诚实上报（初版把 sizeof 断言改成实际 20，controller 决定修 core repr(u8) 回 16 而非接受 20）。
 
-### 坑 35：csbindgen 不为 use-imported 的 `#[repr(C)]` struct 生成 C# stub（v1c.3）
-
-**症状**：Rust `PointerEvent` 被 `loomgui_stage_set_input` 签名引用，但 csbindgen 只扫 `#[no_mangle] fn` 签名不追 `use` 路径 → C# `LoomGUIBindings.cs` 无 `PointerEvent` struct 定义，编译报找不到类型。
-**根因**：csbindgen 生成策略限制（只解析 fn 签名里的类型若已在同文件定义，不跨 use 追）。
-**解决**：手补 C# 镜像 `LoomGUIBindings.cs` 同目录 `LoomGUIPointerEvent.cs`（`[StructLayout(Sequential)]` 字段序对齐 Rust `#[repr(C)]`）。**每次 Rust struct 改字段须同步手补镜像**——v1c.3 PointerEvent 加 touch_id 就漏了（T5 brief 没提，controller 补 scope 修），不修则 set_input 写错布局坐标全乱。
-**教训**：csbindgen 项目里，FFI 跨语言 struct（PointerEvent/EventRecord/LoomEvent）是**手补 C# 镜像 + Rust 真相源**双份，改 Rust struct 必须同步 grep C# 镜像 + 更新。EventRecord 镜像是手写 `LoomEvent`（LoomEventHandler.cs），PointerEvent 镜像是 `LoomGUIPointerEvent.cs`。
-**v1d.2 复发（KeyEvent）**：新增 FFI 输入 struct `KeyEvent`（set_key_input 签名引用）同样无 C# stub → T6 写消费侧 `Bindings.KeyEvent` 但无人手补镜像，**final review C1 捕**（per-task review 各看一边漏）。修：新增 `LoomGUIKeyEvent.cs`（8B，字段 key_code/modifiers/is_down/pad0/pad1 对齐 Rust，字段名已被消费侧 pin）。**强化教训**：不只"改字段"要同步镜像，**新增 FFI struct** 更要立即补 C# 镜像——把"新增/改 #[repr(C)] struct → grep C# 镜像/补文件"列为 FFI task 的必检项。
+### 坑 35：csbindgen 不为 use-imported 的 `#[repr(C)]` struct 生成 C# stub（v1c.3，v1d.2 复发）
+csbindgen 只扫 `#[no_mangle] fn` 签名不追 `use` 路径 → FFI struct（PointerEvent/EventRecord/KeyEvent）无 C# stub，编译报找不到类型。**解决**：手补 C# 镜像（`[StructLayout(Sequential)]` 字段序对齐 Rust `#[repr(C)]`）——PointerEvent→`LoomGUIPointerEvent.cs`、EventRecord→手写 `LoomEvent`、KeyEvent→`LoomGUIKeyEvent.cs`。改字段 + 新增 struct 都要同步（v1c.3 PointerEvent 加 touch_id 漏、v1d.2 新增 KeyEvent 漏，均 final review 捕）。**教训**：csbindgen 项目 FFI struct 是「Rust 真相源 + 手补 C# 镜像」双份——「新增/改 `#[repr(C)]` struct → grep C# 镜像/补文件」是 FFI task 必检项（C# 本机不编译家里机才暴露，坑 13/38 同源）。
 
 ### 坑 36：csbindgen FFI 数组参数是 `T*` 非 managed array，须 fixed-pin（v1c.3）
 
@@ -597,18 +579,10 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 **教训**：workspace 多 crate 时，公共类型/函数签名变更 = 跨 crate 破坏性改动；验证须覆盖全 workspace，非单 crate。plan brief 列调用点时也别只列一个 crate。
 
 ### 坑 42：safe-area forward 渲染变换与 inverse 输入映射必须逐项一致（v1d.1-T8 Critical）
-
-**症状**：T8 初版 `ComputeRootTransform` 用 `offX = area.center.x - sw/2`（"safe 区中心→屏幕中心偏移"思路），`ScreenToDesign` 用 safe-rect 直映射 `(sx-area.x)/area.w*dw`。review 推导发现：notched 屏（safe 区 < 全屏）下 design(0,0) 渲到 `screen.x = offX = area.center.x - sw/2`（**落进刘海区**，非 safe 区左缘），且 forward 用 uniform `sf`、inverse 用 per-axis stretch → **触控落点 ≠ 渲染点**（tap 按钮命中错位）。
-**根因**：render（root transform uniform sf + 相机）和 input（ScreenToDesign）是**同一 design↔screen 映射的两面**，必须互为精确逆。初版两套独立公式且 offX 语义错（该"设计 span 居中 safe 区"却写成"屏幕中心偏移"）。v1c 本就 latent 不一致（render uniform sf / input per-axis stretch），safe==full 时碰巧都不出错所以没暴露。
-**解决**：统一为 uniform `sf=min(area.w/dw, area.h/dh)`；`offX=area.x+(area.w-dw*sf)/2`（设计 span dw*sf 居中 safe 区，留 intra-safe letterbox）；`ScreenToDesign` 用**逐项逆** `dx=(sx-offX)/sf, dy=(offYTop-sy)/sf`（offYTop=area.y+area.h）。符号恒等（forward 代入 inverse = identity）+ notched 6 点 round-trip 测锁。safe==full width-binding 零回归（offX=0, rootPos=(-sw/2,sh/2)）。
-**教训**：render↔input 是双向映射，**两侧公式必须同源互逆**——别各写一套。坐标系变换（design↔screen，含 y-flip/scale/offset/letterbox）最易错，须符号推导 + round-trip 测，不能只验 degenerate case（safe==full）。改动前先在纸上推出 forward 公式再写 inverse。
+初版 forward 用 uniform `sf`、inverse 用 per-axis stretch + offX 语义错 → notched 屏触控落点≠渲染点。根因：render（root transform）和 input（ScreenToDesign）是同一 design↔screen 映射两面，必须互为精确逆。**解决**：统一 uniform `sf=min(area.w/dw,area.h/dh)` + `offX=area.x+(area.w-dw*sf)/2`（设计 span 居中 safe 区）+ `ScreenToDesign` 逐项逆 `dx=(sx-offX)/sf`；符号恒等 + notched 6 点 round-trip 测锁。**教训**：render↔input 双向映射两侧公式必须同源互逆；坐标系变换须符号推导 + round-trip 测，不能只验 degenerate case（safe==full 掩盖）。
 
 ### 坑 43：给广泛构造的 struct 加字段，plan 按文件派任务会漏枚举所有构造点（v1d.2-T1→T4）
-
-**症状**：T1 给 `Scene` 加 `focused_node` 字段。plan 把"修 Scene `{...}` 字面量"按文件派（T1 node.rs / T2 asset / T3 dynamic / T4 input / T5 stage），但**漏了 render/mod.rs、render/batch.rs、hit.rs、layout/mod.rs** 的 Scene 字面量/`Scene::build` 7-tuple 调用 → 这些模块测编译失败（`missing field focused_node`），T4 跑 `cargo test -p loomgui_core --lib input` 才暴露，临时补丁让 lib 编过。
-**根因**：广泛构造的 struct（`Scene` 被全 crate 测 helper 手搓）加字段是**全局 fallout**，但 plan 的 per-file 任务划分只枚举了"主路径"文件，没 grep 全仓所有构造点。与坑 41 同族（跨文件 fallout），但坑 41 是签名变更跨 crate，本坑是**字段加在同一 crate 内多模块的字面量**。
-**解决**：给 struct 加字段后，**全仓 grep 所有构造点**（`grep -rn "Scene {" loomgui_core/src/` + `Scene::build(` 调用）一次性枚举，不靠 per-file 任务记忆。T4 implementer 补了漏的 4 文件（render/mod.rs+batch.rs+hit.rs+layout，stage.rs 最小补丁留 T5 结构化重写）。
-**教训**：struct 字段/签名变更的 fallout 枚举要**全仓 grep 驱动**，不能依赖 plan 的文件清单（plan 写时未必枚举全）。controller pre-flight review 应 grep 一遍构造点写进 brief，而非让 implementer 边编译边发现。**v1d.4 优化**：给 Scene 加 transient 字段（如 `anim`）时，`replace_all` 把相邻的 `world_transforms: Vec::new()`→`world_transforms: Vec::new(), anim: Default::default()` 一次命中全 46 处字面量（同族 transient 字段相邻），比逐文件 grep 省；cargo build missing-field 仍兜底。
+给 `Scene` 加字段，plan 按文件派任务漏了 render/hit/layout 的字面量 → 测编译失败。根因：广泛构造的 struct 加字段是全局 fallout，plan per-file 划分枚举不全。**解决**：加字段后全仓 grep 构造点（`grep -rn "Scene {"` + `Scene::build(`）一次性枚举，不靠 per-file 任务记忆。**教训**：struct 字段/签名变更 fallout 枚举要全仓 grep 驱动，controller pre-flight grep 构造点写进 brief。**v1d.4 优化**：加相邻 transient 字段（如 `anim` 紧跟 `world_transforms`）用 `replace_all` 一次命中全 46 处字面量，cargo build missing-field 兜底。
 
 ### 坑 44：compound_matches 不检伪类 → 伪类规则污染 base_style（v1d 验收）
 
@@ -617,12 +591,8 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 **解决**：`compound_matches` 开头 `if pseudo_hover||active||disabled||focus { return false }`——伪类规则只走运行时 `rematch_pseudo_classes`，不进 base cascade。+ 回归测 `pseudo_class_rules_excluded_from_base_cascade`（RED base=紫 → GREEN base=灰）。
 **教训**：base cascade（resolve_styles）与动态 rematch 是**两条独立匹配路径**；加新伪类时 `compound_matches` 跳过 + `extract_dynamic_rules` has_pseudo + `compound_matches_with_state` 状态门**三处同步**，漏任一即污染/漏匹配。
 
-### 坑 45：键盘采集套 InputSystem 过度设计（v1d.2-T6 → 验收修）
-
-**症状**：`CollectKeys` 用 `Keyboard.current[Key]` → CS1503（`UnityEngine.KeyCode` ≠ `InputSystem.Key`），手补 40-case KeyCode→Key 映射是补丁（被 review 否）。
-**根因**：v1d.2-T6 键盘采集照搬指针的 InputSystem 路径——但指针要 InputSystem（多触摸 `Touchscreen`），键盘 `Input.GetKeyDown(KeyCode)` 本就够，`Keyboard[Key]` 反逼两套枚举转换。
-**解决**：`CollectKeys` 统一 `Input.GetKeyDown/GetUp(KeyCode)`（工程 Both 模式可用），KeyCode 直对 core `key_code=(uint)KeyCode` 零转换；撤 #if 分支 + 映射函数。指针 `Collect` 仍双路径（多触摸要 InputSystem）。
-**教训**：输入采集**按需选 API**——多触摸/高级特性才上 InputSystem，键盘/鼠标按钮旧 `Input.GetKey(KeyCode)` 够；别因「新 API」一刀切套同模型。
+### 坑 45：键盘采集套 InputSystem 过度设计（补丁已撤销，v1d.2-T6）
+CollectKeys 照搬指针 InputSystem 路径用 `Keyboard[Key]` → KeyCode≠Key 40-case 映射补丁。fix 撤销，统一 `Input.GetKeyDown(KeyCode)`（Both 模式零转换）；指针 Collect 仍双路径（多触摸要 InputSystem）。**教训**：输入采集按需选 API，键盘/鼠标按钮旧 `Input.GetKey(KeyCode)` 够，别一刀切套 InputSystem。
 
 ### 坑 46：`pub type Affine2` 与 `pub mod Affine2` 同名 type namespace 冲突（v1d.3-T1 plan self-review）
 
@@ -631,19 +601,11 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 **解决**：删 `mod Affine2`，用 free fn（`pub const IDENTITY`/`pub fn from_translate`）+ `Affine2Ext` trait（链式方法），测试 `use super::*` 直接 `IDENTITY`/`from_translate(...)`。
 **教训**：type alias 别想同名建 mod 提供常量；free fn + trait 是 Rust 惯用替代。plan 写代码也要 self-review 编译可行性。
 
-### 坑 47：matrix shader 节点共享 material 的 `_ObjectMatrix` 被覆盖（v1d.3 final review M1）
+### 坑 47：matrix shader 共享 material `_ObjectMatrix` 被覆盖（v1d.3 M1，**修复被坑 73① 取代**）
+两非纯平移节点同 material → `SetMatrix` 最后写者胜。原 M1 fix（MPB SetMatrix）不够——MPB 不覆盖非 Properties CBUFFER（坑 73① 纠正）→ 现拆 4 Vector Properties + SetVector ×4（见坑 73）。**教训**：共享 material 下 per-instance uniform 必走 MPB（per-renderer，不污染缓存）。
 
-**症状**：两个非纯平移节点同 (program,texture,maskContext) → `MaterialManager` 返同一 material 实例 → `mat.SetMatrix("_ObjectMatrix", m)` 最后写者胜出，除最后一节点外渲染错矩阵。
-**根因**：material key 含 `matrixFlag:bool` 不含矩阵值；直接 `mat.SetMatrix` 改的是**共享 material**（per-material 非 per-renderer）。
-**解决**：非纯平移节点 `_ObjectMatrix` 用 **MaterialPropertyBlock**（per-renderer，不污染缓存），`mpb.SetMatrix` + `Mr.SetPropertyBlock`。RenderObj 缓存 MPB lazy-init。
-**教训**：共享 material 缓存下，per-instance uniform 必走 MaterialPropertyBlock，别 SetMatrix 共享 material。spec §3.6 脚注「MPB 优于 SetMatrix」首版偷懒 Acceptable 但 final review 会要修。
-
-### 坑 48：matrix shader GO transform=identity 致 `Mesh.bounds` 视锥剔除错位（v1d.3 final review I1）
-
-**症状**：非纯平移节点 GO transform=identity + 顶点 box 本地 (0,0)(w,h) + shader `_ObjectMatrix` 移顶点到世界。`Mesh.RecalculateBounds()` 算 box 本地 bounds（原点附近小盒），Unity MeshRenderer 按它（经 GO identity）剔除 → 认为网格在原点而非真实世界位 → 旋转/剪切容器靠近屏幕边时**错误剔除/闪烁**。
-**根因**：Renderer 剔除用 `Mesh.bounds`（local，经 GO transform）；matrix 路径 GO transform=identity，bounds 不反映 `_ObjectMatrix` 世界变换。
-**解决**：`RecalculateBounds()` 后平移 `bounds.center` 到世界 `(tx+w/2, ty+h/2, 0)`（缩放 extents 可选；旋转 AABB 扩展留 v1.x）。
-**教训**：shader 变换顶点（绕过 GO Transform）时，Mesh.bounds 不会自动跟随——须手动同步 bounds 到世界范围，否则剔除/拾取错位。fgui vertexMatrix 也需留意（fgui 可能用别的剔除策略）。
+### 坑 48：matrix shader GO identity 致 Mesh.bounds 剔除错位（v1d.3 I1，**补丁被坑 73③ 删除**）
+非纯平移 GO identity + shader 移顶点 → Mesh.bounds 不反映世界变换 → 剔除错位。原 I1 fix（mutate bounds.center 到世界）是**补丁**：pure↔非 pure 切换双 translate 污染 mesh 资产（坑 73③）。现方案：translate 进 GO localPosition，_ObjectMatrix 只 scale/rotate → renderer.bounds 自动 world（见坑 73）。**教训**：别 mutate Mesh.bounds 做 culling（持久资产）；用 GO transform 让 bounds 自动 world。
 
 ### 坑 49：matrix shader 渲染须分顶点 re-base 两路径（v1d.3-T4 核心正确性）
 
@@ -666,12 +628,8 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 **解决**：matrix 路径 `worldPos=TransformObjectToWorld(designWorld)`（GO 是 root 子 + transform=identity → ObjectToWorld=root_ObjectToWorld，补回 design→Unity world）。两路径统一成 `root × design world`。
 **教训**：core 算 design world matrix，Unity 渲染要 Unity world——桥接靠 `TransformObjectToWorld`（含 root transform）。spec §3.6 漏写这步，实现期补。坑 42（render↔input 映射一致）同类。
 
-### 坑 52：ShaderLab Properties 无 Matrix 类型 + MPB 只覆盖 CBUFFER material property（v1d.3 验收）
-
-**症状**：① shader `_ObjectMatrix("...",Matrix)` parse error "unexpected TOK_MATRIX"；② 把 `_ObjectMatrix` 移 CBUFFER 外全局 uniform 防 SRP Batcher，`MPB.SetMatrix` 静默失效 → `_ObjectMatrix` 恒 0 → matrix 路径顶点塌缩（popup 飞掉看不见）。
-**根因**：① ShaderLab Properties 只 Float/Range/Int/Color/Vector/2D/3D/Cube，**无 Matrix**；② MaterialPropertyBlock 只覆盖 material property（Properties 或 `UnityPerMaterial` CBUFFER 字段），CBUFFER 外全局 uniform 不属 material → MPB **不覆盖**。
-**解决**：删 Properties Matrix 声明；`_ObjectMatrix` 放 `UnityPerMaterial` CBUFFER（无 Properties 对应），MPB 按 name 覆盖。代价：整 shader 丢 SRP Batcher（matrix 节点用 MPB 本不 batch；v1e instanced property 优化）。
-**教训**：MPB 传 per-renderer uniform 必须放 `UnityPerMaterial` CBUFFER（即使无 Properties 对应）；放全局 uniform MPB 静默失效。坑 47（MPB vs 共享 material）相关但不同——47 是 per-renderer vs material，本坑是 MPB 覆盖范围（CBUFFER 外不 cover）。
+### 坑 52：ShaderLab 无 Matrix property + MPB 覆盖范围（v1d.3 验收，**修复方案被坑 73① 纠正为错**）
+① Properties 无 Matrix 类型（只 Float/Vector/2D 等）；② MPB 只覆盖 material property。原方案「放 CBUFFER 无 Properties 对应 + MPB SetMatrix 按 name 覆盖」**错**——坑 73① 实测 MPB 不覆盖非 Properties CBUFFER 字段。现方案：拆 4 Vector Properties + SetVector ×4（见坑 73）。**教训**：MPB 只覆盖 Properties 字段；ShaderLab 无 Matrix property 类型。
 
 ### 坑 53：Unity PlayMode 首帧 Time.unscaledDeltaTime spike（tween 瞬间 complete）（v1d.4 验收）
 
@@ -693,10 +651,7 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 **教训**：引入 sentinel/魔法 id 时，**所有读 id 做 scene 索引/沿 parent 链的路径**（hit_test/wheel/事件路由/仲裁）都须识别+解码 sentinel——跨 task 最易漏（各 task 只看自己的消费侧）。LoomGUI 首次用 sentinel id（合成节点），新路径。
 
 ### 坑 56：dirty hash 字段集遗漏致持续视觉错（v1e final review Critical）
-**症状**：v1e dirty hash 初版 `node_hash` Mesh arm 只 hash `texture+verts.len+colors[0]`。`.btn:hover{width:200px}` → rematch 改 size → solve 重算 layout_rect.w → Mesh verts 坐标变，但 verts.len 仍=4、colors[0] 不变、world_matrix（纯平移且位置不变）不变 → **hash 不变 → 误判 Unchanged → hover 展开不生效（持续，非 1 帧延迟）**。final reviewer 独立 binary 复现。
-**根因**：quad 是定 4 顶点，尺寸变体现在 verts 坐标（非数量）——`verts.len()` 摘要捕获不到坐标变。Text 同族：text-align Left→Center 改 glyph pen_x/pen_y 但 glyph_count/首字 codepoint 不变 → hash 漏。另 sort_key/mask_context 在 assign_sort_keys 前调 node_hash 是占位值，hash 了无贡献（I1）。
-**解决**：Mesh arm 加 verts[0]/verts[2] 首末顶点坐标 hash（TL/BR 含尺寸，O(1)）；Text arm 加首字 glyph pen_x/pen_y hash；移除占位 sort_key/mask_context + 注释说明（commit 20fb05b，+4 测）。
-**教训**：dirty hash 的 payload 摘要不能只取"数量/标识"字段（count/tex_id），**须覆盖体现几何变化的坐标字段**（verts 顶点 / glyph pen 位置），否则"内容量不变但布局变"的场景漏判。**字段集完整性是 final review 级审查项**——per-task reviewer 易顺着 brief 字段集验（T1 reviewer 逐项核了 brief 列表全 ✅，但 brief 本身漏了 verts 坐标），须独立从"哪些视觉变化该触发重传"反推字段集。spec §8 已标"hash 字段遗漏=真风险"，final review 兑现。
+dirty hash Mesh arm 只 hash `texture+verts.len+colors[0]` → `.btn:hover{width}` 改 size→verts 坐标变但 len/colors 不变 → hash 不变 → 误判 Unchanged（持续，非 1 帧延迟）。根因：quad 定 4 顶点，尺寸变体现在 verts 坐标非数量；Text 同族（align 改 pen_x/pen_y 但 glyph_count 不变）。**解决**：Mesh 加 verts[0]/verts[2] 首末顶点坐标 hash，Text 加首字 pen_x/pen_y，移除占位 sort_key/mask_context。**教训**：dirty hash 须覆盖体现几何变化的坐标字段（verts/glyph pen）非只 count/tex_id；字段集完整性是 final review 级审查项——per-task reviewer 易顺着 brief 验（brief 本身漏），须从"哪些视觉变化该触发重传"反推。
 
 ### 坑 57：plan/草稿写围栏外标签或属性——标签硬挡、属性静默死 CSS（v1-showcase T3/T7）
 **症状**：v1-showcase plan §2 用 `<i>` 标签（justify 卡子项标记）→ 打包失败；plan §4.7 用 `position:absolute`+`left/top`（pointer-events 叠加演示）→ CSS 死代码（parse 静默忽略），reviewer 抓到。
@@ -717,10 +672,7 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 **教训**：taffy 0.5 实现了 CSS flex §4.5（style/mod.rs:124 注释明说），但**需设 `Style.overflow` 字段触发**——LoomGUI 用自己 overflow 字段时必须同步设 taffy Style.overflow。dump_scroll 实测 overlap（别猜代码）。
 
 ### 坑 60：scroll 调试套娃——先验 layout 再改物理（v1d.5 家里机验收）
-**症状**：scroll 家里机拖动异常，逐层修 6 个套娃 bug：① drag 方向反（`drag_follow +=delta` 应 `-=delta`，与 apply_wheel 一致）② x 轴 overlap=0 仍 apply delta 致斜拖抖 ③ overflow 容器撑开（坑 59）④ overflow 子 shrink（坑 59）⑤ scrollbar sentinel 进 batch reorder 致 `scene.nodes[cur]` 越界 panic ⑥ re-base 抵消（坑 58）。
-**根因**：scroll 跨 layout/render/blob/MirrorPool/merge 五层，bug 互相掩盖（方向反掩盖 overlap=0；overlap=0 掩盖 re-base 抵消）。
-**解决**：逐层 TDD + `dump_scroll` example 实测 overlap 定位"哪层错"；scrollbar 合成 sentinel（坑 55）在 `build_render_nodes` 末尾 merge 之后追加（不进 batch reorder）。
-**教训**：scroll 这种跨层特性，PlayMode 报「拖不动/晃动」先写 example 实测 core scroll 状态（overlap/scroll_pos/content_size）再改，避免盲改物理（方向/惯性）掩盖 layout 根因。
+scroll 家里机拖动异常，逐层修 6 套娃 bug：drag 方向反 / x 轴 overlap=0 仍 apply delta 斜拖抖 / overflow 容器撑开（坑 59）/ 子 shrink（坑 59）/ sentinel 进 batch reorder 越界 panic / re-base 抵消（坑 58）。根因：scroll 跨 layout/render/blob/MirrorPool/merge 五层，bug 互相掩盖。**解决**：逐层 TDD + `dump_scroll` 实测 overlap 定位"哪层错"；sentinel 在 `build_render_nodes` 末尾 merge 后追加（不进 reorder）。**教训**：跨层特性 PlayMode 报「拖不动/晃动」先 example 实测 core 状态（overlap/scroll_pos/content_size）再改，避免盲改物理掩盖 layout 根因。
 
 ### 坑 61：cascade 不解析 inline `style="..."`（v0 缺口，v1-showcase 验收）
 **症状**：`<div class="sw" style="background-color:#1a1d2e">` 色块透明看不见；§2 flx `style="flex-direction:column"` 被忽略（class row 兜底）。
@@ -759,36 +711,16 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 **教训**：分 parse-time（进 pkg base_style）vs runtime（用 pkg）逻辑；前者改重打 pkg，后者改 .dll。`dump_sw` example 验 pkg 里节点 base_style 值确认是否进包。
 
 ### 坑 67：layout/render 双测量 text 换行不一致（v1-showcase 验收，**已修·方案 A**）
-**症状**：showcase 72 个短标题（`"1.2 img 整图"` / `"预期: ..."` 等）末字"换行"——末字溢出到无高度的第 2 行。
-**根因**（深度查证，推翻早先"浮点边界"猜测）：`measure_text` 被**独立调用两次**，max_width 来源不同——
-- **layout**（taffy 闭包）：taffy 按需传 `known.width`。短文本（max-content 略 ≤ available）**只传 None**→1 行（rect.h=1 行高）；长文本（max-content ≫ available）传 `Some(available)`→多行。
-- **render**（`build_render_nodes`）：**永远用 `rect.w`**（stretch 后的 available 整数宽）重测。短文本 intrinsic（152.052）亚像素超 available（152）→ 严格 `>` 判 → 误判 2 行 → 与 layout 的 rect.h(1 行) 不一致 → 末字溢出。
-- 关键：`rect.w`（available）可能 < intrinsic，**render 不能用 rect.w 作 max_width**。
-**解决**（方案 A：消除双测量，layout 为唯一测量权威）：① `Scene.text_layouts: Vec<Option<TextLayout>>`（与 world_transforms 并列的 solve-填 transient 字段）② layout 闭包"Some 优先"存 TextLayout（短文本只 None→存 None 1 行；长文本 None+Some→存 Some 多行；taffy 末尾补测 None 不覆盖）③ render 读 `scene.text_layouts`（fallback `measure_text(rect.w)` 保 test 向后兼容）。dump_text 验收：72 短标题 before(measure rect.w)=2 → after(text_layouts)=1；长文本 6/4/5/4 行不变。
-**教训**：双测量（layout+render 各 measure）是不一致之源；text 的 `rect.w`(stretch available) ≠ taffy 选定 max_width（短文本 None）；render 必须复用 layout 结果而非用 rect.w 重测。早先"浮点边界/epsilon/ceil"候选**全是症状层猜测**，未触根因（max_width 来源不一致）——systematic-debugging 的 dump 边界取证（`[LM] known=None` 揭示 taffy 真实传参）才定位真因。
+showcase 72 短标题末字溢出到无高度的第 2 行。根因（推翻"浮点边界"猜测）：`measure_text` 独立调用两次，max_width 来源不同——layout（taffy 闭包）短文本只传 `None`→1 行；render 永远用 `rect.w`(stretch available) 重测，短文本 intrinsic 亚像素超 available → 误判 2 行。**解决**（方案 A，layout 为唯一测量权威）：`Scene.text_layouts` transient 字段存 layout 闭包"Some 优先"结果，render 复用（fallback `measure_text(rect.w)` 保 test 兼容）。**教训**：双测量是不一致之源；render 须复用 layout 结果非用 rect.w 重测；"浮点边界/epsilon"全是症状层猜测，dump 边界取证（`[LM] known=None` 揭示 taffy 传参）才定位真因。
 
 ### 坑 68：img Percent 压扁 + width:auto→0 不渲染（v1-showcase §1.3 验收）
-**症状**：§1.3 `width:50%` 图只放大宽、高不变（压扁）；`width:auto` 第三张图不渲染（html 三图：1=80×80、2=50%、3=auto）。
-**根因**（两独立 bug）：
-- **Percent 压扁**：layout measure 闭包对 Image 直接返 build 时算的 intrinsic (iw,ih)，**不消费 taffy 传的 `known.width`**。dump_img + 闭包 instrument 揭示：Percent width 的 Image，taffy **第二次传 `known.width=Some(解析宽)`**（如 500），闭包忽略 → taffy 用 Percent 定 width=500、用 measure 返的 height=intrinsic 64（没等比）→ rect=(500,64) 压扁。
-- **auto→0**：`parse_dimension`（mapping.rs）没 handle `"auto"`，走 `parse_lp` fallback `Length(0.0)` → `width:auto` 解析成 `Dimension::Length(0.0)` → rect=(0,0) 不渲染。（`parse_length` 处理 auto 但不用于 width/height。）
-**解决**：
-- Percent：`MeasureContext::Image` 改存原始 `{iw,ih,w_dim,h_dim}`（不再 build 时算 w/h），闭包消费 `known` 解析——width `Some(v)`→v（Percent/fit 解析后）、`None`+`Length`→css、`Auto`+`height Length`→等比 height、否则 intrinsic；height `Length`→值否则等比 width。覆盖坑 65 全 case + Percent。
-- auto：`parse_dimension` 加 `if s=="auto" { return Dimension::Auto }`。
-- 坑 66 适用：parse_dimension 是 parse-time，**改后必须重打 pkg**（base_style 打包期烤），否则旧 pkg 仍 Length(0.0)。
-**教训**：① Image measure 必须消费 taffy `known`（Percent/fit 解析宽在那），build 时算 w/h 对 Percent 走不通。② parse-time 改动 → 重打 pkg（坑 66）。③ `width:auto` 是 CSS 默认，parse 必须 Auto≠Length(0)。诊断利器：`dump_img`（css.w/css.h/rect/tex 四列）+ 闭包 instrument `[IMG] known.w={:?}`。
+两独立 bug：① **Percent 压扁**——measure 闭包对 Image 直接返 build 时 intrinsic (iw,ih) 不消费 taffy `known.width`，Percent width 图被定宽 500 但 height 用 intrinsic 64（没等比）→ 压扁；② **auto→0**——`parse_dimension` 没 handle `"auto"` 走 fallback `Length(0.0)` → rect=(0,0) 不渲染。**解决**：Image measure 存原始 `{iw,ih,w_dim,h_dim}` 闭包消费 `known` 解析（覆盖坑 65 + Percent）；`parse_dimension` 加 `"auto"→Dimension::Auto`；**改后重打 pkg**（parse-time，坑 66）。**教训**：Image measure 必须消费 taffy `known`；`width:auto` 是 CSS 默认须 Auto≠Length(0)；诊断用 `dump_img`（css.w/css.h/rect/tex 四列）+ 闭包 instrument `[IMG] known.w`。
 
 ### 坑 69：滚动松手物理（对照 fgui，v1-showcase 验收）
-**症状**：bug1 小拖松手回原位；bug2 快速拖到顶/底"先露一大块空白再突然回弹"。
-**根因**：begin_inertia 硬阈值 `v2>500` 全速 inertia（界内小拖 v≈625 冲越界 snap 回原位）+ inertia `change` 未运行时截断（pos 冲远越界，dur 结束才 clamp snap）。
-**解决**（对照 fgui `ScrollPane.cs`）：① begin_inertia 二次 ratio `((v2-thresh)/thresh)²` 削弱低速（`UpdateTargetAndDuration:2066`）+ 越界松手直接 bounce 不 inertia（`__touchEnd:1649` flag）；② advance 运行时越界>20px 截断 + 启回弹 tween（`RunTween:2276`）——inertia target **不预 clamp**，弹性过冲靠运行时检测。
-**教训**：fgui inertia target 故意不 clamp（`LoopCheckingTarget:1867` 只对循环滚动 `_loop≠0` 生效），弹性过冲靠 `RunTween` 每帧检测越界>20 截断——这才是 fgui 手感来源。bug1 真因是硬阈值全速（非单一"越界 snap"）。初版 target-clamp 方案能修 bug 但丢失弹性过冲（到边界硬停），用户反馈"回弹弱"后改运行时截断才对。
+bug1 小拖松手回原位；bug2 快速拖到顶/底"先露空白再突然回弹"。根因：begin_inertia 硬阈值全速 inertia（界内小拖冲越界 snap）+ inertia change 未运行时截断（pos 冲远越界）。**解决**（对照 fgui）：begin_inertia 二次 ratio `((v2-thresh)/thresh)²` 削弱低速 + 越界松手直接 bounce 不 inertia；advance 运行时越界>20px 截断启回弹 tween（inertia target 不预 clamp，弹性过冲靠运行时检测）。**教训**：fgui inertia target 故意不 clamp，弹性过冲靠 RunTween 每帧检测越界>20 截断（手感来源）；初版 target-clamp 修 bug 但丢弹性（边界硬停），改运行时截断才对。fgui 行号见 §6。
 
 ### 坑 70：drag 越界双重打折致回弹弱（对照 fgui，v1-showcase 验收）
-**症状**：坑 69 方案 B 验收反馈"回弹效果稍微弱了点"。
-**根因**：drag_follow 越界 `over=min(|np|,vp*0.5); np=-over*0.5` **双重打折**，最大越界 `vp*0.25`；fgui `__touchMove:1521` `min(位移*0.5, vp*PULL_RATIO)` 单打折，最大 `vp*0.5`——LoomGUI 少一半。
-**解决**：改 `dampened=min((lo-np)*PULL_RATIO, vp*PULL_RATIO)` 单打折（对照 fgui），最大越界 `vp*0.5`，回弹幅度翻倍。
-**教训**：fgui `PULL_RATIO=0.5`（`:90`）是位移打折比，LoomGUI 误实现成"先 cap 再打折"双重作用。对照 fgui 时 `min(a*c, b*c)` ≠ `min(a,b)*c`——抄公式先展开代数确认。
+坑 69 方案 B 反馈"回弹弱"。根因：drag_follow 越界 `over=min(|np|,vp*0.5); np=-over*0.5` 双重打折（最大 vp*0.25），fgui 单打折（最大 vp*0.5）。**解决**：改 `dampened=min((lo-np)*PULL_RATIO, vp*PULL_RATIO)` 单打折，回弹翻倍。**教训**：对照 fgui 时 `min(a*c,b*c)` ≠ `min(a,b)*c`（先 cap 再打折 vs 单打折），抄公式先展开代数确认。
 
 ### 坑 71：CSS 分组选择器 `.op,.tr` 逗号不展开——规则整条失效（v1-showcase §3 验收）
 **症状**：§3 .op/.tr 蓝底不显示，width/height/bg 全丢（rect 压成文字 intrinsic 尺寸）。
