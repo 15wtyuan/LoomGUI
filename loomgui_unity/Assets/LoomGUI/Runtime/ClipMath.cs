@@ -2,11 +2,11 @@ using UnityEngine;
 
 namespace LoomGUI
 {
-    /// _ClipBox 推导（§4.4，照搬 fgui UpdateContext.cs:105-156）。
+    /// _ClipBox 推导。
     ///
     /// 给 design-space clip rect（绝对，y-down）+ 根 Stage transform：把两角经
     /// root.TransformPoint 转到 world（root scale=(sf,-sf,sf) y-down→y-up），取 world
-    /// center/half，按 fgui 公式 `_ClipBox = (-cx/hw, -cy/hh, 1/hw, 1/hh)` 算。
+    /// center/half，按公式 `_ClipBox = (-cx/hw, -cy/hh, 1/hw, 1/hh)` 算。
     /// 半宽/高为 0（嵌套 disjoint→空集）→ safe-blank (-2,-2,0,0)：clipPos 恒 (-2,-2)，
     /// max(abs)=2>1 → step(2,1)=0 → 全 discard（防除零）。
     ///
@@ -17,11 +17,11 @@ namespace LoomGUI
     /// 区域内 → |clipPos|<=1（保留），外 → >1（discard）。
     public static class ClipMath
     {
-        /// fgui safe-blank（UpdateContext.cs:124）：half=0 时返回，clipPos 恒在外 → 全裁。
+        /// safe-blank：half=0 时返回，clipPos 恒在外 → 全裁。
         public static readonly Vector4 SafeBlank = new Vector4(-2f, -2f, 0f, 0f);
 
         /// 由 design rect + 根 transform 算 _ClipBox（world 空间 center/half）。
-        /// designX/Y/W/H 是绝对 design 坐标（layout 已算绝对，§4.2）。
+        /// designX/Y/W/H 是绝对 design 坐标（layout 已算绝对）。
         public static Vector4 ComputeClipBox(Transform root,
             float designX, float designY, float designW, float designH)
         {

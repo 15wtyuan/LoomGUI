@@ -3,13 +3,12 @@ using UnityEngine;
 
 namespace LoomGUI.Tests
 {
-    /// TextRasterizer.BuildMesh 测试（§4.3 / T4）。验 glyph quad 数学：
+    /// TextRasterizer.BuildMesh 测试。锁 glyph quad 数学：
     ///   quad_left=pen_x+minX, quad_right=pen_x+maxX,
     ///   quad_top=pen_y−maxY, quad_bottom=pen_y−minY（y-down；maxY 基线上方→减）
-    /// 顶点序 BL,TL,TR,BR（对齐 fgui DrawGlyph）；索引每 quad 0,1,2,0,2,3；顶点色=color×alpha。
+    /// 顶点序 BL,TL,TR,BR；索引每 quad 0,1,2,0,2,3；顶点色=color×alpha。
     ///
-    /// Unity EditMode 在本任务环境无法 headless 执行——本测保证编译正确 + 逻辑（quad 数学、顶点序、
-    /// 索引、顶点色）正确。预期值由 BuildMesh 内部用的同一 GetCharacterInfo 重新算出再比对，
+    /// 预期值由 BuildMesh 内部用的同一 GetCharacterInfo 重新算出再比对，
     /// 故即使 DejaVu 不同版本的精确 minX/maxY 不同，只要 BuildMesh 数学正确即过。
     public class TextRasterizerTests
     {
@@ -19,7 +18,7 @@ namespace LoomGUI.Tests
         {
 #if UNITY_EDITOR
             var font = UnityEditor.AssetDatabase.LoadAssetAtPath<Font>(DejaVuPath);
-            Assert.IsNotNull(font, $"DejaVu 字体应在 {DejaVuPath}（T4 拷入；.meta TrueTypeFontImporter）");
+            Assert.IsNotNull(font, $"DejaVu 字体应在 {DejaVuPath}（.meta TrueTypeFontImporter）");
             return font;
 #else
             Assert.Inconclusive("PlayMode/build 无 AssetDatabase——跳过");
@@ -27,13 +26,13 @@ namespace LoomGUI.Tests
 #endif
         }
 
-        const string CjkFontPath = "Assets/LoomGUI/Fonts/wqy-microhei.ttc";
+        const string CjkPath = "Assets/LoomGUI/Fonts/wqy-microhei.ttc";
 
         static Font LoadCjkFont()
         {
 #if UNITY_EDITOR
-            var font = UnityEditor.AssetDatabase.LoadAssetAtPath<Font>(CjkFontPath);
-            Assert.IsNotNull(font, $"CJK 字体应在 {CjkFontPath}（T3 拷入）");
+            var font = UnityEditor.AssetDatabase.LoadAssetAtPath<Font>(CjkPath);
+            Assert.IsNotNull(font, $"CJK 字体应在 {CjkPath}（.meta TrueTypeFontImporter）");
             return font;
 #else
             Assert.Inconclusive("PlayMode/build 无 AssetDatabase——跳过");
@@ -54,7 +53,7 @@ namespace LoomGUI.Tests
             Assert.AreEqual(6, mesh.Idx.Length, "1 quad = 6 idx（0,1,2,0,2,3）");
         }
 
-        /// CJK glyph（「中」）走同一光栅路径（codepoint-based，坑 14）：
+        /// CJK glyph（「中」）走同一光栅路径（codepoint-based）：
         /// BuildMesh 内部 RequestCharactersInTexture + GetCharacterInfo → 1 quad。
         /// 验 CJK codepoint 在 TextRasterizer.BuildMesh 产 quad（4 verts / 6 idx）——生产代码零改。
         [Test]
@@ -69,7 +68,7 @@ namespace LoomGUI.Tests
             Assert.AreEqual(6, mesh.Idx.Length, "CJK 1 quad = 6 idx（0,1,2,0,2,3）");
         }
 
-        /// quad 四角位置 == pen + box 数学（§4.3 step 4）。用 BuildMesh 内同源 GetCharacterInfo
+        /// quad 四角位置 == pen + box 数学。用 BuildMesh 内同源 GetCharacterInfo
         /// 重算期望，再逐顶点比对——锁顶点序 + 数学，不锁 DejaVu 具体数值（跨版本稳健）。
         [Test]
         public void BuildMesh_QuadCorners_MatchPenPlusBoxMath()
@@ -90,7 +89,7 @@ namespace LoomGUI.Tests
             float pt = penY - info.maxY;   // maxY 基线上方 → y-down 减
             float pb = penY - info.minY;   // minY 基线下方
 
-            // 顶点序 BL,TL,TR,BR（fgui DrawGlyph 同序）。
+            // 顶点序 BL,TL,TR,BR。
             Assert.AreEqual(new Vector2(pl, pb), mesh.Verts[0], "BL = (pl, pb)");
             Assert.AreEqual(new Vector2(pl, pt), mesh.Verts[1], "TL = (pl, pt)");
             Assert.AreEqual(new Vector2(pr, pt), mesh.Verts[2], "TR = (pr, pt)");
@@ -174,10 +173,10 @@ namespace LoomGUI.Tests
             Assert.AreEqual(0, TextRasterizer.FontVersion, "ResetStatic 归零（Domain reload 语义）");
         }
 
-        /// ResetStatic 契约（T8 / §4.3e Domain reload 保护）：任意非零版本 → 调一次归零；
-        /// 再调一次仍 0（幂等）；多次 OnRebuilt 累积后归零仍生效。锁 SubsystemRegistration 复位语义。
+        /// ResetStatic 契约（Domain reload 保护）：任意非零版本 → 调一次归零；
+        /// 再调一次仍 0（幂等）；多次 OnRebuilt 累积后归零仍生效。
         /// （SubsystemRegistration 属性本身 editor-triggered、EditMode 无法 headless 触发——本测
-        /// 验 ResetStatic 行为本身；LoomStage.ResetStatics 的接线由 diff/code review 锁定。）
+        /// 验 ResetStatic 行为本身。）
         [Test]
         public void ResetStatic_ZerosFontVersion_FromAnyNonzeroState()
         {

@@ -4,7 +4,7 @@ using UnityEngine;
 
 namespace LoomGUI.Tests
 {
-    /// v1b.2：MirrorPool 按 blob 的 tex_id 从 texMap 绑对 Texture2D。
+    /// MirrorPool 按 blob 的 tex_id 从 texMap 绑对 Texture2D。
     /// 手搓 v4 单节点 Mesh blob（tex_id=7）+ mock texMap{7→红 Texture2D}，
     /// 断言该节点 Mr.sharedMaterial.mainTexture == 红贴图（非 whiteTexture）。
     public class MirrorPoolTexIdTests
@@ -122,7 +122,7 @@ namespace LoomGUI.Tests
             }
         }
 
-        /// v1b.2：tex_id=0（占位）或 texMap 缺该 tid → fallback（whiteTexture）。
+        /// tex_id=0（占位）或 texMap 缺该 tid → fallback（whiteTexture）。
         /// 验 fallback 分支不会误绑到 texMap 里的某张图。
         [Test]
         public void TexId_Zero_Or_Missing_FallsBack()

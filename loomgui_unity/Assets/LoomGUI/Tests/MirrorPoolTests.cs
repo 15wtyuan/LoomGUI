@@ -4,9 +4,9 @@ using UnityEngine;
 
 namespace LoomGUI.Tests
 {
-    /// MirrorPool 的 EditMode 行为测试（Task 7/8）。
-    /// 手搓 1 节点 mesh blob（镜像 loomgui_ffi_c/src/blob.rs::build_blob v4 布局，
-    /// 同 FrameBlobTests）→ 验 stale-flag diff 的 Create / Reuse / Destroy 三端。
+    /// MirrorPool 的 EditMode 行为测试。
+    /// 手搓 1 节点 mesh blob（镜像 blob.rs::build_blob v4 布局，同 FrameBlobTests）
+    /// → 验 stale-flag diff 的 Create / Reuse / Destroy 三端。
     public class MirrorPoolTests
     {
         /// 构造一个 1 节点 Mesh blob：visible=1, payload_kind=1, parent=-1,
@@ -69,7 +69,7 @@ namespace LoomGUI.Tests
             b.AddRange(System.BitConverter.GetBytes(arenaOff));              // mesh_arena_off
             b.AddRange(System.BitConverter.GetBytes(arenaLen));              // mesh_arena_len
             b.AddRange(System.BitConverter.GetBytes(arenaOff + arenaLen));   // text_arena_off（紧跟）
-            b.AddRange(System.BitConverter.GetBytes(0u));                    // text_arena_len（T1 空）
+            b.AddRange(System.BitConverter.GetBytes(0u));                    // text_arena_len（空）
             int clipOff = arenaOff + arenaLen;                               // text 空，clip 紧跟
             b.AddRange(System.BitConverter.GetBytes(clipOff));               // clip_table_off
             b.AddRange(System.BitConverter.GetBytes(4u));                    // clip_table_len（仅 clip_count）
@@ -87,15 +87,15 @@ namespace LoomGUI.Tests
             b.AddRange(System.BitConverter.GetBytes(1f));        // col 9: m_d
             b.AddRange(System.BitConverter.GetBytes(x));         // col 10: m_tx
             b.AddRange(System.BitConverter.GetBytes(y));         // col 11: m_ty
-            b.Add(payloadKind);                                  // col 12: payload_kind (1=Mesh 默认；0=Unchanged v1e 测)
+            b.Add(payloadKind);                                  // col 12: payload_kind (1=Mesh 默认；0=Unchanged 测)
             b.AddRange(System.BitConverter.GetBytes(0u));        // col 13: mesh_off（相对 arena 起始）
             b.AddRange(System.BitConverter.GetBytes((uint)arenaLen)); // col 14: mesh_len
-            b.AddRange(System.BitConverter.GetBytes(0u));        // col 15: text_off（T1 占位）
-            b.AddRange(System.BitConverter.GetBytes(0u));        // col 16: text_len（T1 占位）
+            b.AddRange(System.BitConverter.GetBytes(0u));        // col 15: text_off（占位）
+            b.AddRange(System.BitConverter.GetBytes(0u));        // col 16: text_len（占位）
             b.AddRange(System.BitConverter.GetBytes(0u));        // col 17: tex_id
 
             b.AddRange(arena);
-            // text_arena T1 空，跳过。
+            // text_arena 空，跳过。
             // clip 表：仅 clip_count=0
             b.AddRange(System.BitConverter.GetBytes(0u));
             return b.ToArray();
@@ -145,7 +145,7 @@ namespace LoomGUI.Tests
             var shader = Shader.Find("LoomGUI/Unlit");
             var mm = new MaterialManager(shader);
             var pool = new MirrorPool();
-            // v1b.2：Sync 新签名（texMap + fallback + font）。本测 Mesh blob tex_id=0 → fallback 路径。
+            // Sync 新签名（texMap + fallback + font）。本测 Mesh blob tex_id=0 → fallback 路径。
             var texMap = new Dictionary<uint, Texture2D>();
             var fallback = Texture2D.whiteTexture;
 
@@ -200,12 +200,12 @@ namespace LoomGUI.Tests
             }
         }
 
-        /// §4.5 / Task 7：UploadMesh 现走 RenderObj 可复用 List 路径（Clear+fill+SetVertices(List)）。
+        /// UploadMesh 走 RenderObj 可复用 List 路径（Clear+fill+SetVertices(List)）。
         /// 验证 reuse 不破坏几何——同 blob 连续 Sync 多次（List 被 Clear+refill），顶点/uv/颜色/索引
         /// 与首次完全一致；且不同 mesh（顶点数变化）也能正确刷新（List 扩容/收缩正确，无残留旧顶点）。
         /// kind=1（mesh）路径在此直测；kind=2（text）路径走 TextRasterizer.BuildMesh → 同 UploadMesh，
         /// 几何由 BuildMesh 决定、UploadMesh 仅搬运——故 mesh 路径的正确性即覆盖 UploadMesh 对 text 的搬运正确性。
-        /// （text 顶点值需 live Font 才能算，此处不在单测范围；T4 TextRasterizerTests 已验 BuildMesh 输出。）
+        /// （text 顶点值需 live Font 才能算，此处不在单测范围；TextRasterizerTests 已验 BuildMesh 输出。）
         [Test]
         public void UploadMesh_WithListReuse_ProducesCorrectGeometry()
         {
@@ -213,7 +213,7 @@ namespace LoomGUI.Tests
             var shader = Shader.Find("LoomGUI/Unlit");
             var mm = new MaterialManager(shader);
             var pool = new MirrorPool();
-            // v1b.2：Sync 新签名（texMap + fallback + font）。本测 Mesh blob tex_id=0 → fallback 路径。
+            // Sync 新签名（texMap + fallback + font）。本测 Mesh blob tex_id=0 → fallback 路径。
             var texMap = new Dictionary<uint, Texture2D>();
             var fallback = Texture2D.whiteTexture;
 
@@ -272,9 +272,9 @@ namespace LoomGUI.Tests
             }
         }
 
-        /// v1e dirty 回归：静态帧 payload_kind=0(Unchanged) 节点必须保留上帧 GO（清 stale 不销毁、
+        /// dirty 回归：静态帧 payload_kind=0(Unchanged) 节点必须保留上帧 GO（清 stale 不销毁、
         /// 不上传）。dirty.rs 保证 Unchanged 时 world/alpha/payload 全不变 → 保留上帧 GO 状态即可。
-        /// 首帧 Mesh 建 GO，第二帧同节点 Unchanged 必须保留——否则 v1e 优化致静态 UI 首帧后全消失。
+        /// 首帧 Mesh 建 GO，第二帧同节点 Unchanged 必须保留——否则优化致静态 UI 首帧后全消失。
         [Test]
         public void UnchangedNodeRetainsGoAcrossFrames()
         {

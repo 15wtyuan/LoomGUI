@@ -3,7 +3,7 @@ using UnityEngine;
 
 namespace LoomGUI
 {
-    /// 帧 blob 托管解析视图（v4）。解析 Rust build_blob 产出的 little-endian blob。
+    /// 帧 blob 托管解析视图。解析 Rust build_blob 产出的 little-endian blob。
     ///
     /// 布局（镜像 loomgui_ffi_c/src/blob.rs）：
     ///   header (108B): magic(u32 LE), version(u32)=4, node_count(u32),
@@ -16,14 +16,14 @@ namespace LoomGUI
     public readonly struct FrameBlob
     {
         public const uint Magic = 0x4D4F4F4C;
-        /// blob 版本（v4）。magic+version 校验在 IsValid。
+        /// blob 版本。magic+version 校验在 IsValid。
         public const uint ExpectedVersion = 4;
 
         readonly byte[] _buf;
 
         public FrameBlob(byte[] buf) { _buf = buf; }
 
-        /// magic==Magic && version==4。MirrorPool.Sync 顶据此拒绝陈旧/非 v4 blob。
+        /// magic==Magic && version==ExpectedVersion。MirrorPool.Sync 顶据此拒绝陈旧 blob。
         public bool IsValid => ReadU32(0) == Magic && ReadU32(4) == ExpectedVersion;
         public uint Version => ReadU32(4);
         public int NodeCount => (int)ReadU32(8);
@@ -32,7 +32,7 @@ namespace LoomGUI
         //   0=node_id(u32) 1=parent_id(i32,-1=none) 2=visible(u8) 3=alpha(f32)
         //   4=sort_key(u32) 5=mask_context(u32)
         //   6=m_a(f32) 7=m_b(f32) 8=m_c(f32) 9=m_d(f32) 10=m_tx(f32) 11=m_ty(f32)
-        //   ↑ v4：local_x/local_y → world matrix Affine2 6 列（m_a..m_ty）。
+        //   ↑ world matrix Affine2 6 列（m_a..m_ty）。
         //   12=payload_kind(u8, 0=Unchanged 1=Mesh 2=Text)
         //   13=mesh_off(u32) 14=mesh_len(u32)
         //   15=text_off(u32) 16=text_len(u32)
@@ -54,7 +54,7 @@ namespace LoomGUI
         public float Alpha(int i) => ReadF32(ColOff(3) + i * 4);
         public uint SortKey(int i) => ReadU32(ColOff(4) + i * 4);
         public uint MaskContext(int i) => ReadU32(ColOff(5) + i * 4);
-        // v4 world matrix Affine2 6 列 (m_a..m_ty)。
+        // world matrix Affine2 6 列 (m_a..m_ty)。
         public float Ma(int i) => ReadF32(ColOff(6) + i * 4);
         public float Mb(int i) => ReadF32(ColOff(7) + i * 4);
         public float Mc(int i) => ReadF32(ColOff(8) + i * 4);
@@ -73,7 +73,7 @@ namespace LoomGUI
             Math.Abs(Ma(i) - 1f) < 1e-6f && Math.Abs(Mb(i)) < 1e-6f
             && Math.Abs(Mc(i)) < 1e-6f && Math.Abs(Md(i) - 1f) < 1e-6f;
 
-        /// clip 表 entry 数（context>0 入表；T5 填）。T1 恒为 0。
+        /// clip 表 entry 数（context>0 入表）。无 mask scene 恒为 0。
         /// clip 表段布局：clip_count(u32) + entries[count × {ctx,x,y,w,h}]。
         /// clip_count(u32) 在 ClipTableOff 处；clip_table_len(header @100) 含 clip_count 本身。
         public int ClipCount => ClipTableLen >= 4 ? (int)ReadU32(ClipTableOff) : 0;
@@ -128,7 +128,7 @@ namespace LoomGUI
         }
 
         /// 读节点 i 的 text 段（仅 payload_kind==2 时调用）。镜像 Rust blob.rs::read_text。
-        /// per-node 段布局（little-endian，§4.1/§4.3）：
+        /// per-node 段布局（little-endian）：
         ///   font_size:u32 | color:f32×4 | glyph_count:u32
         ///   | glyphs[count × { codepoint:u32, pen_x:f32, pen_y:f32 }]  (12B/glyph)
         /// pen_x/pen_y 已 GO-local（layout-rect 相对；节点绝对位在 world matrix m_tx/m_ty，pen 是相对节点原点的偏移，勿与 m_tx/m_ty 叠加）；
@@ -158,7 +158,7 @@ namespace LoomGUI
     }
 
     /// 单 glyph 笔位（GO-local 绝对 design，y-down）。codepoint 为 Unicode 标量值（传 GetCharacterInfo
-    /// 前 cast char；BMP 外暂不支持——T3 仅 ASCII/BMP 测，v1c emoji 再议）。
+    /// 前 cast char；BMP 外暂不支持）。
     public readonly struct GlyphData
     {
         public readonly uint Codepoint;

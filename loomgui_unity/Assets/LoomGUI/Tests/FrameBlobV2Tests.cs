@@ -3,11 +3,11 @@ using NUnit.Framework;
 
 namespace LoomGUI.Tests
 {
-    /// Blob v4 scaffold 校验（T1/T8）。手搓最小 v4 header（镜像 loomgui_ffi_c/src/blob.rs v4 布局），
-    /// 验：magic+version 校验生效（IsValid）、Version==4、ClipCount==0（T1 占位）、单 Mesh 节点
+    /// Blob v4 scaffold 校验。手搓最小 v4 header（镜像 blob.rs v4 布局），
+    /// 验：magic+version 校验生效（IsValid）、Version==4、ClipCount==0、单 Mesh 节点
     /// 经 ReadMesh 仍正确解析（mesh_arena header 偏移重算正确）。
     ///
-    /// 注意：Unity EditMode 在本任务环境无法 headless 执行；Rust blob.rs::TestView 的 v4 测试
+    /// 注意：Unity EditMode 在本任务环境无法 headless 执行；blob.rs::TestView 的 v4 测试
     /// 是布局契约的权威自动门，本 C# 测试仅保证编译正确 + 逻辑（offset 计算）正确。
     public class FrameBlobV2Tests
     {
@@ -51,7 +51,7 @@ namespace LoomGUI.Tests
             b.AddRange(System.BitConverter.GetBytes(arenaLen));
             int textArenaOff = meshArenaOff + arenaLen;        // text 紧跟 mesh
             b.AddRange(System.BitConverter.GetBytes(textArenaOff));
-            b.AddRange(System.BitConverter.GetBytes(0u));      // text_arena_len（T1 空）
+            b.AddRange(System.BitConverter.GetBytes(0u));      // text_arena_len（空）
             int clipOff = textArenaOff;                        // text 空，clip 紧跟 text
             b.AddRange(System.BitConverter.GetBytes(clipOff));
             b.AddRange(System.BitConverter.GetBytes(4u));      // clip_table_len（仅 clip_count）
@@ -79,7 +79,7 @@ namespace LoomGUI.Tests
             b.AddRange(System.BitConverter.GetBytes(0u));        // col 17: tex_id
 
             b.AddRange(arena);
-            // text_arena T1 空，跳过。
+            // text_arena 空，跳过。
             // clip 表：仅 clip_count=0
             b.AddRange(System.BitConverter.GetBytes(0u));
             return b.ToArray();
@@ -98,15 +98,15 @@ namespace LoomGUI.Tests
         public void ClipCountIsZeroInT1()
         {
             var blob = new FrameBlob(BuildMinimalV2Blob());
-            Assert.AreEqual(0, blob.ClipCount, "T1: clip 表仅 clip_count=0，无 entries");
+            Assert.AreEqual(0, blob.ClipCount, "clip 表仅 clip_count=0，无 entries");
         }
 
         [Test]
         public void TextAccessorsArePlaceholderZero()
         {
             var blob = new FrameBlob(BuildMinimalV2Blob());
-            Assert.AreEqual(0u, blob.TextOff(0), "T1: text_off 占位 0");
-            Assert.AreEqual(0u, blob.TextLen(0), "T1: text_len 占位 0");
+            Assert.AreEqual(0u, blob.TextOff(0), "text_off 占位 0");
+            Assert.AreEqual(0u, blob.TextLen(0), "text_len 占位 0");
         }
 
         [Test]
@@ -124,7 +124,7 @@ namespace LoomGUI.Tests
             Assert.AreEqual(1f, mesh.Verts[2].y);
         }
 
-        /// T6：ClipRect 从 clip 表读 ctx → design rect。镜像 blob.rs::read_clips。
+        /// ClipRect 从 clip 表读 ctx → design rect。镜像 blob.rs::read_clips。
         /// 构造含 2 entries（ctx=1 rect{10,20,100,50}；ctx=2 rect{5,5,30,40}）的 blob，验线性扫描命中。
         static byte[] BuildBlobWithClips((uint ctx, float x, float y, float w, float h)[] clips)
         {

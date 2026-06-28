@@ -7,11 +7,11 @@
 <style>
 /* 浏览器预览覆盖（LoomGUI 打包用外部 style.css；scraper select body 不读 head <style>）*/
 body { margin:0; background:#0d0e15; display:flex; justify-content:center; }
-/* 复刻 LoomGUI 契约（resolved.rs:69）：div 永远是 flex 容器，默认 column。
+/* 复刻 LoomGUI 契约：div 永远是 flex 容器，默认 column。
    style.css/inline 写 flex-direction:row 处覆盖为横排——浏览器对 block div 无视 flex-direction，
    故须全局把 div 提升为 flex。特异性 (0,0,1) < class (0,1,0) < inline，安全。*/
 div { display:flex; flex-direction:column; }
-/* taffy Style::DEFAULT 的 box-sizing 是 BorderBox（resolved.rs:73 未显式设）；浏览器默认 content-box。
+/* taffy Style::DEFAULT 的 box-sizing 是 BorderBox；浏览器默认 content-box。
    统一为 border-box，否则 .flx(height:36+padding:4) 等 padding+固定尺寸元素尺寸不一致。*/
 * { box-sizing:border-box; }
 /* 浏览器无 tween，sec 可见（LoomGUI 靠 Driver StaggeredEntrance tween 拉亮 opacity:0）*/
@@ -77,7 +77,7 @@ div { display:flex; flex-direction:column; }
           <div class="card-h"><span class="card-t">1.5 button 三态</span><span class="card-x">预期: hover 青/active 按压/disabled 灰</span></div>
           <div class="card-b">
             <div class="btn-demo">normal</div>
-            <div class="btn-demo disabled">disabled</div>
+            <div class="btn-demo disabled" id="btn-demo-disabled">disabled</div>
           </div>
         </div>
         <div class="card">
@@ -92,63 +92,63 @@ div { display:flex; flex-direction:column; }
         <div class="card">
           <div class="card-h"><span class="card-t">2.1 flex-direction</span><span class="card-x">预期: row 横排 / column 竖排</span></div>
           <div class="card-b" style="flex-direction:column;gap:8px;width:100%">
-            <div class="flx" style="flex-direction:row"><span>r1</span><span>r2</span><span>r3</span></div>
-            <div class="flx" style="flex-direction:column;align-items:stretch"><span>c1</span><span>c2</span><span>c3</span></div>
+            <div class="flx" style="flex-direction:row"><div>r1</div><div>r2</div><div>r3</div></div>
+            <div class="flx" style="flex-direction:column;align-items:stretch"><div>c1</div><div>c2</div><div>c3</div></div>
           </div>
         </div>
         <div class="card">
           <div class="card-h"><span class="card-t">2.2 flex-wrap</span><span class="card-x">预期: wrap 换行 / nowrap 溢出</span></div>
           <div class="card-b" style="flex-direction:column;gap:8px;width:100%">
-            <div class="flx" style="flex-direction:row;flex-wrap:wrap;width:200px"><span>w1</span><span>w2</span><span>w3</span><span>w4</span><span>w5</span></div>
-            <div class="flx" style="flex-direction:row;flex-wrap:nowrap;width:200px"><span>n1</span><span>n2</span><span>n3</span><span>n4</span><span>n5</span></div>
+            <div class="flx" style="flex-direction:row;flex-wrap:wrap;width:200px"><div>w1</div><div>w2</div><div>w3</div><div>w4</div><div>w5</div></div>
+            <div class="flx" style="flex-direction:row;flex-wrap:nowrap;width:200px"><div>n1</div><div>n2</div><div>n3</div><div>n4</div><div>n5</div></div>
           </div>
         </div>
         <div class="card">
           <div class="card-h"><span class="card-t">2.3 justify-content</span><span class="card-x">预期: 主轴 6 分布</span></div>
           <div class="card-b" style="flex-direction:column;gap:8px;width:100%">
-            <div class="flx" style="justify-content:flex-start"><span>S</span><span>S</span><span>S</span></div>
-            <div class="flx" style="justify-content:center"><span>C</span><span>C</span><span>C</span></div>
-            <div class="flx" style="justify-content:flex-end"><span>E</span><span>E</span><span>E</span></div>
-            <div class="flx" style="justify-content:space-between"><span>B</span><span>B</span><span>B</span></div>
-            <div class="flx" style="justify-content:space-around"><span>A</span><span>A</span><span>A</span></div>
-            <div class="flx" style="justify-content:space-evenly"><span>V</span><span>V</span><span>V</span></div>
+            <div class="flx" style="justify-content:flex-start"><div>S</div><div>S</div><div>S</div></div>
+            <div class="flx" style="justify-content:center"><div>C</div><div>C</div><div>C</div></div>
+            <div class="flx" style="justify-content:flex-end"><div>E</div><div>E</div><div>E</div></div>
+            <div class="flx" style="justify-content:space-between"><div>B</div><div>B</div><div>B</div></div>
+            <div class="flx" style="justify-content:space-around"><div>A</div><div>A</div><div>A</div></div>
+            <div class="flx" style="justify-content:space-evenly"><div>V</div><div>V</div><div>V</div></div>
           </div>
         </div>
         <div class="card">
           <div class="card-h"><span class="card-t">2.4 align-items + align-self</span><span class="card-x">预期: 交叉轴对齐 + self 覆盖</span></div>
           <div class="card-b" style="flex-direction:column;gap:8px;width:100%">
-            <div class="flx" style="align-items:flex-start;height:80px"><span>S</span><span>S</span><span>S</span></div>
-            <div class="flx" style="align-items:center;height:80px"><span>C</span><span>C</span><span>C</span></div>
-            <div class="flx" style="align-items:flex-end;height:80px"><span>E</span><span>E</span><span>E</span></div>
-            <div class="flx" style="align-items:stretch;height:80px"><span>T</span><span>T</span><span>T</span></div>
-            <div class="flx" style="align-items:flex-start;height:80px"><span>A</span><span style="align-self:center">★</span><span>A</span></div>
+            <div class="flx" style="align-items:flex-start;height:80px"><div>S</div><div>S</div><div>S</div></div>
+            <div class="flx" style="align-items:center;height:80px"><div>C</div><div>C</div><div>C</div></div>
+            <div class="flx" style="align-items:flex-end;height:80px"><div>E</div><div>E</div><div>E</div></div>
+            <div class="flx" style="align-items:stretch;height:80px"><div>T</div><div>T</div><div>T</div></div>
+            <div class="flx" style="align-items:flex-start;height:80px"><div>A</div><div style="align-self:center">★</div><div>A</div></div>
           </div>
         </div>
         <div class="card">
           <div class="card-h"><span class="card-t">2.5 gap vs margin</span><span class="card-x">预期: gap 等距 vs margin 不折叠</span></div>
           <div class="card-b" style="flex-direction:column;gap:8px;width:100%">
-            <div class="flx" style="gap:16px"><span>g</span><span>g</span><span>g</span></div>
-            <div class="flx" style="gap:0"><span style="margin:0 8px">m</span><span style="margin:0 8px">m</span><span style="margin:0 8px">m</span></div>
+            <div class="flx" style="gap:16px"><div>g</div><div>g</div><div>g</div></div>
+            <div class="flx" style="gap:0"><div style="margin:0 8px">m</div><div style="margin:0 8px">m</div><div style="margin:0 8px">m</div></div>
           </div>
         </div>
         <div class="card">
           <div class="card-h"><span class="card-t">2.6 flex grow/shrink/basis</span><span class="card-x">预期: grow 占余比 / shrink 收缩</span></div>
           <div class="card-b" style="flex-direction:column;gap:8px;width:100%">
-            <div class="flx" style="gap:6px"><span style="flex-grow:1">g1</span><span style="flex-grow:2">g2</span><span style="flex-grow:0;flex-basis:60px;width:60px">60</span></div>
-            <div class="flx" style="gap:6px;width:160px"><span style="flex-shrink:1">s1</span><span style="flex-shrink:0;width:48px">s0</span><span style="flex-shrink:1">s2</span><span style="flex-shrink:1">s3</span><span style="flex-shrink:1">s4</span></div>
+            <div class="flx" style="gap:6px"><div style="flex-grow:1">g1</div><div style="flex-grow:2">g2</div><div style="flex-grow:0;flex-basis:60px;width:60px">60</div></div>
+            <div class="flx" style="gap:6px;width:160px"><div style="flex-shrink:1">s1</div><div style="flex-shrink:0;width:48px">s0</div><div style="flex-shrink:1">s2</div><div style="flex-shrink:1">s3</div><div style="flex-shrink:1">s4</div></div>
           </div>
         </div>
         <div class="card">
           <div class="card-h"><span class="card-t">2.7 尺寸单位</span><span class="card-x">预期: px / % / auto + min-width + aspect</span></div>
           <div class="card-b" style="flex-direction:column;gap:8px;width:100%">
-            <div class="flx" style="gap:6px"><span style="width:120px">120</span><span style="width:50%">50%</span><span style="width:auto">auto</span></div>
-            <div class="flx" style="gap:6px"><span style="min-width:80px;width:40px">min80</span><span style="aspect-ratio:2;width:40px">a2</span></div>
+            <div class="flx" style="gap:6px"><div style="width:120px">120</div><div style="width:50%">50%</div><div style="width:auto">auto</div></div>
+            <div class="flx" style="gap:6px"><div style="min-width:80px;width:40px">min80</div><div style="aspect-ratio:2;width:40px">a2</div></div>
           </div>
         </div>
         <div class="card">
           <div class="card-h"><span class="card-t">2.8 order</span><span class="card-x">预期: DOM abc → 视觉 3/1/2</span></div>
           <div class="card-b" style="flex-direction:column;gap:8px;width:100%">
-            <div class="flx"><span style="order:3">a</span><span style="order:1">b</span><span style="order:2">c</span></div>
+            <div class="flx"><div style="order:3">a</div><div style="order:1">b</div><div style="order:2">c</div></div>
           </div>
         </div>
       </div>
@@ -309,7 +309,7 @@ div { display:flex; flex-direction:column; }
               <div class="filler" draggable="true">drag me</div>
               <div class="filler"></div>
             </div>
-            <span class="card-x">内层竖滚内嵌水平滚 + draggable item：拖动起步时由 core 仲裁（scroll-vs-drag 阈值赛跑 + 轴锁），T7 C# 订阅 DragMove 让 item 动。</span>
+            <span class="card-x">内层竖滚内嵌水平滚 + draggable item：拖动起步时由 core 仲裁（scroll-vs-drag 阈值赛跑 + 轴锁），C# 订阅 DragMove 让 item 动。</span>
           </div>
         </div>
         <div class="card">
@@ -418,9 +418,9 @@ div { display:flex; flex-direction:column; }
           </div>
         </div>
         <div class="card">
-          <div class="card-h"><span class="card-t">8.3 dirty hash 静态帧</span><span class="card-x">v1e: 静态帧全 Unchanged → C# 0 upload，Profiler GC Alloc≈0</span></div>
+          <div class="card-h"><span class="card-t">8.3 dirty hash 静态帧</span><span class="card-x">预期: 静态帧全 Unchanged → C# 0 upload，Profiler GC Alloc≈0</span></div>
           <div class="card-b">
-            <span class="card-x">说明卡：静止时不重传（v1e dirty-hash 性能特性）。静态帧 Profiler 应见 GC Alloc≈0、无 mesh 重建。</span>
+            <span class="card-x">说明卡：静止时不重传（dirty-hash 性能特性）。静态帧 Profiler 应见 GC Alloc≈0、无 mesh 重建。</span>
           </div>
         </div>
         <div class="card">

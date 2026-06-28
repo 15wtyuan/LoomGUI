@@ -3,11 +3,7 @@ using UnityEngine;
 
 namespace LoomGUI.Tests
 {
-    /// T6: _ClipBox 纯数学测（§4.4，照搬 fgui UpdateContext.cs:105-156）。
-    ///
-    /// Unity EditMode 在本任务环境无法 headless 执行；此测试仅保证 ComputeClipBox 逻辑
-    /// （design rect + 已知根 transform → 精确 _ClipBox 向量）正确。design→world 转换、
-    /// safe-blank、符号约定（y-down design → y-up world）是 clip 正确性的核心，此处钉死。
+    /// _ClipBox 纯数学测。锁 design→world 转换、safe-blank、y-down design → y-up world 符号约定。
     public class ClipBoxTests
     {
         /// 设计 rect {100,100,200,200}，根 scale=(1,-1,1) pos=0：
@@ -76,9 +72,8 @@ namespace LoomGUI.Tests
             Object.DestroyImmediate(root.gameObject);
         }
 
-        /// 零面积（disjoint nested clip → empty）：half=0 → safe-blank (-2,-2,0,0)
-        /// （fgui UpdateContext.cs:123-124）。clipPos=worldXY×(0,0)+(-2,-2)=(-2,-2)，
-        /// max(abs)=2 > 1 → step(2,1)=0 → 全 discard（防除零）。
+        /// 零面积（disjoint nested clip → empty）：half=0 → safe-blank (-2,-2,0,0)。
+        /// clipPos=worldXY×(0,0)+(-2,-2)=(-2,-2)，max(abs)=2 > 1 → step(2,1)=0 → 全 discard（防除零）。
         [Test]
         public void ComputeClipBox_ZeroArea_SafeBlank()
         {

@@ -6,9 +6,16 @@ Shader "LoomGUI/Unlit"
         _SrcFactor ("SrcFactor", Float) = 5   // SrcAlpha
         _DstFactor ("DstFactor", Float) = 10  // OneMinusSrcAlpha
         _ClipBox ("ClipBox", Vector) = (0,0,1,1)
-        // _ObjectMatrix 不进 Properties——ShaderLab 无 Matrix property 类型（原声明致
-        // "unexpected TOK_MATRIX" parse error）。由 MaterialPropertyBlock 每帧 SetMatrix
-        // 覆盖（MirrorPool 非纯平移路径）；uniform 声明见下方 CBUFFER 外。
+        // _ObjectMatrix 拆 4 个 Vector 进 Properties（ShaderLab 无 Matrix property 类型）。
+        // _ObjectMatrix 声明在 CBUFFER(UnityPerMaterial) 但**无 Properties 对应** → MPB.SetMatrix
+        // 不覆盖非 material property 的 CBUFFER 字段 → 非 pure 节点（transform:scale/rotate）
+        // _ObjectMatrix 恒默认 → 顶点塌缩到 design 原点（字消失/跑到屏幕左上）。
+        // 拆 Vector 进 Properties 让 MPB.SetVector 100% 覆盖（material property），vert 内重组 float4x4。
+        // 默认 4 列 = identity（pure 节点不走 OBJECT_MATRIX 路径，值无关）。
+        _ObjM0 ("ObjM0", Vector) = (1,0,0,0)
+        _ObjM1 ("ObjM1", Vector) = (0,1,0,0)
+        _ObjM2 ("ObjM2", Vector) = (0,0,1,0)
+        _ObjM3 ("ObjM3", Vector) = (0,0,0,1)
     }
     SubShader
     {
@@ -34,13 +41,11 @@ Shader "LoomGUI/Unlit"
             CBUFFER_START(UnityPerMaterial)
                 float4 _MainTex_ST;
                 float4 _ClipBox;
-                // _ObjectMatrix 在 CBUFFER（无 Properties 对应——ShaderLab 无 Matrix property 类型）。
-                // 坑：放 CBUFFER 外的全局 uniform 时，MaterialPropertyBlock.SetMatrix 不覆盖
-                //（MPB 只覆盖 material property，全局 uniform 不属 material）→ _ObjectMatrix 恒 0 →
-                // matrix 路径顶点塌缩（v1d.4 popup 飞掉）。放回 CBUFFER 让 MPB 按 name 覆盖。
-                // 代价：CBUFFER 含非 Properties 字段 → 整 shader 丢 SRP Batcher 资格（matrix 节点
-                // 用 MPB 本就不 batch；v1e 用 instanced property 再优化）。
-                float4x4 _ObjectMatrix;
+                // _ObjectMatrix 拆 4 Vector（Properties 对应，MPB 覆盖）。列主序：重组 float4x4(_ObjM0..3)。
+                float4 _ObjM0;
+                float4 _ObjM1;
+                float4 _ObjM2;
+                float4 _ObjM3;
             CBUFFER_END
             TEXTURE2D(_MainTex); SAMPLER(sampler_MainTex);
 
@@ -49,10 +54,11 @@ Shader "LoomGUI/Unlit"
                 // 两路径统一经 TransformObjectToWorld：GO 是 root 子 → ObjectToWorld = root_ObjectToWorld
                 // （把 design world → Unity world，含 sf 缩放 + y-flip + rootPos）。
 #if defined(OBJECT_MATRIX)
-                // _ObjectMatrix 把 box-local 顶点 → design world；再 TransformObjectToWorld → Unity world。
-                // 坑：直接 TransformWorldToHClip(designWorld) 漏 root transform（design 坐标 ≠ Unity world），
+                // _ObjectMatrix（4 Vector 重组）把 box-local 顶点 → design world；再 TransformObjectToWorld → Unity world。
+                // 直接 TransformWorldToHClip(designWorld) 漏 root transform（design 坐标 ≠ Unity world），
                 // 非纯平移节点会位置/翻转/缩放全错，且与命中（design world matrix 逆投）不一致 → 点不到。
-                float3 designWorld = mul(_ObjectMatrix, float4(v.pos.xy, 0, 1)).xyz;
+                float4x4 objM = float4x4(_ObjM0, _ObjM1, _ObjM2, _ObjM3);
+                float3 designWorld = mul(objM, float4(v.pos.xy, 0, 1)).xyz;
                 float3 worldPos = TransformObjectToWorld(designWorld);
 #else
                 float3 worldPos = TransformObjectToWorld(v.pos.xyz);

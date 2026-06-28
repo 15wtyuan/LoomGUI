@@ -36,7 +36,9 @@
 
 /* §2 布局练兵场 */
 .flx{flex-direction:row;background-color:#1a1d2e;border:1px solid #3a3f55;height:36px;padding:4px;gap:6px;align-items:center;}
-.flx span{width:24px;height:24px;background-color:#5fb2c4;color:#1a1d2e;font-size:12px;display:flex;align-items:center;justify-content:center;font-style:normal;}
+/* §2 布局练兵场：小方块用 div（Container 画 bg），非 span（Text 节点不画 bg，跟 fgui GTextField 一致）。
+   .flx div 是后代选择器，匹配 .flx 内的 cell div（.flx 自身非自身后代不匹配）。*/
+.flx div{width:24px;height:24px;background-color:#5fb2c4;color:#1a1d2e;font-size:12px;display:flex;align-items:center;justify-content:center;font-style:normal;}
 
 /* §6 文本工坊 */
 .txt{color:#e0e0e0;font-size:20px;width:500px;background-color:#1a1d2e;padding:12px;}

@@ -4,17 +4,16 @@ using UnityEngine;
 
 namespace LoomGUI.Tests
 {
-    /// v1b.4：merged blob（1 节点、8 顶点拼接 mesh segment）→ MirrorPool 产 1 个 GO + 大 Mesh。
-    /// 对照：v1b.3 AtlasMirrorPoolTests 两节点 blob → 2 个 GO；v1b.2 MirrorPoolTexIdTests 单节点 4 顶点。
-    /// merged 让 N→1 GO（→ N→1 draw call）——本测验证 MirrorPool 仅按 node_id 复用 GO、
+    /// merged blob（1 节点、8 顶点拼接 mesh segment）→ MirrorPool 产 1 个 GO + 大 Mesh。
+    /// merged 让 N→1 GO（→ N→1 draw call）——验 MirrorPool 仅按 node_id 复用 GO、
     /// 对"单节点大 mesh segment"路径无"node_id 必为 scene 索引/连续"等隐含假设。
     ///
     /// 关键差异（vs AtlasMirrorPoolTests N=2 独立 segment）：
     ///   - node_count=1（merged batch 的 1 节点）。
     ///   - mesh arena 含 1 个 segment，但 vert_count=8、idx_count=12（2 quad 拼接，单 segment）。
-    ///   - node_id = anchor（batch 内最小 id，非 scene 索引）—— spec §8 保证 MirrorPool 零改（按 id 复用）。
+    ///   - node_id = anchor（batch 内最小 id，非 scene 索引）—— 保证 MirrorPool 按 id 复用即可。
     ///   - 顶点绝对坐标：(0,0)(10,0)(10,10)(0,10)(100,0)(110,0)(110,10)(100,10)——
-    ///     照搬 T3 Rust fixture 值，验 re-base 减 0 后 Unity 读到绝对坐标。
+    ///     验 re-base 后 Unity 读到绝对坐标。
     public class MergeMirrorPoolTests
     {
         /// 构造 merged blob：1 节点，mesh segment = 8 顶点（2 quad 拼接）、12 indices、

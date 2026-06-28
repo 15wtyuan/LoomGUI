@@ -14,17 +14,17 @@ namespace LoomGUI
         Click = 3,
         RollOver = 4,
         RollOut = 5,
-        // v1d.1：drag（opt-in draggable，core 检测）+ longpress（universal）。
+        // drag（opt-in draggable，core 检测）+ longpress（universal）。
         DragStart = 6,
         DragMove = 7,
         DragEnd = 8,
         LongPress = 9,
-        // v1d.2：键盘 + 焦点（core 检测，C# 路由）。
+        // 键盘 + 焦点（core 检测，C# 路由）。
         KeyDown = 12,
         KeyUp = 13,
         FocusIn = 14,
         FocusOut = 15,
-        // v1d.4：tween 完成（core 产，C# 直派）。click_count 复用装 prop、touch_id 复用装 tag。
+        // tween 完成（core 产，C# 直派）。click_count 复用装 prop、touch_id 复用装 tag。
         TweenComplete = 16,
     }
 
@@ -32,21 +32,21 @@ namespace LoomGUI
     /// 字段序：node_id:u32 @0 → event_type:u8 @4 → click_count:u8 @5 → pad 2 → touch_id:i32 @8 → x:f32 @12 → y:f32 @16（sizeof=20）。
     /// 与 Rust ABI 一致（StructLayout.Sequential 默认 pack=0；pad 在 C# 侧隐式——u32(4)+enum:byte(1)+byte(1)+[2 隐式对齐 int@8]+int(4)+float(4)+float(4)）。
     /// touch_id 用 snake_case 匹配 csbindgen 生成的字段名（Rust EventRecord 字段 snake_case）。
-    /// v1d.2：modifiers 读 Rust EventRecord pad[0] @6（key 事件 modifiers；其余=0）。
+    /// modifiers 读 Rust EventRecord pad[0] @6（key 事件 modifiers；其余=0）。
     [StructLayout(LayoutKind.Sequential)]
     public struct LoomEvent
     {
         public uint nodeId;
         public EventType type;
-        public byte clickCount;   // v1c.4：1 或 2（仅 Click 有意义，其余=0；Rust EventRecord @5）
-        public byte modifiers;    // v1d.2：Rust EventRecord pad[0] @6（key 事件 modifiers；其余=0）
+        public byte clickCount;   // 1 或 2（仅 Click 有意义，其余=0；Rust EventRecord @5）
+        public byte modifiers;    // Rust EventRecord pad[0] @6（key 事件 modifiers；其余=0）
         // @7 隐式 padding 对齐 touch_id @8
-        public int touch_id;      // v1c.3：-1=鼠标，>=0=触摸（Rust EventRecord @8；key 事件复用装 key_code）
+        public int touch_id;      // -1=鼠标，>=0=触摸（Rust EventRecord @8；key 事件复用装 key_code）
         public float x;
         public float y;
     }
 
-    /// v1c.2 事件路由阶段（Capture/Target/Bubble），对齐 DOM/W3C 模型 + fgui capture/bubble 双组。
+    /// 事件路由阶段（Capture/Target/Bubble），对齐 DOM/W3C 模型 + fgui capture/bubble 双组。
     public enum Phase : byte { Capture = 0, Target = 1, Bubble = 2 }
 
     /// 业务回调签名（listener 收 EventContext 读命中/坐标/止冒泡）。对齐 fgui EventCallback1。
@@ -59,16 +59,16 @@ namespace LoomGUI
         public uint currentTarget;     // 路由当前节点
         public Phase phase;
         public EventType type;
-        public int touchId;            // v1c.3：事件所属触摸（-1=鼠标）
-        public byte clickCount;          // v1c.4：照 fgui InputEvent.clickCount（1=单击/2=双击）
-        public uint keyCode;          // v1d.2：key 事件的 KeyCode（EventRecord.touch_id 复用）
-        public byte modifiers;         // v1d.2：key 事件 modifiers（EventRecord.pad[0]）
-        public bool isDoubleClick => clickCount > 1;   // v1c.4：消费侧便利（照 fgui）
+        public int touchId;            // 事件所属触摸（-1=鼠标）
+        public byte clickCount;          // 照 fgui InputEvent.clickCount（1=单击/2=双击）
+        public uint keyCode;          // key 事件的 KeyCode（EventRecord.touch_id 复用）
+        public byte modifiers;         // key 事件 modifiers（EventRecord.pad[0]）
+        public bool isDoubleClick => clickCount > 1;   // 消费侧便利（照 fgui）
         public float x, y;
         internal bool _stopsPropagation, _defaultPrevented, _touchCapture, _stopsImmediatePropagation;
         public void StopPropagation() => _stopsPropagation = true;
         public void PreventDefault() => _defaultPrevented = true;
-        /// v1c.4：止当前节点剩余监听器 + 止冒泡（W3C stopImmediatePropagation；比 StopPropagation 多止同节点剩余）。
+        /// 止当前节点剩余监听器 + 止冒泡（W3C stopImmediatePropagation；比 StopPropagation 多止同节点剩余）。
         public void StopImmediatePropagation() { _stopsImmediatePropagation = true; _stopsPropagation = true; }
         /// capture 当前触摸（照 fgui：设标志，BubbleRoute 消费即清，cap/bub 各加一 monitor）。
         public void CaptureTouch() => _touchCapture = true;
@@ -115,7 +115,7 @@ namespace LoomGUI
         }
     }
 
-    /// C# 事件路由（v1c.2 方向 A，照 fgui EventDispatcher）。listener 表 + bubble/capture 路由。
+    /// C# 事件路由（照 fgui EventDispatcher）。listener 表 + bubble/capture 路由。
     /// unsafe：ParentOf 调 Native.loomgui_node_parent(StageHandle*, uint)，typed ptr 调用需 unsafe 域。
     public unsafe class LoomEventHandler
     {
@@ -147,7 +147,7 @@ namespace LoomGUI
         /// 读 EventRecord[] buffer → 按 type 分流：Down/Up/Move/Click → BubbleRoute；RollOver/Out → DirectDispatch。
         /// ptr = loomgui_stage_borrow_events 返回（LoomStage 已 byte* → IntPtr 透传）。
         ///
-        /// **Marshal.PtrToStructure**：桌面 Mono OK；IL2CPP 移动端对齐坑（spec §14.3）届时换 Span+BinaryPrimitives。
+        /// **Marshal.PtrToStructure**：桌面 Mono OK；IL2CPP 移动端对齐坑届时换 Span+BinaryPrimitives。
         public void DispatchPending(IntPtr ptr, int count)
         {
             if (ptr == IntPtr.Zero || count <= 0) return;
@@ -169,24 +169,24 @@ namespace LoomGUI
                     case EventType.Up:
                     case EventType.Click:
                         BubbleRoute(evt); break;
-                    // v1d.1：drag + longpress 走 BubbleRoute（core 算好 node_id，bubble 让祖先接）
+                    // drag + longpress 走 BubbleRoute（core 算好 node_id，bubble 让祖先接）
                     case EventType.DragStart:
                     case EventType.DragMove:
                     case EventType.DragEnd:
                     case EventType.LongPress:
                         BubbleRoute(evt); break;
-                    // v1d.2：keydown/up + focus/blur 走 BubbleRoute（core 算好 node_id，bubble 让祖先接）
+                    // keydown/up + focus/blur 走 BubbleRoute（core 算好 node_id，bubble 让祖先接）
                     case EventType.KeyDown:
                     case EventType.KeyUp:
                     case EventType.FocusIn:
                     case EventType.FocusOut:
                         BubbleRoute(evt); break;
                     case EventType.Move:
-                        DirectDispatch(evt); break;   // v1c.3：Move 改直派（核心算好的 monitor 目标）
+                        DirectDispatch(evt); break;   // Move 直派（核心算好的 monitor 目标）
                     case EventType.RollOver:
                     case EventType.RollOut:
                         DirectDispatch(evt); break;
-                    // v1d.4：tween 完成 → 直派（target-specific，不 bubble；listener 读 ctx.clickCount=prop、ctx.touchId=tag）。
+                    // tween 完成 → 直派（target-specific，不 bubble；listener 读 ctx.clickCount=prop、ctx.touchId=tag）。
                     case EventType.TweenComplete:
                         DirectDispatch(evt); break;
                 }
@@ -241,7 +241,7 @@ namespace LoomGUI
         uint ParentOf(uint nodeId)
         {
             if (!_parentCache.TryGetValue(nodeId, out var p))
-                _parentCache[nodeId] = p = Native.loomgui_node_parent((StageHandle*)_handle, nodeId);   // csbindgen 绑定（Task 2 生成）
+                _parentCache[nodeId] = p = Native.loomgui_node_parent((StageHandle*)_handle, nodeId);   // csbindgen 绑定
             return p;
         }
 
@@ -249,7 +249,7 @@ namespace LoomGUI
         public void RemoveTouchMonitor(uint nodeId) =>
             Native.loomgui_stage_remove_touch_monitor((StageHandle*)_handle, nodeId);
 
-        /// v1c.4：取消待 click（照 fgui CancelClick）。Down 后、Up 前调 → 该 touch 下个 Up 不发 Click。
+        /// 取消待 click（照 fgui CancelClick）。Down 后、Up 前调 → 该 touch 下个 Up 不发 Click。
         public void CancelTouch(int touchId) =>
             Native.loomgui_stage_cancel_click((StageHandle*)_handle, touchId);
     }

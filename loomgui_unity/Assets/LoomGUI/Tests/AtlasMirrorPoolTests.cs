@@ -4,11 +4,11 @@ using UnityEngine;
 
 namespace LoomGUI.Tests
 {
-    /// v1b.3：atlas 打包下同 atlas 多 sprite 共享 1 Texture2D + 各自子区 UV 烘焙。
+    /// atlas 打包下同 atlas 多 sprite 共享 1 Texture2D + 各自子区 UV 烘焙。
     /// 手搓 v4 双 Mesh 节点 blob（同 tex_id=1，不同 uv 子区）+ mock texMap{1→atlasTex}，
     /// 断言两节点 Mr.sharedMaterial.mainTexture == atlasTex（同实例 → MaterialManager 命中同 key →
     /// 共享 Material → 可 batch）且各自 Mesh.uv 匹配其子区 4 角（per-vertex UV 由 blob 写，
-    /// MirrorPool 直拷——T2/T4 已烘焙到 blob，MirrorPool 零改）。
+    /// MirrorPool 直拷）。
     public class AtlasMirrorPoolTests
     {
         /// 构造 v4 blob：N=2 Mesh 节点，同 tex_id=1，不同 uv 子区。

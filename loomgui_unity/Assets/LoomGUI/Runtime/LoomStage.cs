@@ -1,5 +1,5 @@
 using System;
-using System.Buffers;   // v1e：ArrayPool<byte> for _frameBuf
+using System.Buffers;   // ArrayPool<byte> for _frameBuf
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -8,14 +8,14 @@ using UnityEngine;
 
 namespace LoomGUI
 {
-    /// v1d.4：与 Rust tween::TweenProp (u8) 对齐。
+    /// 与 Rust tween::TweenProp (u8) 对齐。
     public enum TweenProp : byte { Opacity = 0, Translate = 1, Scale = 2, Rotation = 3, BgColor = 4, TextColor = 5 }
-    /// v1d.4：与 Rust tween::Ease (u8) 对齐。
+    /// 与 Rust tween::Ease (u8) 对齐。
     public enum Ease : byte { Linear = 0, QuadIn = 1, QuadOut = 2, QuadInOut = 3, CubicIn = 4, CubicOut = 5, CubicInOut = 6, BackIn = 7, BackOut = 8, BackInOut = 9 }
 
     /// <summary>
-    /// v1a Phase 1 集成入口（§14 驱动）：把 Rust Stage（tick→borrow_frame→blob）接到 Unity
-    /// MirrorPool 渲染。挂场景即跑：Awake 建 stage+load_html+配置根/相机；LateUpdate 每帧
+    /// 集成入口：把 Rust Stage（tick→borrow_frame→blob）接到 Unity MirrorPool 渲染。
+    /// 挂场景即跑：Awake 建 stage+load_html+配置根/相机；LateUpdate 每帧
     /// tick→borrow→Marshal.Copy→FrameBlob→MirrorPool.Sync。
     ///
     /// 设计坐标系：origin 左上、y-down，单位 design px（_designSize）。根 transform 一次做
@@ -26,36 +26,35 @@ namespace LoomGUI
     [ExecuteAlways]
     public sealed unsafe class LoomStage : MonoBehaviour
     {
-        // v0 解析器不读 inline style=（见 layout/mod.rs 注释），用 class + 独立 CSS。
-        // 默认场景：一个 200×100 红块（视觉最小验证）。多节点版见 _css 注释。
+        // 解析器不读 inline style=（见 layout/mod.rs 注释），用 class + 独立 CSS。
         [SerializeField] string _html = "<div class=\"b\"></div>";
         [SerializeField] string _css =
             ".b{width:200px;height:100px;background-color:#ff0000;}";
         [SerializeField] Vector2 _designSize = new(1080, 1920);
         [SerializeField] Camera _uiCamera;
-        // Unity 动态字体（§4.3）：与 Rust measure 的同一份 DejaVuSans.ttf（Assets/LoomGUI/Fonts/）。
+        // Unity 动态字体：与 Rust measure 的同一份 DejaVuSans.ttf（Assets/LoomGUI/Fonts/）。
         // Inspector 指定为主路径；EditMode 测试 / 未配场景用 AssetDatabase 兜底（见 EnsureFont）。
         [SerializeField] Font _font;
 
-        // §9.4 v1b.5：Stage 读取的 ttf 文件名（StreamingAssets 下，喂 Rust measure）。
-        // 默认 "DejaVuSans.ttf" 不破坏现有场景；CJK sample 配 "wqy-microhei.ttc"。
-        // 须与 _font（Unity 光栅用）是同一份 ttf（§4.3 跨平台一致性）。
+        // Stage 读取的 ttf 文件名（StreamingAssets 下，喂 Rust measure）。
+        // 默认 "DejaVuSans.ttf"；CJK sample 配 "wqy-microhei.ttc"。
+        // 须与 _font（Unity 光栅用）是同一份 ttf（跨平台一致性）。
         [SerializeField] string _fontFile = "DejaVuSans.ttf";
 
-        // §13 v1b.1：从二进制包加载（true）vs inline _html/_css（false，默认保现有行为）。
+        // 从二进制包加载（true）vs inline _html/_css（false，默认）。
         // true 时从 StreamingAssets/_pkgFile 读 .pkg.bin → loomgui_stage_load_package。
         [SerializeField] bool _usePackage;
         [SerializeField] string _pkgFile = "loom_atlas.pkg.bin";
 
-        // §4.5 500 节点静态压测 fixture：勾选 → Awake 覆盖 _html/_css 为程序生成的 ~500 节点
+        // 500 节点静态压测 fixture：勾选 → Awake 覆盖 _html/_css 为程序生成的 ~500 节点
         // （嵌套 flex column + 每行 colored div + text label，覆盖 mesh + text 双路径）。
-        // 默认 false（保持 v1a 单红块场景不变）。PlayMode 肉眼验无卡顿（v1a §9.3 便宜帧）。
+        // 默认 false。PlayMode 肉眼验无卡顿。
         [SerializeField] bool _stress500;
         // OnGUI 左上角 FPS 读数（1/Time.smoothDeltaTime + pool 节点数）。stress500 或本开关任一为真即显。
         [SerializeField] bool _showFps;
 
-        // v1d.1：safe-area 根 letterbox（默认 on）。on 时根 shrink-to-fit 到 Screen.safeArea，
-        // 内容自动避刘海；off 时回归全屏（v1c 行为）。无刘海屏 safeArea==全屏 → 零回归。
+        // safe-area 根 letterbox（默认 on）。on 时根 shrink-to-fit 到 Screen.safeArea，
+        // 内容自动避刘海；off 时全屏。无刘海屏 safeArea==全屏 → 零回归。
         [SerializeField] bool _safeArea = true;
 
         // csbindgen 生成的 Native 用类型化指针 StageHandle*（非 IntPtr）；
@@ -64,15 +63,14 @@ namespace LoomGUI
         MaterialManager _mm;
         MirrorPool _pool;
         NativeHostManager _nhm;
-        // v1e：ArrayPool 租用（非 new）。Rent 返回 ≥len，只 copy/解析 len 字节。
+        // ArrayPool 租用（非 new）。Rent 返回 ≥len，只 copy/解析 len 字节。
         // OnDestroy 归还防泄漏。冷帧零 GC（ReadMesh per-node alloc 留观察，撞墙再上 List 复用）。
-        // ponytail: ReadMesh per-node alloc 留观察，冷帧 GC 卡顿再上 List 复用
         byte[] _frameBuf;
-        // v1b.3：tex_id → Texture2D（LoadAtlas 填；Sync 按 blob.TexId 查此绑 atlas 纹理）。
+        // tex_id → Texture2D（LoadAtlas 填；Sync 按 blob.TexId 查此绑 atlas 纹理）。
         // 同 atlas 的多个 sprite 共享同一 Texture2D（atlas.png）→ MaterialManager key 命中同实例 → batchable。
         readonly Dictionary<uint, Texture2D> _texMap = new();
 
-        // v1c.1：输入采集 + 事件派发（Inspector 指定；为 null 时跳过输入/事件路径）。
+        // 输入采集 + 事件派发（Inspector 指定；为 null 时跳过输入/事件路径）。
         // _inputCollector 通常与本 MonoBehaviour 同 GO（Awake 时 GetComponent 兜底）。
         [SerializeField] LoomInputCollector _inputCollector;
         // LoomEventHandler 非 UnityEngine.Object（纯 C# class）——不能 SerializeField 持有
@@ -84,16 +82,16 @@ namespace LoomGUI
 
         const int LoomUILayer = 6;
 
-        /// v1c.1：游戏侧通过此属性注册 listener（AddListener/RemoveListener），例如
+        /// 游戏侧通过此属性注册 listener（AddListener/RemoveListener），例如
         /// stage.EventHandler.AddListener(nodeId, EventType.Click, OnBtnClick)。
         public LoomEventHandler EventHandler => _eventHandler;
 
-        /// v1d.5-T12：暴露给 LoomInputCollector.CollectWheel + demo 等内部消费者。
+        /// 暴露给 LoomInputCollector.CollectWheel + demo 等内部消费者。
         internal System.IntPtr StagePtr => (System.IntPtr)_stage;
         internal Vector2 DesignSize => _designSize;
         internal bool UseSafeArea => _safeArea;
 
-        /// v1c.3：UI 挡住时游戏不响应点击（§10.6）。= 任一活跃槽（鼠标 + 触摸）命中非根节点。
+        /// UI 挡住时游戏不响应点击。= 任一活跃槽（鼠标 + 触摸）命中非根节点。
         /// 游戏侧每帧/点击时查此 bool 决定是否消费输入（true → 游戏不响应）。
         public bool IsPointerOnUI()
         {
@@ -101,7 +99,7 @@ namespace LoomGUI
             return Native.loomgui_stage_is_pointer_on_ui(_stage);
         }
 
-        /// v1c.1+ enabler：按 CSS id 属性查节点（替代硬编码 build 序 id——auto Text 子会偏移序，不可靠）。
+        /// 按 CSS id 属性查节点（替代硬编码 build 序 id——auto Text 子会偏移序，不可靠）。
         /// 返 node_id；无匹配 / stage 未建 → uint.MaxValue（0xFFFF_FFFF）。
         public uint FindNodeById(string id)
         {
@@ -111,14 +109,14 @@ namespace LoomGUI
                 return Native.loomgui_stage_find_node_by_id(_stage, p, (nuint)bytes.Length);
         }
 
-        /// 业务设节点 disabled（伪类源 + active/click 抑制，§4.4）。NodeId 越界 native 侧静默跳过。
+        /// 业务设节点 disabled（伪类源 + active/click 抑制）。NodeId 越界 native 侧静默跳过。
         public void SetNodeDisabled(uint nodeId, bool disabled)
         {
             if (_stage == null) return;
             Native.loomgui_stage_set_node_disabled(_stage, nodeId, disabled);
         }
 
-        /// v1d.5-T11：编程滚动到指定位置。非 scroll 容器 / 越界 node → no-op（不 panic）。
+        /// 编程滚动到指定位置。非 scroll 容器 / 越界 node → no-op（不 panic）。
         /// animated: true → cubic-out 缓动；false → 瞬移。
         public void SetScrollPos(uint node, float x, float y, bool animated = true)
         {
@@ -126,7 +124,7 @@ namespace LoomGUI
             Native.loomgui_stage_set_scroll_pos(_stage, node, x, y, animated ? (byte)1 : (byte)0);
         }
 
-        /// v1d.3-T10：绑定外部 GO 到 UI 节点（NativeHost-lite spec §3.7）。
+        /// 绑定外部 GO 到 UI 节点（NativeHost-lite spec）。
         /// 每帧 Sync 时自动同步 TRS + visible + sortingOrder。
         public void BindNativeHost(uint nodeId, GameObject go) => _nhm.Bind(nodeId, go);
 
@@ -140,7 +138,7 @@ namespace LoomGUI
 
         public void UnbindNativeHost(uint nodeId) => _nhm.Unbind(nodeId);
 
-        /// v1d.3-T10：dump 当前 scene 为 JSON（Rust 拥有，下 tick 失效）。
+        /// dump 当前 scene 为 JSON（Rust 拥有，下 tick 失效）。
         public string DumpScene()
         {
             if (_stage == null) return "[]";
@@ -153,7 +151,7 @@ namespace LoomGUI
             }
         }
 
-        /// v1d.4：注册 tween。start/end 取前 value_size 个分量（prop 决定）。
+        /// 注册 tween。start/end 取前 value_size 个分量（prop 决定）。
         /// 例：fade-in → Tween(id, TweenProp.Opacity, new[]{0f,0,0,0}, new[]{1f,0,0,0}, 0.3f, Ease.Linear, 0f, tag)。
         public void Tween(uint nodeId, TweenProp prop, float[] start, float[] end, float duration, Ease ease, float delay, uint tag)
         {
@@ -210,11 +208,11 @@ namespace LoomGUI
                 return;
             }
 
-            // v1c.2-T5：_stage 创建后即 SetHandle（handler.node_parent FFI 需 StageHandle*）。
+            // _stage 创建后即 SetHandle（handler.node_parent FFI 需 StageHandle*）。
             // 每次 load 成功后还会再调（清 _parentCache——新 scene 的 parent 关系变了）。
             _eventHandler.SetHandle((System.IntPtr)_stage);
 
-            // §4.5 stress fixture：勾选 → 程序生成 ~500 节点 html/css（mesh + text 双路径）。
+            // stress fixture：勾选 → 程序生成 ~500 节点 html/css（mesh + text 双路径）。
             if (_stress500) BuildStress500Fixture();
 
             bool loaded;
@@ -244,15 +242,15 @@ namespace LoomGUI
             _pool = new MirrorPool();
             _nhm = new NativeHostManager(); _nhm.Init(transform);
 
-            // v1b.3：collect atlas（atlas_count/info）→ load atlas.png → _texMap[atlas_tex_id]。
+            // collect atlas（atlas_count/info）→ load atlas.png → _texMap[atlas_tex_id]。
             // 同 atlas 所有 sprite 共享 1 Texture2D（batchable）。inline 分支（_usePackage=false）
             // 无 atlas 需加载——atlas_count 返 0，LoadAtlas 早退，_texMap 空（下游全 fallback）。
             if (_usePackage) LoadAtlas();
 
             EnsureFont();
-            // Font.textureRebuilt 是静态事件（§4.3 必修坑）：atlas 异步 rebuild 时 glyph UV 变。
+            // Font.textureRebuilt 是静态事件：atlas 异步 rebuild 时 glyph UV 变。
             // 注册 TextRasterizer.OnRebuilt（自增 FontVersion）→ MirrorPool.Sync 下帧检测到版本
-            // 变 → 强制 text 节点重 RequestCharactersInTexture + 重取 UV（fgui DynamicFont.cs:356-375）。
+            // 变 → 强制 text 节点重 RequestCharactersInTexture + 重取 UV（照 fgui DynamicFont.cs:356-375）。
             // 全局静态事件：必须 OnDestroy 解绑，否则泄漏跨场景/实例。
             Font.textureRebuilt += TextRasterizer.OnRebuilt;
 
@@ -260,7 +258,7 @@ namespace LoomGUI
             EnsureCamera();
             ConfigureTransforms();
 
-            // v1c.1：_inputCollector 未在 Inspector 指定时，兜底取同 GO 上的组件
+            // _inputCollector 未在 Inspector 指定时，兜底取同 GO 上的组件
             // （常见用法：LoomInputCollector 挂在 LoomStage 同 GameObject）。
             if (_inputCollector == null) _inputCollector = GetComponent<LoomInputCollector>();
         }
@@ -268,7 +266,7 @@ namespace LoomGUI
         /// <summary>
         /// 取 Unity 动态 Font。Inspector 指定优先；未配则 EditMode 用 AssetDatabase 兜底加载
         /// Assets/LoomGUI/Fonts/DejaVuSans.ttf（PlayMode/build 必须由用户在 Inspector 指定——
-        /// AssetDatabase 仅 editor）。Font 须与 Rust measure 同一份 ttf（§4.3 跨平台一致性根）。
+        /// AssetDatabase 仅 editor）。Font 须与 Rust measure 同一份 ttf（跨平台一致性根）。
         /// </summary>
         void EnsureFont()
         {
@@ -284,7 +282,7 @@ namespace LoomGUI
 
         /// <summary>
         /// load_html：UTF8 字节 + fixed 钉住。返回 native 码（0=ok）。
-        /// v1c.2-T5：load 成功后 SetHandle 清 handler._parentCache（scene 重建，parent 关系变）。
+        /// load 成功后 SetHandle 清 handler._parentCache（scene 重建，parent 关系变）。
         /// </summary>
         bool LoadHtml()
         {
@@ -302,9 +300,9 @@ namespace LoomGUI
         }
 
         /// <summary>
-        /// §13 v1b.1：从 StreamingAssets/_pkgFile 读 .pkg.bin → loomgui_stage_load_package。
+        /// 从 StreamingAssets/_pkgFile 读 .pkg.bin → loomgui_stage_load_package。
         /// 包是 Rust-internal，C# 只读文件透传 bytes（不解析）。editor/desktop 用 File.ReadAllBytes。
-        /// v1c.2-T5：load 成功后 SetHandle 清 handler._parentCache（scene 重建，parent 关系变）。
+        /// load 成功后 SetHandle 清 handler._parentCache（scene 重建，parent 关系变）。
         /// </summary>
         bool LoadPackage()
         {
@@ -326,18 +324,18 @@ namespace LoomGUI
         }
 
         /// <summary>
-        /// v1b.3：collect atlas（atlas_count/info）→ 读 atlas.png → _texMap[atlas_tex_id]。
+        /// collect atlas（atlas_count/info）→ 读 atlas.png → _texMap[atlas_tex_id]。
         /// 同 atlas 所有 sprite 共享 1 Texture2D（MaterialManager key=(program,tex,ctx) →
         /// 同 atlas 的多个节点复用同一 Material 实例 → batchable）。缺图/坏图 → LogError 跳过
         /// （下游 tex_id 缺 → texMap.TryGetValue miss → fallback 白占位，不阻塞渲染）。
         ///
-        /// FFI 契约（T5 atlas_count/info）：
-        ///   atlas_count(StageHandle*) → nuint（甲-B scene 恒 1；无图 scene = 0）。
+        /// FFI 契约（atlas_count/info）：
+        ///   atlas_count(StageHandle*) → nuint（有 atlas scene 恒 1；无图 scene = 0）。
         ///   atlas_info(StageHandle*, i, uint* tid, uint* w, uint* h, nuint* src_len) → byte*
         ///     返 atlas filename UTF-8 串（**无尾 NUL**）+ *out_src_len = 字节长；
         ///     *out_tex_id = core 分配（= i+1）；*out_w/*out_h = atlas 像素尺寸。
         ///
-        /// T5 string contract（坑16）：返串**无尾 NUL** + out_len = 字节长。C# 必走
+        /// string contract：返串**无尾 NUL** + out_len = 字节长。C# 必走
         /// `Encoding.UTF8.GetString(p, (int)srcLen)`（len-based 读），**禁止** PtrToStringAnsi
         /// （NUL-scan 会越过 stage 缓存末尾读未映射内存）。
         /// </summary>
@@ -359,7 +357,7 @@ namespace LoomGUI
                 unsafe { p = Native.loomgui_stage_atlas_info(_stage, i, &tid, &aw, &ah, &srcLen); }
                 if (p == null || srcLen == 0) continue;
 
-                // len-based 读（T5 contract；禁止 NUL-scan / PtrToStringAnsi）。
+                // len-based 读（string contract；禁止 NUL-scan / PtrToStringAnsi）。
                 string src = Encoding.UTF8.GetString(p, (int)srcLen);
                 string path = System.IO.Path.Combine(Application.streamingAssetsPath, src);
 
@@ -376,7 +374,7 @@ namespace LoomGUI
                 if (!tex.LoadImage(bytes))
                 {
                     Debug.LogError($"[LoomStage] bad atlas png: {src}");
-                    // 全限定 UnityEngine.Object：using System 引入 System.Object，裸 Object 歧义（坑18）。
+                    // 全限定 UnityEngine.Object：using System 引入 System.Object，裸 Object 歧义。
                     if (Application.isPlaying) UnityEngine.Object.Destroy(tex);
                     else UnityEngine.Object.DestroyImmediate(tex);
                     continue;
@@ -387,11 +385,11 @@ namespace LoomGUI
         }
 
         /// <summary>
-        /// §4.5 stress fixture：程序生成 ~500 渲染节点的 html/css。
+        /// stress fixture：程序生成 ~500 渲染节点的 html/css。
         /// 结构：一个 flex column 容器，内含 N 行；每行 = 一个 colored div（mesh 路径）+
         /// 一个 text label（text 路径）。每行约 2 渲染节点（div + text），250 行 ≈ 500 节点。
         /// 颜色用行号取模分配（视觉可辨、避免全同色无法肉眼判卡顿）。
-        /// v0 解析器不读 inline style=（layout/mod.rs 注释），故全用 class + 独立 CSS。
+        /// 解析器不读 inline style=（layout/mod.rs 注释），故全用 class + 独立 CSS。
         /// </summary>
         void BuildStress500Fixture()
         {
@@ -400,14 +398,14 @@ namespace LoomGUI
             html.Append("<div class=\"c\">");
             for (int i = 0; i < Rows; i++)
             {
-                // 裸文本（非 <p>——p 不在 v1 围栏元素 div/span/img/button 内，parse 白名单拒
+                // 裸文本（非 <p>——p 不在围栏元素 div/span/img/button 内，parse 白名单拒
                 // → load 失败 0 节点）。div 裸文本 → Text 子节点（scene/node.rs::build_text_child）。
                 html.Append("<div class=\"r").Append(i % 4).Append("\">row ").Append(i).Append("</div>");
             }
             html.Append("</div>");
 
             // color/font-size 放 .c（继承到所有 text 子）；.rX 只管配色/尺寸/margin。
-            // 用 px 绝对值（v0 layout 支持）；行高 ~32px 容纳 250 行（超出 design 高度会溢出，
+            // 用 px 绝对值；行高 ~32px 容纳 250 行（超出 design 高度会溢出，
             // 但本测关心的是渲染节点数与帧时间，不关心可视区域；Rust 仍 layout 全部节点）。
             var css = new StringBuilder(1 << 12);
             css.Append(".c{display:flex;flex-direction:column;width:1000px;color:#ffffff;font-size:20px;}");
@@ -421,9 +419,9 @@ namespace LoomGUI
         }
 
         /// <summary>
-        /// §4.5 on-screen FPS 读数（_stress500 或 _showFps 任一为真时显示）。
+        /// on-screen FPS 读数（_stress500 或 _showFps 任一为真时显示）。
         /// 1/Time.smoothDeltaTime 平滑帧率 + MirrorPool 当前节点数。最小实现（不做 profiler）。
-        /// 用户在 PlayMode 肉眼判卡顿（v1a §9.3 便宜帧 ≥45fps 静态无卡顿）。
+        /// 用户在 PlayMode 肉眼判卡顿。
         /// </summary>
         void OnGUI()
         {
@@ -458,7 +456,7 @@ namespace LoomGUI
         }
 
         /// <summary>
-        /// v1d.1：design→screen 根变换（sf + rootPos）。_safeArea=true 时 shrink-to-fit 到 Screen.safeArea
+        /// design→screen 根变换（sf + rootPos）。_safeArea=true 时 shrink-to-fit 到 Screen.safeArea
         /// 并把设计 span 居中进 safe 区（safe 区外 letterbox，避刘海）；false 时全屏。
         /// 相机 orthoSize 不变（仍=sh/2 覆盖全屏），root transform 把 design 映射进 safe 区。
         /// ScreenToDesign 用同一公式逐项逆映射，保触摸↔渲染对齐。
@@ -471,7 +469,6 @@ namespace LoomGUI
         ///   offYTop= area.y + area.height                  （Unity screen y 下原点，设计 y 上原点 → span 顶 = safe 区顶）
         ///   rootPos.x = offX   - sw/2     （令 screen.x of design(0) = offX = rootPos.x + sw/2）
         ///   rootPos.y = offYTop - sh/2     （令 screen.y of design(0) = offYTop = rootPos.y + sh/2）
-        /// ponytail：safe==全屏 + width-binding 时 dw*sf=sw → offX=0、offYTop=sh → rootPos=(-sw/2, sh/2)（v1c 值）✓
         /// </summary>
         (float sf, Vector3 rootPos) ComputeRootTransform()
         {
@@ -481,7 +478,6 @@ namespace LoomGUI
             if (area.width <= 0f || area.height <= 0f) area = new Rect(0, 0, sw, sh);
             float dw = _designSize.x, dh = _designSize.y;
             // shrink-to-fit：取较小缩放比，保证完整可见 + 留白 letterbox。
-            // v1d responsive 再重审（可能改为 cover/contain 选项）。
             float sf = Mathf.Min(area.width / dw, area.height / dh);
             // 把设计的 rendered span（dw*sf × dh*sf）在 safe 区内居中。
             // offX = safe 左边 + 半（safe 宽 - rendered 宽）；span 顶 = safe 区顶（Unity screen y 下原点）。
@@ -503,7 +499,7 @@ namespace LoomGUI
             if (_uiCamera != null)
             {
                 _uiCamera.orthographic = true;
-                _uiCamera.orthographicSize = sh / 2f;   // v1d.1：不变（覆盖全屏，root 映射进 safe 区）
+                _uiCamera.orthographicSize = sh / 2f;   // 不变（覆盖全屏，root 映射进 safe 区）
                 _uiCamera.cullingMask = 1 << LoomUILayer;
                 _uiCamera.clearFlags = CameraClearFlags.Depth;
                 _uiCamera.nearClipPlane = 0.1f;   // Unity 要求 near>0；相机 z=-10 看向 z=0 内容
@@ -527,15 +523,15 @@ namespace LoomGUI
                 ConfigureTransforms();
             }
 
-            // v1c.1：输入采集 → set_input（tick 前——input 管线消费本帧输入产事件）。
+            // 输入采集 → set_input（tick 前——input 管线消费本帧输入产事件）。
             if (_inputCollector != null)
             {
                 _inputCollector.Collect((System.IntPtr)_stage, _designSize, _safeArea);
-                _inputCollector.CollectKeys((System.IntPtr)_stage);   // v1d.2：键盘采集（tick 前）
-                LoomInputCollector.CollectWheel(this);                 // v1d.5-T12：滚轮采集（tick 前）
+                _inputCollector.CollectKeys((System.IntPtr)_stage);   // 键盘采集（tick 前）
+                LoomInputCollector.CollectWheel(this);                 // 滚轮采集（tick 前）
             }
 
-            // tick → build_blob 写入 Rust 拥有缓存。v1c.4：dt 累积进 time_s（双击窗口）；用
+            // tick → build_blob 写入 Rust 拥有缓存。dt 累积进 time_s（双击窗口）；用
             // unscaledDeltaTime（照 fgui Time.unscaledTime，暂停不受影响）。
             Native.loomgui_stage_tick(_stage, Time.unscaledDeltaTime);
 
@@ -546,7 +542,7 @@ namespace LoomGUI
             int len = (int)lenRaw;
             if (ptr != null && len > 0)
             {
-                // v1e：ArrayPool 租用（§14.3 冷帧零 GC）。Rent 返回 ≥len，多余字节忽略。
+                // ArrayPool 租用（冷帧零 GC）。Rent 返回 ≥len，多余字节忽略。
                 if (_frameBuf == null || _frameBuf.Length < len)
                 {
                     if (_frameBuf != null) ArrayPool<byte>.Shared.Return(_frameBuf);
@@ -559,7 +555,7 @@ namespace LoomGUI
                 _nhm.Sync(blob);
             }
 
-            // v1c.1：事件派发（tick 后——borrow_events 读本帧 last_events，下 tick 失效）。
+            // 事件派发（tick 后——borrow_events 读本帧 last_events，下 tick 失效）。
             // 即使 borrow_frame 为空（无渲染节点），事件仍须派发（hover/点击不依赖渲染）。
             if (_eventHandler != null)
             {
@@ -576,7 +572,7 @@ namespace LoomGUI
             _pool?.Clear();
             _nhm?.Clear();
             _mm?.Clear();
-            // v1b.2：Dispose 真纹理。ExecuteAlways 下 OnDestroy 在 Edit/Play 都会跑——
+            // Dispose 真纹理。ExecuteAlways 下 OnDestroy 在 Edit/Play 都会跑——
             // 必须按 Application.isPlaying 选 Destroy / DestroyImmediate（同 MirrorPool.TearDown 模式）。
             if (_texMap != null)
             {
@@ -587,7 +583,7 @@ namespace LoomGUI
                 }
                 _texMap.Clear();
             }
-            // v1e：归还 ArrayPool 租用的 _frameBuf。
+            // 归还 ArrayPool 租用的 _frameBuf。
             if (_frameBuf != null)
             {
                 ArrayPool<byte>.Shared.Return(_frameBuf);
@@ -605,15 +601,15 @@ namespace LoomGUI
             }
         }
 
-        // Domain reload 保护（§4.3e / §4.6 / G13，照 fgui Stage.cs:86）。SubsystemRegistration 在
-        // Domain reload 时跑（关闭 Domain Reload 仍跑——这正是本 hook 存在的根因：关 reload 时 C#
-        // 静态活过 Play，但 native 状态可能悬空）。Phase 2：
+        // Domain reload 保护（照 fgui Stage.cs:86）。SubsystemRegistration 在 Domain reload 时跑
+        // （关闭 Domain Reload 仍跑——这正是本 hook 存在的根因：关 reload 时 C# 静态活过 Play，
+        // 但 native 状态可能悬空）。
         //   1. Native.loomgui_shutdown() — native 全局态当前为空（Stage per-handle，stage_free drop），
-        //      但 hook 必须接——v1b 引入 global texture/font registry 时此处自动清，无需再改接线。
+        //      但 hook 必须接——引入 global texture/font registry 时此处自动清，无需再改接线。
         //      （注意：Font 的 Box::leak 是真泄漏，每次 Stage 创建 leak 一份字体字节——不可由 shutdown
-        //      回收，需字体缓存化才能根治。×20 域重载测观察内存增长决定是否 Phase 2 内做。）
+        //      回收，需字体缓存化才能根治。×20 域重载测观察内存增长决定是否根治。）
         //   2. TextRasterizer.ResetStatic() — 清 C# 静态 s_fontVersion（atlas rebuild 计数器）。
-        //   （MaterialManager/MirrorPool 都是 per-instance，随 MonoBehaviour OnDestroy 销毁，无 static。）
+        //      （MaterialManager/MirrorPool 都是 per-instance，随 MonoBehaviour OnDestroy 销毁，无 static。）
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
         static void ResetStatics()
         {

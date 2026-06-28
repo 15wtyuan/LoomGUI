@@ -4,16 +4,16 @@ using UnityEngine;
 
 namespace LoomGUI.Tests
 {
-    /// MirrorPool flatten 坐标契约测试（Task 2/8，§4.2）。
+    /// MirrorPool flatten 坐标契约测试。
     ///
     /// 验：v4 blob 的 world matrix m_tx/m_ty 是**绝对 design 坐标**（layout/mod.rs::write_back 递归累加父 origin）。
     /// 故所有渲染 GO 必须**挂根 GO**（flatten），纯平移节点 localPosition = (Mtx,Mty) 绝对值；
-    /// 否则巢状 + 绝对 localPosition 会把父坐标**双计**（Phase 1 单节点 pid=-1 未暴露此 bug）。
+    /// 否则巢状 + 绝对 localPosition 会把父坐标**双计**。
     ///
     /// 约定：root scale=(1,-1,1) pos=(0,0,0)（简化断言；design→world 即 (dx,-dy,0)）。
     /// parent @ design (100,200)，child @ design (50,50)，child.parent_id = parent.id。
     ///
-    /// Unity EditMode 无法在无 Unity CLI 的环境跑（本仓 CI 不跑 C#）；执行延后到 review/PlayMode。
+    /// Unity EditMode 无法在无 Unity CLI 的环境跑；执行延后到 review/PlayMode。
     /// 故本测试的**断言数值必须手算可证**——见类内注释的 hand-computation。
     public class MirrorPoolFlattenTests
     {
@@ -172,7 +172,7 @@ namespace LoomGUI.Tests
             var shader = Shader.Find("LoomGUI/Unlit");
             var mm = new MaterialManager(shader);
             var pool = new MirrorPool();
-            // v1b.2：Sync 新签名（texMap + fallback + font）。本测 Mesh blob tex_id=0 → fallback 路径。
+            // Sync 新签名（texMap + fallback + font）。本测 Mesh blob tex_id=0 → fallback 路径。
             var texMap = new Dictionary<uint, Texture2D>();
             var fallback = Texture2D.whiteTexture;
 
@@ -183,7 +183,7 @@ namespace LoomGUI.Tests
                     childId: 8, cx: 50f, cy: 50f,
                     w: 5f, h: 5f, sortKey: 1));
                 Assert.AreEqual(2, blob.NodeCount, "blob 应解析出 2 节点");
-                // v1b.2：Sync 签名加 texMap+fallback（kind=2 用 font；本测纯 Mesh 传 null）。
+                // Sync 签名加 texMap+fallback（kind=2 用 font；本测纯 Mesh 传 null）。
                 pool.Sync(blob, root.transform, mm, texMap, fallback, null);
 
                 // 找到 child GO（按 node_id 8 不能直接查 pool 内部 dict；遍历 root 直接子节点）。

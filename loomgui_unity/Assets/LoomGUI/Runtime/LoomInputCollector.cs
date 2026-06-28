@@ -7,23 +7,22 @@ using UnityEngine.InputSystem;
 
 namespace LoomGUI
 {
-    /// v1c.3 输入采集：Unity 指针（鼠标+触摸）→ PointerEvent[] → loomgui_stage_set_input。
+    /// 输入采集：Unity 指针（鼠标+触摸）→ PointerEvent[] → loomgui_stage_set_input。
     /// screen→design 映射 + y-flip（Unity 左下原点 → LoomGUI 左上原点 design）。
     /// 兼容新旧输入系统：ENABLE_INPUT_SYSTEM 宏（Player Settings Active Input Handling=New/Both）走
     /// InputSystem API（Mouse.current / Touchscreen.current.touches），否则走旧 UnityEngine.Input。
     [ExecuteAlways]
     public unsafe class LoomInputCollector : MonoBehaviour
     {
-        /// v1d.1：screen→design 映射，与 LoomStage.ComputeRootTransform 逐项逆（同一 sf 居中公式）。
+        /// screen→design 映射，与 LoomStage.ComputeRootTransform 逐项逆（同一 sf 居中公式）。
         /// 前向（design→screen，见 ComputeRootTransform 注释）：
         ///   screen.x = offX    + dx*sf     其中 offX = area.x + (area.width  - dw*sf)*0.5
         ///   screen.y = offYTop - dy*sf     其中 offYTop = area.y + area.height
         /// 逆：
         ///   dx = (screen.x - offX)    / sf
         ///   dy = (offYTop - screen.y) / sf
-        /// sf = min(area.w/dw, area.h/dh)【统一缩放，与渲染一致——修 v1c 渲染用 uniform sf / 输入用 per-axis stretch 的潜在错位】。
-        /// useSafeArea=false 时 area 退回全屏（v1c 行为）。
-        /// ponytail 验证：safe==全屏 + width-binding（sf=sw/dw）→ offX=0、offYTop=sh → dx=screen.x*dw/sw、dy=(sh-screen.y)*dw/sw ✓（v1c 式，但 y 也用 sf——见报告）
+        /// sf = min(area.w/dw, area.h/dh)【统一缩放，与渲染一致】。
+        /// useSafeArea=false 时 area 退回全屏。
         public static Vector2 ScreenToDesign(Vector2 screen, Vector2Int screenSize, Vector2 rootSize, Rect area, bool useSafeArea)
         {
             float sw = screenSize.x > 0 ? screenSize.x : 1;
@@ -44,7 +43,7 @@ namespace LoomGUI
         }
 
         /// 采集本帧指针（鼠标+触摸）→ set_input。鼠标 touch_id=-1（slot0），触摸 touch_id=fingerId（slot1-4）。
-        /// v1c.3：同帧共存（带触摸屏桌面）；EditMode 无 Touchscreen 跳过触摸。
+        /// 鼠标+触摸可同帧共存（带触摸屏桌面）；EditMode 无 Touchscreen 跳过触摸。
         public void Collect(System.IntPtr stage, Vector2 rootSize, bool useSafeArea)
         {
             if (stage == System.IntPtr.Zero) return;
@@ -74,7 +73,7 @@ namespace LoomGUI
                     byte kind = 2;
                     if (phase == UnityEngine.InputSystem.TouchPhase.Began) kind = 0;
                     else if (phase == UnityEngine.InputSystem.TouchPhase.Ended) kind = 1;
-                    else if (phase == UnityEngine.InputSystem.TouchPhase.Canceled) kind = 3;   // v1c.4：Canceled
+                    else if (phase == UnityEngine.InputSystem.TouchPhase.Canceled) kind = 3;   // Canceled
                     var screen = touch.position.ReadValue();
                     var d = ScreenToDesign(screen, screenSize, rootSize, safeArea, useSafeArea);
                     events.Add(new Bindings.PointerEvent { kind = kind, button = 0, pad0 = 0, pad1 = 0, touch_id = touch.touchId.ReadValue(), x = d.x, y = d.y });
@@ -94,7 +93,7 @@ namespace LoomGUI
                 byte kind = 2;
                 if (t.phase == UnityEngine.TouchPhase.Began) kind = 0;
                 else if (t.phase == UnityEngine.TouchPhase.Ended) kind = 1;
-                else if (t.phase == UnityEngine.TouchPhase.Canceled) kind = 3;   // v1c.4：Canceled
+                else if (t.phase == UnityEngine.TouchPhase.Canceled) kind = 3;   // Canceled
                 var d = ScreenToDesign(t.position, screenSize, rootSize, safeArea, useSafeArea);
                 events.Add(new Bindings.PointerEvent { kind = kind, button = 0, pad0 = 0, pad1 = 0, touch_id = t.fingerId, x = d.x, y = d.y });
             }
@@ -113,7 +112,7 @@ namespace LoomGUI
             }
         }
 
-        /// v1d.2：采集本帧键盘 → set_key_input。KeyDown/Up 事件 + modifiers。
+        /// 采集本帧键盘 → set_key_input。KeyDown/Up 事件 + modifiers。
         /// 用 Input.GetKeyDown/Up（KeyCode 直对 core key_code，零转换；工程 Both 模式可用）——不像 Collect 双路径，
         /// 键盘无 InputSystem 特性需求。本帧无键事件 → set_key_input(null,0)（core 无键盘输入）。
         public void CollectKeys(System.IntPtr stage)
@@ -122,7 +121,7 @@ namespace LoomGUI
             var keys = new System.Collections.Generic.List<Bindings.KeyEvent>();
             byte mods = CurrentModifiers();
             // 键盘 down/up 用 Input.GetKeyDown/Up（KeyCode）——KeyCode 直接对应 core key_code=(uint)KeyCode，零转换。
-            // 工程 Active Input Handling=Both（v1c.1 设），旧 Input API 可用；键盘无 InputSystem 特性需求，
+            // 工程 Active Input Handling=Both，旧 Input API 可用；键盘无 InputSystem 特性需求，
             // 不走 Keyboard[Key]（要 InputSystem.Key 映射，过度复杂）。
             foreach (UnityEngine.KeyCode kc in KeyList)
             {
@@ -143,8 +142,8 @@ namespace LoomGUI
             }
         }
 
-        /// v1d.5-T12：采集本帧滚轮 → set_wheel_input。tick 前调；累积式（多次调合并）。
-        /// 新旧输入系统双路径（坑 28/45：滚轮用旧 Input.mouseScrollDelta 或新 Mouse.current.scroll）。
+        /// 采集本帧滚轮 → set_wheel_input。tick 前调；累积式（多次调合并）。
+        /// 新旧输入系统双路径：滚轮用旧 Input.mouseScrollDelta 或新 Mouse.current.scroll。
         /// 归一 delta → ±1/格：旧 Input.mouseScrollDelta 已 ≈ ±1/格；新系统 120 像素/格除 120。
         /// 鼠标不在 UI 上也可滚——hit test 由 Rust 侧做（只在悬停的 scroll 容器响应）。
         public static void CollectWheel(LoomStage stage)
@@ -195,7 +194,7 @@ namespace LoomGUI
         }
 
         /// 采集的键白名单（Tab + 字母 + Enter/Space/Esc/方向 + 数字）。避免全 KeyCode 枚举遍历（数百个）开销。
-        /// ponytail: 显式白名单而非全枚举——绝大多数键业务不关心，白名单够用且省 CPU。
+        /// 显式白名单而非全枚举——绝大多数键业务不关心，白名单够用且省 CPU。
         static readonly UnityEngine.KeyCode[] KeyList = {
             UnityEngine.KeyCode.Tab,
             UnityEngine.KeyCode.Return, UnityEngine.KeyCode.Space, UnityEngine.KeyCode.Escape,

@@ -7,34 +7,26 @@ namespace LoomGUI.Tests
 {
     public unsafe class LoomEventHandlerTests
     {
-        // 辅助：手搓 handler + handle（家里机 EditMode 需真 .dll；本机写测代码不跑）
-        // node_parent 由核心 FFI 提供（Task 2），手搓场景 root(0)>parent(1)>child(2)
-        // 测假设 Native.loomgui_node_parent 已加载（.dll 在 Plugins）
-        //
-        // 路由测需 Stage handle + scene（root>parent>child）。家里机实现者用 LoomStage 装载手搓包，
-        // SetHandle 后注册 listener、DispatchPending 喂手搓 LoomEvent[]。本机只写测骨架 + 断言意图。
-
-        // ===== v1c.4-T8 helper =====
+        // 路由测需 Stage handle + scene（root>parent>child）。
 
         // BuildStage 装载 root>parent>child（node_id: root=0,parent=1,child=2）。
-        // 家里机 EditMode 需 .dll（Native.* 已加载）。返回 stage 指针 + SetHandle 过的 handler。
-        // TODO(home-machine): font_path 需真路径（DejaVuSans.ttf）——core stage_new 解析字体，null/0 会返 null。
-        // 家里机按 Application.streamingAssetsPath 或 Assets/LoomGUI/Fonts/DejaVuSans.ttf 填（参考 LoomStage.EnsureFont / stage_new）。
+        // font_path 需真路径（DejaVuSans.ttf）——core stage_new 解析字体，null/0 会返 null。
+        // 需传 Application.streamingAssetsPath 或 Assets/LoomGUI/Fonts/DejaVuSans.ttf 的 UTF-8 字节。
         static (IntPtr stage, LoomEventHandler handler) BuildStage()
         {
-            // TODO(home-machine): 传真字体路径字节。core stage_new(font_path=null,0,...) 会因 font 解析失败返 null。
-            // 推荐改为：System.IO.Path.Combine(Application.streamingAssetsPath, "DejaVuSans.ttf")
-            //           并 byte[] fp = Encoding.UTF8.GetBytes(fontPath); fixed(byte* fpp=fp) stage = Native.loomgui_stage_new(fpp, (nuint)fp.Length, 200f, 200f);
-            byte[] fontPathBytes = null; // 占位：家里机补真路径（见上 TODO）
+            // font_path 占位：未补真路径时 stage_new 会因 font 解析失败返 null。
+            // 补法：System.IO.Path.Combine(Application.streamingAssetsPath, "DejaVuSans.ttf")
+            //       byte[] fp = Encoding.UTF8.GetBytes(fontPath); fixed(byte* fpp=fp) stage = Native.loomgui_stage_new(fpp, (nuint)fp.Length, 200f, 200f);
+            byte[] fontPathBytes = null; // 占位：需补真路径
             StageHandle* stagePtr;
             fixed (byte* fp = fontPathBytes)
             {
                 stagePtr = Native.loomgui_stage_new(fp, (nuint)(fontPathBytes?.Length ?? 0), 200f, 200f);
             }
-            // 家里机：若 stagePtr == null，说明 font_path 占位未补——补真路径后重试。
+            // 若 stagePtr == null，说明 font_path 占位未补——补真路径后重试。
             // 注意：不能用 Assert.IsNotNull(stagePtr, ...) —— 指针装箱后恒非 null（boxed 0 也是对象），
             // 是 no-op；stagePtr 是 StageHandle*，用 != null 真比较。
-            Assert.IsTrue(stagePtr != null, "BuildStage: stage_new 返 null（font_path 占位未补？家里机填真路径）");
+            Assert.IsTrue(stagePtr != null, "BuildStage: stage_new 返 null（font_path 占位未补？需填真路径）");
 
             string html = "<div class=\"root\"><div class=\"parent\"><div class=\"child\"></div></div></div>";
             string css = ".root{width:200px;height:200px;}.parent{width:100px;height:100px;}.child{width:50px;height:50px;}";
@@ -60,8 +52,8 @@ namespace LoomGUI.Tests
             finally { Marshal.FreeHGlobal(ptr); }
         }
 
-        /// v1c.2-T4：listener 表 + DispatchPending 分流。AddListener(5, Click) → DispatchPending
-        /// 一条 EventRecord(nodeId=5,Click) → 回调被触发。v1c.2 签名是 EventCallback(ctx)（非 Action<LoomEvent>）。
+        /// listener 表 + DispatchPending 分流。AddListener(5, Click) → DispatchPending
+        /// 一条 EventRecord(nodeId=5,Click) → 回调被触发。
         [Test]
         public void DispatchPending_RoutesToListener()
         {
@@ -122,7 +114,7 @@ namespace LoomGUI.Tests
             finally { Marshal.FreeHGlobal(ptr); }
         }
 
-        /// v1c.2-T3：对象池复用。Get → Return → Get 拿回同一实例。
+        /// 对象池复用。Get → Return → Get 拿回同一实例。
         /// 注意：EventContext.Get() 只重置 _stopsPropagation/_defaultPrevented，不重置 payload（target 等）。
         [Test]
         public void EventContext_Pool_ReusesInstances()
@@ -134,8 +126,7 @@ namespace LoomGUI.Tests
             LoomGUI.EventContext.Return(b);
         }
 
-        /// v1c.2-T3：EventBridge 多播 —— Add 两个 callback → CallBubble 都触发；
-        /// Remove 一个后只剩另一个。
+        /// EventBridge 多播 —— Add 两个 callback → CallBubble 都触发；Remove 一个后只剩另一个。
         [Test]
         public void EventBridge_AddMultipleCallbacks_AllInvoked()
         {
@@ -151,9 +142,9 @@ namespace LoomGUI.Tests
             Assert.AreEqual(1, hits, "Remove cb1 后只 cb2");
         }
 
-        // ===== v1c.2-T4 路由测（v1c.4-T8 回填：BuildStage helper + 真断言）=====
+        // ===== 路由测 =====
         // 下述测需 Stage handle + scene（root(0)>parent(1)>child(2)）。BuildStage 装载手搓 html/css，
-        // SetHandle 后注册 listener、DispatchOne 喂手搓 LoomEvent。家里机补 font_path 后跑。
+        // SetHandle 后注册 listener、DispatchOne 喂手搓 LoomEvent。
 
         /// child(2) Down → bubble: child(2) Target, parent(1) Bubble, root(0) Bubble 都收。
         /// 断言：3 个节点 listener 都被调，phase 序 Capture(root)>Target(child)>Bubble(parent/root)。
@@ -179,7 +170,7 @@ namespace LoomGUI.Tests
         }
 
         /// child bubble 回调 StopPropagation → parent/root bubble 不收；
-        /// 但 capture 阶段（root→child 反向）已全跑（照 fgui line 302-311 不检查 stop）。
+        /// 但 capture 阶段（root→child 反向）已全跑。
         [Test]
         public void StopPropagation_BreaksBubbleButNotCapture()
         {
@@ -245,14 +236,13 @@ namespace LoomGUI.Tests
             Native.loomgui_stage_free((StageHandle*)stage);
         }
 
-        // ===== v1c.3-T4 capture / move / multitouch 测（v1c.4-T8 回填）=====
+        // ===== capture / move / multitouch 测 =====
 
         /// CaptureTouch 设 _touchCapture；BubbleRoute 消费即清（cap/bub 各记录一节点）。
         /// 验：root AddCapture(Down, CaptureTouch) + child AddListener(Down, CaptureTouch)
         ///     → DispatchOne(Down on child) 后 _captureNodeCap=root, _captureNodeBub=child，
         ///     核心收到两次 add_touch_monitor（同 touch_id）。
         /// 注：核心侧观测 API 无直接断言——这里验不抛 + 两次 CaptureTouch 调用都执行（handler 内部转 add_touch_monitor）。
-        /// 家里机若需更强断言，可在 .dll 加观测 API 或 mock Native.add_touch_monitor 计数。
         [Test]
         public void CaptureTouch_SetsFlag_ConsumedOnCapAndBub()
         {
@@ -286,7 +276,6 @@ namespace LoomGUI.Tests
 
         /// 两触摸（touch_id=0,1）Down 在同一节点（child=2）→ EventContext.touchId 各自正确 + 互不干扰。
         /// 验：listener 收到的 ctx.touchId 与 EventRecord.touch_id 一致。
-        /// （原 stub 用 leaf_a_id；场景 root>parent>child=0/1/2，取 node 2 作 leaf。）
         [Test]
         public void MultiTouch_DistinctTouchId()
         {
@@ -312,9 +301,9 @@ namespace LoomGUI.Tests
             Native.loomgui_stage_free((StageHandle*)stage);
         }
 
-        // ===== v1c.4-T8 新测（StopImmediate + 双击 clickCount）=====
+        // ===== StopImmediate + 双击 clickCount 测 =====
 
-        /// v1c.4：StopImmediatePropagation 止同节点剩余监听器（StopPropagation 不会）。
+        /// StopImmediatePropagation 止同节点剩余监听器（StopPropagation 不会）。
         /// 单节点链（node 2，无祖先需 BuildStage 的多节点链；但用 BuildStage 保持一致性）。
         [Test]
         public void StopImmediate_StopsSiblingListenersOnSameNode()
@@ -329,7 +318,7 @@ namespace LoomGUI.Tests
             Native.loomgui_stage_free((StageHandle*)stage);
         }
 
-        /// v1c.4：双击 clickCount 透传 EventContext（core 算 2，C# 读 ctx.clickCount=2）。
+        /// 双击 clickCount 透传 EventContext（core 算 2，C# 读 ctx.clickCount=2）。
         /// 手搓 Click 事件 clickCount=2 → listener 收 ctx.clickCount=2 + isDoubleClick=true。
         [Test]
         public void DoubleClick_ClickCount_ReachesEventContext()
@@ -343,9 +332,9 @@ namespace LoomGUI.Tests
             Native.loomgui_stage_free((StageHandle*)stage);
         }
 
-        // ===== v1d.1-T7 新测（drag/longpress BubbleRoute 路由）=====
+        // ===== drag/longpress BubbleRoute 路由测 =====
 
-        /// v1d.1：DragStart 走 BubbleRoute——child(2) DragStart → child Target + parent(1) + root(0) Bubble 都收。
+        /// DragStart 走 BubbleRoute——child(2) DragStart → child Target + parent(1) + root(0) Bubble 都收。
         [Test]
         public void DragStart_BubbleRoute_ReachesAncestors()
         {
@@ -361,7 +350,7 @@ namespace LoomGUI.Tests
             Native.loomgui_stage_free((StageHandle*)stage);
         }
 
-        /// v1d.1：LongPress 走 BubbleRoute——child(2) LongPress → 祖先链都收。
+        /// LongPress 走 BubbleRoute——child(2) LongPress → 祖先链都收。
         [Test]
         public void LongPress_BubbleRoute_ReachesAncestors()
         {
@@ -377,10 +366,10 @@ namespace LoomGUI.Tests
             Native.loomgui_stage_free((StageHandle*)stage);
         }
 
-        // ===== v1d.2-T7 新测（keydown/focusin BubbleRoute 路由）=====
+        // ===== keydown/focusin BubbleRoute 路由测 =====
 
-        /// v1d.2：KeyDown 走 BubbleRoute——child(2) KeyDown → child Target + parent(1) + root(0) Bubble 都收。
-        /// key_code 复用 touch_id=13（Return），modifiers=0（Rust EventRecord pad[0] @6，非 key 事件=0 正确）。
+        /// KeyDown 走 BubbleRoute——child(2) KeyDown → child Target + parent(1) + root(0) Bubble 都收。
+        /// key_code 复用 touch_id=13（Return），modifiers=0（EventRecord pad[0] @6，非 key 事件=0 正确）。
         [Test]
         public void KeyDown_BubbleRoute_ReachesAncestors()
         {
@@ -396,7 +385,7 @@ namespace LoomGUI.Tests
             Native.loomgui_stage_free((StageHandle*)stage);
         }
 
-        /// v1d.2：FocusIn 走 BubbleRoute——child(2) FocusIn → child + parent(1) + root(0) 都收。
+        /// FocusIn 走 BubbleRoute——child(2) FocusIn → child + parent(1) + root(0) 都收。
         [Test]
         public void FocusIn_BubbleRoute_ReachesAncestors()
         {

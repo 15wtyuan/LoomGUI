@@ -3,14 +3,13 @@ using UnityEngine;
 
 namespace LoomGUI
 {
-    /// DrawState 缓存（§8.4，照 fgui MaterialManager）。
+    /// DrawState 缓存。
     /// key = (program, texture, mask_context)。同 key 复用 Material 实例。
     /// tint×alpha 走顶点色（不在 key 里）；clip_box 进 mask_context 专属 Material 的 _ClipBox uniform。
     public sealed class MaterialManager
     {
         readonly Shader _shader;
         readonly Dictionary<Key, Material> _cache = new();
-        // Phase 1：mask_context 恒 0，不 enable CLIPPED；Phase 2 rect mask 在此按 mask_context 设 _ClipBox + EnableKeyword。
         readonly Dictionary<uint, Vector4> _clipBoxByCtx = new();
 
         public MaterialManager(Shader shader) { _shader = shader; }
@@ -26,7 +25,7 @@ namespace LoomGUI
                 mat.SetFloat("_DstFactor", 10f);  // OneMinusSrcAlpha
                 if (maskContext > 0u)
                 {
-                    // §4.4：ctx>0 → CLIPPED 变体（multi_compile _ CLIPPED，shader 端 discard）。
+                    // ctx>0 → CLIPPED 变体（multi_compile _ CLIPPED，shader 端 discard）。
                     // mask_context 进 key，每 ctx 独立 Material 实例，keyword 设该实例。
                     mat.EnableKeyword("CLIPPED");
                     // 首帧路径：MirrorPool 先 SetClipBox（box 进 _clipBoxByCtx）再 Get；
@@ -41,8 +40,8 @@ namespace LoomGUI
             return mat;
         }
 
-        /// §4.4：注册某 mask_context 的 _ClipBox。先写 _clipBoxByCtx（新建 Material 时 Get 会带上），
-        /// 再把已缓存 Material 实例的 _ClipBox 同步刷新（每 ctx 一实例，fgui group=clipId 语义）。
+        /// 注册某 mask_context 的 _ClipBox。先写 _clipBoxByCtx（新建 Material 时 Get 会带上），
+        /// 再把已缓存 Material 实例的 _ClipBox 同步刷新（每 ctx 一实例）。
         /// 两路都覆盖：SetClipBox 既可在 Get 前（首帧：box 进 dict，Get 建材质时读取）也可在 Get 后
         /// （后续帧：材质已存，直接 SetVector 刷新）。故调用顺序对 MirrorPool 不构成约束。
         public void SetClipBox(uint maskContext, Vector4 clipBox)
@@ -63,7 +62,7 @@ namespace LoomGUI
         }
 
         // key 持 Texture 引用（Unity 对象同一性），避开 Unity 6.5 废弃的 GetInstanceID/GetEntityId/EntityId。
-        // 材质与纹理同生命周期，缓存随纹理存活正确；v1b 纹理释放时配 eviction。
+        // 材质与纹理同生命周期，缓存随纹理存活正确。
         readonly struct Key
         {
             readonly int _program;

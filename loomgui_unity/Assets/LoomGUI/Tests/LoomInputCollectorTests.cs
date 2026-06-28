@@ -5,10 +5,9 @@ namespace LoomGUI.Tests
 {
     public class LoomInputCollectorTests
     {
-        // v1d.1：safe==全屏零回归验。用 aspect-matched rootSize（screen 2:1 ↔ root 2:1）→
+        // safe==全屏零回归验。用 aspect-matched rootSize（screen 2:1 ↔ root 2:1）→
         // sf=1、offX=0、offYTop=sh → 纯 y-flip 恒等映射（screen↔design 仅 y 翻转）。
-        // 这是"无刘海"屏的真实语义：render 与 input 都退化为 v1c 的全屏映射。
-        // ponytail：area=全屏 + useSafeArea=false 保持 v1c 行为路径。
+        // 即"无刘海"屏语义：render 与 input 都退化为全屏映射。
         [Test]
         public void ScreenToDesign_MapsCorrectly()
         {
@@ -44,14 +43,14 @@ namespace LoomGUI.Tests
             Assert.AreEqual(100f, design.y, 0.01f, "screen 底部 → design y=root_h");
         }
 
-        // v1d.1 核心回归：刘海屏 round-trip（render 前向 + ScreenToDesign 逆 → 原设计点）。
+        // 刘海屏 round-trip 回归（render 前向 + ScreenToDesign 逆 → 原设计点）。
         // 用 ComputeRootTransform 同款前向公式把 design 映到 screen，再 ScreenToDesign 映回，
-        // 断言 round-trip 误差 < epsilon。这是触控↔渲染对齐的根本保证。
+        // 断言 round-trip 误差 < epsilon——触控↔渲染对齐的根本保证。
         //
         // 场景：screenSize=(400,800)、rootSize=(200,400)、safe area=(40,0,320,800)（左侧 40px 刘海）。
-        //   sf = min(320/200, 800/400) = min(1.6, 2.0) = 1.6（width-binding）
-        //   rendered span = 200*1.6 × 400*1.6 = 320 × 640；safe 区 320×800 → 水平填满、垂直留白 160（上下各 80）
-        //   offX = 40 + (320 - 320)*0.5 = 40；offYTop = 0 + 800 = 800
+        //   sf = min(320/200, 800/400) = 1.6（width-binding）
+        //   rendered span = 320 × 640；safe 区 320×800 → 水平填满、垂直留白 160（上下各 80）
+        //   offX = 40；offYTop = 800
         //   前向：screen.x = 40 + dx*1.6；screen.y = 800 - dy*1.6
         //   逆：  dx = (screen.x - 40)/1.6；dy = (800 - screen.y)/1.6 → 恒等回原 dx,dy ✓
         [Test]

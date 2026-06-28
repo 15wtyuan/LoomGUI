@@ -5,7 +5,7 @@ namespace LoomGUI.Tests
 {
     public class FrameBlobTests
     {
-        // 手搓一个 1 节点 mesh blob（镜像 loomgui_ffi_c/src/blob.rs::build_blob v4 布局），
+        // 手搓一个 1 节点 mesh blob（镜像 blob.rs::build_blob v4 布局），
         // 验 FrameBlob 解析器把每列 + mesh arena 读回正确。
         [Test]
         public void ParsesOneMeshNode()
@@ -43,7 +43,7 @@ namespace LoomGUI.Tests
             b.AddRange(System.BitConverter.GetBytes(arenaOff));   // mesh_arena_off
             b.AddRange(System.BitConverter.GetBytes(arenaLen));   // mesh_arena_len
             b.AddRange(System.BitConverter.GetBytes(arenaOff + arenaLen)); // text_arena_off（紧跟 mesh_arena）
-            b.AddRange(System.BitConverter.GetBytes(0u));         // text_arena_len（T1 空）
+            b.AddRange(System.BitConverter.GetBytes(0u));         // text_arena_len（空）
             int clipOff = arenaOff + arenaLen;                    // text 空，clip 紧跟 text
             b.AddRange(System.BitConverter.GetBytes(clipOff));    // clip_table_off
             b.AddRange(System.BitConverter.GetBytes(4u));         // clip_table_len（仅 clip_count u32）
@@ -66,8 +66,8 @@ namespace LoomGUI.Tests
             b.Add(1);                                            // col 12: payload_kind = Mesh
             b.AddRange(System.BitConverter.GetBytes(0u));        // col 13: mesh_off
             b.AddRange(System.BitConverter.GetBytes((uint)arenaLen)); // col 14: mesh_len
-            b.AddRange(System.BitConverter.GetBytes(0u));        // col 15: text_off（T1 占位）
-            b.AddRange(System.BitConverter.GetBytes(0u));        // col 16: text_len（T1 占位）
+            b.AddRange(System.BitConverter.GetBytes(0u));        // col 15: text_off（占位 0）
+            b.AddRange(System.BitConverter.GetBytes(0u));        // col 16: text_len（占位 0）
             b.AddRange(System.BitConverter.GetBytes(0u));        // col 17: tex_id（Mesh 占位 0）
             b.AddRange(arena);
             // clip 表：仅 clip_count=0
@@ -77,7 +77,7 @@ namespace LoomGUI.Tests
             Assert.IsTrue(view.IsValid, "v4 blob 应通过 magic+version 校验");
             Assert.AreEqual(4u, view.Version);
             Assert.AreEqual(1, view.NodeCount);
-            Assert.AreEqual(0, view.ClipCount, "T1: clip_count=0");
+            Assert.AreEqual(0, view.ClipCount, "clip_count=0");
             Assert.AreEqual(7u, view.NodeId(0));
             Assert.AreEqual(-1, view.ParentId(0));
             Assert.IsTrue(view.Visible(0));
@@ -92,8 +92,8 @@ namespace LoomGUI.Tests
             Assert.IsTrue(view.IsPureTranslation(0), "identity 2×2 → 纯平移");
             Assert.AreEqual(0u, view.MaskContext(0));
             Assert.AreEqual(1, view.PayloadKind(0));
-            Assert.AreEqual(0u, view.TextOff(0), "T1: text_off 占位 0");
-            Assert.AreEqual(0u, view.TextLen(0), "T1: text_len 占位 0");
+            Assert.AreEqual(0u, view.TextOff(0), "text_off 占位 0");
+            Assert.AreEqual(0u, view.TextLen(0), "text_len 占位 0");
             var mesh = view.ReadMesh(0);
             Assert.AreEqual(4, mesh.Verts.Length);
             Assert.AreEqual(4, mesh.Uvs.Length);

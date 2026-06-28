@@ -3,12 +3,12 @@ using UnityEngine;
 
 namespace LoomGUI
 {
-    /// 渲染树 → GameObject 镜像 diff（§14.6）。每帧 O(n)：标 stale → 遍历命中清 stale/更新 → 余销毁。
-    /// flatten：所有 GO 挂 root（§4.2）；纯平移节点 localPosition=(Mtx,Mty) 绝对 design；非纯平移节点
+    /// 渲染树 → GameObject 镜像 diff。每帧 O(n)：标 stale → 遍历命中清 stale/更新 → 余销毁。
+    /// flatten：所有 GO 挂 root；纯平移节点 localPosition=(Mtx,Mty) 绝对 design；非纯平移节点
     /// GO transform=identity + _ObjectMatrix uniform；sortingOrder=sort_key。
-    /// parent_id 仍在 blob 列但 Phase 2 渲染不用（v1c 事件再用）。
-    /// Mesh 顶点已由 Rust（blob.rs）re-base 到节点本地空间，此处按 (x,y,0) 上传。
-    /// Phase 2：渲染 payload_kind=1（Mesh）+ 2（Text）；Unchanged(0) 跳过。
+    /// parent_id 仍在 blob 列但渲染不用（事件系统再用）。
+    /// Mesh 顶点已由 Rust re-base 到节点本地空间，此处按 (x,y,0) 上传。
+    /// 渲染 payload_kind=1（Mesh）+ 2（Text）；Unchanged(0) 跳过。
     sealed class RenderObj
     {
         public GameObject Go;
@@ -21,16 +21,14 @@ namespace LoomGUI
         // -1 哨兵：新建 RenderObj 的 text 节点首帧必 BuildMesh（即使 FontVersion==0）。
         public int LastFontVersion = -1;
 
-        // §4.5 buffer 复用（500 节点静态压测 GC 缓解）：每 RenderObj 持可复用 List，
+        // buffer 复用（500 节点静态压测 GC 缓解）：每 RenderObj 持可复用 List，
         // UploadMesh 每帧 Clear+fill 后用 Mesh.SetVertices(List) 等 overload 上传——
         // List<T>.Clear() 保留 Capacity，故 warm-up 后零 per-frame 数组 alloc。
-        // 替代 naive `new Vector3[]/Color[]/int[]`（Phase 1 review Minor：500 节点×3 数组/帧 GC）。
-        // 全量 ArrayPool（含 ReadMesh 数组 alloc）冷帧零 GC 留 v1e。
         public readonly List<Vector3> VList = new();
         public readonly List<Vector2> UvList = new();
         public readonly List<Color> CList = new();
         public readonly List<int> IList = new();
-        // §v1d.3: cached MaterialPropertyBlock for per-renderer _ObjectMatrix (M1 fix).
+        // cached MaterialPropertyBlock for per-renderer _ObjectMatrix.
         // Lazy-init in non-pure-translation path; avoids shared material overwrite.
         public MaterialPropertyBlock Mpb;
     }
@@ -39,7 +37,7 @@ namespace LoomGUI
     {
         readonly Dictionary<uint, RenderObj> _pool = new();
         int _lastFontVersion = -1;     // -1 → 首帧必不等，强制建/光栅；之后追 TextRasterizer.FontVersion
-        // §4.4：每 ctx 每帧首次（fgui firstMaterialInFrame 模式）算一次 _ClipBox 并 SetClipBox。
+        // 每 ctx 每帧首次算一次 _ClipBox 并 SetClipBox。
         // Sync 开头清空；clip 表 entry 少（few ctx），每帧开销可忽略。
         readonly HashSet<uint> _clipsAppliedThisFrame = new();
 
@@ -49,17 +47,17 @@ namespace LoomGUI
         public void Sync(FrameBlob blob, Transform root, MaterialManager mm,
                          Dictionary<uint, Texture2D> texMap, Texture fallback, Font font)
         {
-            // 防御：陈旧/非 v4 blob 直接早退（§4.1 magic+version 校验）。不做清理——上一帧的 GO
+            // 防御：陈旧/非当前 blob 直接早退（magic+version 校验）。不做清理——上一帧的 GO
             // 维持不动比误销毁更安全；调用方应自检 IsValid 再 Sync。
             if (!blob.IsValid) return;
 
-            // font atlas rebuild 检测（§4.3 必修坑）：版本变 → 本帧所有 text 节点强制重 BuildMesh
-            // （glyph UV 变，缓存 mesh 作废）。照 fgui Stage.cs:828 重跑帧语义。
+            // font atlas rebuild 检测：版本变 → 本帧所有 text 节点强制重 BuildMesh
+            // （glyph UV 变，缓存 mesh 作废）。
             bool fontDirty = _lastFontVersion != TextRasterizer.FontVersion;
 
             // ① 全标 stale
             foreach (var kv in _pool) kv.Value.Stale = true;
-            // §4.4：本帧 clip 应用集清空（per-ctx-per-frame 一次性算 _ClipBox）。
+            // 本帧 clip 应用集清空（per-ctx-per-frame 一次性算 _ClipBox）。
             _clipsAppliedThisFrame.Clear();
 
             // ② 遍历节点
@@ -68,10 +66,8 @@ namespace LoomGUI
             {
                 if (!blob.Visible(i)) continue;
                 byte kind = blob.PayloadKind(i);
-                // v1e dirty：Unchanged(0) = 静态帧节点。dirty.rs 保证此刻 world/alpha/sort/mask/payload
-                // 全不变 → 清 stale 保留上帧 GO、跳过上传。修复前此处直接 continue 不清 stale，导致静态
-                // 帧节点全被末尾 stale 销毁——首帧渲染后 UI 集体消失（blob.rs:60-71 仍写 Unchanged 节点
-                // 的 world_matrix 等公共头列，证明它该保留而非销毁）。
+                // Unchanged(0) = 静态帧节点。dirty 保证此刻 world/alpha/sort/mask/payload
+                // 全不变 → 清 stale 保留上帧 GO、跳过上传。
                 if (kind == 0)
                 {
                     if (_pool.TryGetValue(blob.NodeId(i), out var unchangedRo))
@@ -90,32 +86,24 @@ namespace LoomGUI
                 ro.Stale = false;
                 ro.IsText = kind == 2;
 
-                // flatten（§4.2）：所有节点挂 root（避免巢状双计父）。
-                // v4：world matrix Affine2 双路径——
-                //   纯平移（IsPureTranslation）：GO localPosition=(Mtx,Mty) + identity rotation/scale。
-                //   非纯平移：GO transform=identity，blob matrix 进 _ObjectMatrix uniform（shader × matrix）。
+                // flatten：所有节点挂 root。
+                // pure 和非 pure 统一 GO localPosition=(Mtx,Mty)（world translate 进 GO transform）。
+                // 非纯平移的 scale/rotate 进 _ObjectMatrix（无 translate）。这样 renderer.bounds = GO.worldTransform ×
+                // Mesh.bounds 自动 world（culling 正确），不需 mutate Mesh.bounds 做 translate hack（mutate mesh 资产，
+                // 非 pure→pure 切回时 bounds 双 translate → frustum culling 误剔 → 字消失）。
                 ro.Go.transform.SetParent(root, false);
                 bool pure = blob.IsPureTranslation(i);
-                if (pure)
-                {
-                    ro.Go.transform.localPosition = new Vector3(blob.Mtx(i), blob.Mty(i), 0f);
-                    ro.Go.transform.localRotation = Quaternion.identity;
-                    ro.Go.transform.localScale = Vector3.one;
-                }
-                else
-                {
-                    ro.Go.transform.localPosition = Vector3.zero;
-                    ro.Go.transform.localRotation = Quaternion.identity;
-                    ro.Go.transform.localScale = Vector3.one;
-                }
+                ro.Go.transform.localPosition = new Vector3(blob.Mtx(i), blob.Mty(i), 0f);
+                ro.Go.transform.localRotation = Quaternion.identity;
+                ro.Go.transform.localScale = Vector3.one;
 
                 ro.Mr.sortingOrder = (int)blob.SortKey(i);
 
                 uint maskCtx = blob.MaskContext(i);
                 float nodeAlpha = blob.Alpha(i);
 
-                // §4.4：mc>0 节点本帧首次见 → 读 clip 表 design rect，转 world，算 _ClipBox，
-                // SetClipBox 到该 ctx 的 per-context Material（fgui firstMaterialInFrame）。
+                // mc>0 节点本帧首次见 → 读 clip 表 design rect，转 world，算 _ClipBox，
+                // SetClipBox 到该 ctx 的 per-context Material。
                 // 必须在 mm.Get 之前调，使新建 Material 时即带 box；同 ctx 后续节点跳过（HashSet 去重）。
                 if (maskCtx > 0u && _clipsAppliedThisFrame.Add(maskCtx))
                 {
@@ -130,32 +118,22 @@ namespace LoomGUI
 
                 if (kind == 1)
                 {
-                    // mesh 上传（Rust 已 re-base 顶点到本地）。
+                    // mesh 上传（顶点已 re-base 到本地）。
                     var seg = blob.ReadMesh(i);
                     UploadMesh(ro, seg);
                     ro.Mesh.RecalculateBounds();
                     ro.LastFontVersion = TextRasterizer.FontVersion;
-                    // v1b.2：按 tex_id 从 texMap 绑真纹理；0/缺失 → fallback（白占位）。
+                    // 按 tex_id 从 texMap 绑真纹理；0/缺失 → fallback（白占位）。
                     uint tid = blob.TexId(i);
                     Texture tex = (tid != 0 && texMap.TryGetValue(tid, out var t)) ? (Texture)t : fallback;
                     var mat = mm.Get(program: 0, tex, maskCtx, !pure);
                     if (!pure)
                     {
+                        // _ObjectMatrix 只 scale/rotate（translate 进 GO localPosition，renderer.bounds 自动 world）。
                         var m = Matrix4x4.identity;
-                        m[0, 0] = blob.Ma(i); m[0, 1] = blob.Mc(i); m[0, 3] = blob.Mtx(i);
-                        m[1, 0] = blob.Mb(i); m[1, 1] = blob.Md(i); m[1, 3] = blob.Mty(i);
-                        // M1 fix: MaterialPropertyBlock avoids shared material _ObjectMatrix overwrite
-                        // when two non-pure-translation nodes share the same material key.
-                        ro.Mpb ??= new MaterialPropertyBlock();
-                        ro.Mpb.SetMatrix("_ObjectMatrix", m);
-                        ro.Mr.SetPropertyBlock(ro.Mpb);
-                        // I1 fix: translate bounds to world position for frustum culling.
-                        // Vertices are box-local (0,0)-(w,h); _ObjectMatrix moves rendering to world.
-                        // GO transform=identity → renderer.bounds = Mesh.bounds; culling uses renderer.bounds.
-                        // Rotation/scale AABB expansion deferred to v1.x.
-                        var b = ro.Mesh.bounds;
-                        b.center = new Vector3(blob.Mtx(i) + b.center.x, blob.Mty(i) + b.center.y, 0);
-                        ro.Mesh.bounds = b;
+                        m[0, 0] = blob.Ma(i); m[0, 1] = blob.Mc(i);
+                        m[1, 0] = blob.Mb(i); m[1, 1] = blob.Md(i);
+                        SetObjectMatrix(ro, m);
                     }
                     ro.Mr.sharedMaterial = mat;
                 }
@@ -178,20 +156,11 @@ namespace LoomGUI
                         var tmat = mm.Get(program: 1, font.material.mainTexture, maskCtx, !pure);
                         if (!pure)
                         {
+                            // _ObjectMatrix 只 scale/rotate（translate 进 GO localPosition）。
                             var m = Matrix4x4.identity;
-                            m[0, 0] = blob.Ma(i); m[0, 1] = blob.Mc(i); m[0, 3] = blob.Mtx(i);
-                            m[1, 0] = blob.Mb(i); m[1, 1] = blob.Md(i); m[1, 3] = blob.Mty(i);
-                            // M1 fix: MaterialPropertyBlock avoids shared material _ObjectMatrix overwrite.
-                            ro.Mpb ??= new MaterialPropertyBlock();
-                            ro.Mpb.SetMatrix("_ObjectMatrix", m);
-                            ro.Mr.SetPropertyBlock(ro.Mpb);
-                            // I1 fix: translate bounds to world position for frustum culling.
-                            // RecalculateBounds every frame for non-pure text (translation may change
-                            // without glyph rebuild), then translate to world center.
-                            ro.Mesh.RecalculateBounds();
-                            var b = ro.Mesh.bounds;
-                            b.center = new Vector3(blob.Mtx(i) + b.center.x, blob.Mty(i) + b.center.y, 0);
-                            ro.Mesh.bounds = b;
+                            m[0, 0] = blob.Ma(i); m[0, 1] = blob.Mc(i);
+                            m[1, 0] = blob.Mb(i); m[1, 1] = blob.Md(i);
+                            SetObjectMatrix(ro, m);
                         }
                         ro.Mr.sharedMaterial = tmat;
                     }
@@ -223,9 +192,8 @@ namespace LoomGUI
             return new RenderObj { Go = go, Mf = mf, Mr = mr, Mesh = mesh };
         }
 
-        /// §4.5 buffer 复用：从 MeshSegment 填 ro 持有的可复用 List，再走 SetVertices(List) 等 overload。
-        /// List<T>.Clear() 保留 Capacity → warm-up 后每帧零数组 alloc（naive 每帧 new Vector3[]/Color[]/int[]
-        /// 在 500 节点 ×3 数组/帧 是主要 GC 源）。kind=1（mesh）与 kind=2（text BuildMesh 产出）同走此路径。
+        /// buffer 复用：从 MeshSegment 填 ro 持有的可复用 List，再走 SetVertices(List) 等 overload。
+        /// List<T>.Clear() 保留 Capacity → warm-up 后每帧零数组 alloc。kind=1（mesh）与 kind=2（text BuildMesh 产出）同走此路径。
         /// 注意：SetVertices(List) 要求 list 长度 == 顶点数；Clear()+Add 精确填到 Verts.Length 即满足。
         static void UploadMesh(RenderObj ro, MeshSegment seg)
         {
@@ -255,13 +223,28 @@ namespace LoomGUI
             ro.Mesh.SetTriangles(idx, 0);
         }
 
+        /// _ObjectMatrix 经 MPB 传 shader。SetMatrix 对 CBUFFER 内非 Properties 字段不生效（MPB 只覆盖
+        /// material property）→ 拆 4 Vector（Properties 对应）SetVector 覆盖，shader vert 重组 float4x4。
+        /// HLSL float4x4(v0..v3) 是 row-major 构造，故传 m.GetRow(0..3)（行），不是 GetColumn。
+        /// m 只含 scale/rotate（translate 进 GO localPosition=(Mtx,Mty)）。mul(objM, v).xy = (Ma·x+Mc·y, Mb·x+Md·y)；
+        /// worldPos = TransformObjectToWorld(designWorld) = root × GO × designWorld（GO.position 提供 translate）。
+        static void SetObjectMatrix(RenderObj ro, in Matrix4x4 m)
+        {
+            ro.Mpb ??= new MaterialPropertyBlock();
+            ro.Mpb.SetVector("_ObjM0", m.GetRow(0));
+            ro.Mpb.SetVector("_ObjM1", m.GetRow(1));
+            ro.Mpb.SetVector("_ObjM2", m.GetRow(2));
+            ro.Mpb.SetVector("_ObjM3", m.GetRow(3));
+            ro.Mr.SetPropertyBlock(ro.Mpb);
+        }
+
         public void Clear()
         {
             foreach (var kv in _pool) TearDown(kv.Value);
             _pool.Clear();
         }
 
-        // Edit-mode-safe 销毁：T8 LoomStage 挂 [ExecuteAlways]，Sync/Clear 会在 Edit mode 跑；
+        // Edit-mode-safe 销毁：LoomStage 挂 [ExecuteAlways]，Sync/Clear 会在 Edit mode 跑；
         // Object.Destroy 在 Edit mode 非法（须 DestroyImmediate）。
         static void TearDown(RenderObj ro)
         {
