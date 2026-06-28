@@ -213,9 +213,9 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 - **渲染两路径**（spec §3.5/§3.6，关键正确性）：**identity/merge 节点**走现有 TRS（顶点绝对 layout_rect + blob re-base 减 tx,ty→top-local + GO localPosition=tx,ty + 现有 material，**零回归**）；**非纯平移节点** break merge + 走 matrix shader（顶点 box 本地 (0,0,w,h) + blob 不 re-base + GO transform=identity + `_ObjectMatrix` uniform + shader `OBJECT_MATRIX` variant 顶点 `mul(_ObjectMatrix,float4(pos.xy,0,1))`→world）。两路径判断都用 `is_pure_translation(wm)`（a≈1&&b≈0&&c≈0&&d≈1，epsilon 1e-6，Rust↔C# 对齐）。剪切（任意仿射含非均匀缩放∘旋转）matrix 天然支持。
 - **命中 world_to_local**（spec §3.4）：`local_point = inverse(world).apply_point(point)` → 判本地 box `(0,0,w,h)`（top-left 原点，不用 layout_rect.x/y）。仿射逆含剪切可逆（det≠0）。clip 门控不变（世界 AABB，clip **不随 transform 旋转**，spec 决策 5 保守留 v1.x）。
 - **blob v3→v4 + pkg v5→v6**：frame blob transform 列 `local_x/local_y`(2) → world matrix `m_a,m_b,m_c,m_d,m_tx,m_ty`(6)（列序 node_id@0,parent_id@1,visible@2,alpha@3,sort_key@4,mask_context@5,m_a@6..m_ty@11,payload_kind@12,mesh_off@13,mesh_len@14,text_off@15,text_len@16,tex_id@17，**18 列**，header_len=12+18*4=84，arena Mesh@84/Text@92/Clip@100）。pkg `ResolvedStyle`+transform → bincode 变 → formatVersion 5→6。**两套 version 独立**（pkg v6 Rust-internal / blob v4 FFI 跨语言，C# IsValid 校验拒 v3）。version 串 v1d.2→v1d.3。
-- **NativeHost-lite（后端纯 C#，core 零改）**（spec §3.7）：HTML 普通 `<div id>` 占位（core 不认新 kind，当 Container 算 world matrix）；`NativeHostManager`（Runtime/）`Dictionary<uint,GameObject>` + `Bind(uint|string via FindNodeById)/Unbind/Clear/Sync(blob)`。Sync 每帧 node_id→i 扫，从 world matrix **TRS 分解**（rot=atan2(b,a),sx=√(a²+b²),sy=√(c²+d²),pos=(tx,ty,0)；剪切降级）设外部 GO + sort_key→Renderer.sortingOrder + node 消失 SetActive(false)。**复用既有 `find_node_by_id` FFI**（不新增）；零新渲染 FFI。
+- **NativeHost-lite（后端纯 C#，core 零改）**（spec §3.7）：HTML 普通 `<div id>` 占位（core 不认新 kind，当 Container 算 world matrix）；`NativeHostManager`（Runtime/）`Dictionary<uint,GameObject>` + `Bind(uint|string via FindNodeById)/Unbind/Clear/Sync(blob)`。Sync 每帧 node_id→i 扫，从 world matrix **TRS 分解**（rot=atan2(b,a),sx=√(a²+b²),sy=√(c²+d²),pos=(tx,ty,0)；剪切降级）设外部 GO + sort_key→Renderer.sortingOrder + node 消失 SetActive(false)。**复用既有 `find_node_by_id` FFI**（不新增）；零新渲染 FFI。**v1-showcase 验收修正（坑 72）**：GO 挂 root handedness flip（det<0 → Cull Back 剔除）→ 建 `_container`(挂 root, localScale=(1,-1,1)) 翻正 worldScale=(sf,sf,sf) + per-node wrapper（fgui GoWrapper cachedTransform 两层结构）保留用户 GO scale；GO layer=LoomUILayer + material renderQueue=3000 + sortingOrder=sort_key（照 fgui GoWrapper 渲染顺序 3 机制）。
 - **调试 dump**（spec §3.8）：新 `loomgui_stage_dump_scene(h,*len)->*const u8` FFI（StageHandle 加 `dump_blob:CString`，下 tick 失效）+ core `dump_scene_json`（整树 JSON：node_id/parent/tag/id/classes/kind/layout/world_matrix/visible，id/classes **JSON 转义**）。C# `LoomStage.DumpScene()`（null-stage guard）。
-- **Unity 后端**：shader 加 `multi_compile _ OBJECT_MATRIX`（×CLIPPED 4 variant）+ `_ObjectMatrix` Matrix property/CBUFFER；`MaterialManager.Key` +`matrixFlag:bool`；`FrameBlob` v4 列读取（Ma..Mty/IsPureTranslation）；`MirrorPool.Sync` 双路径。**非纯平移 _ObjectMatrix 用 MaterialPropertyBlock**（不污染共享 material，坑 47）+ bounds 平移到世界（坑 48）。
+- **Unity 后端**：shader 加 `multi_compile _ OBJECT_MATRIX`（×CLIPPED 4 variant）+ `_ObjectMatrix` Matrix property/CBUFFER；`MaterialManager.Key` +`matrixFlag:bool`；`FrameBlob` v4 列读取（Ma..Mty/IsPureTranslation）；`MirrorPool.Sync` 双路径。**非纯平移 _ObjectMatrix 用 MaterialPropertyBlock**（不污染共享 material，坑 47）+ bounds 平移到世界（坑 48）。**v1-showcase 验收修正（坑 73 三层）**：① `_ObjectMatrix` 拆 4 Vector Properties（MPB SetVector ×4，73① 纠坑 52——非 Properties CBUFFER 字段 MPB 也不覆盖）；② `GetRow`（配 HLSL `float4x4(v0..v3)` row-major，73②）；③ 删 I1 fix bounds translate（73③ 纠坑 48——mutate mesh 资产致 pure 切回双 translate culling 误剔），非 pure 也 GO localPosition=(Mtx,Mty)（translate 进 GO，_ObjectMatrix 只 scale/rotate）→ renderer.bounds 自动 world。
 - **FFI/version**：version v1d.2→v1d.3；1 新常驻 FFI（`dump_scene`，csbindgen regen）+ StageHandle+dump_blob。.dll 重编（1709056→1733120B）。
 - **两机约束（v1d.3 执行）**：core+ffi cargo test 全绿（core 230 + ffi 37 + snapshot 3 = 270）；C# 本机写未编译（无 Unity），家里机 PlayMode（旋转/剪切/缩放容器视觉+子跟随/剪切走 matrix shader/命中 world_to_local/identity 不回归/NativeHost cube 跟随+显隐/DumpScene 日志/500 节点 stress）。subagent-driven 11 task 全 Approved + final review Ready（opus，跨语言矩阵契约全链核实正确，无 Critical；I1 culling+M1 MPB fix）。spec `docs/superpowers/specs/2026-06-25-v1d.3-transform-nativehost-design.md`、plan `docs/superpowers/plans/2026-06-25-v1d.3-transform-nativehost.md`。踩坑：Affine2 type/mod 同名 namespace 冲突（坑 46）、matrix shader GO identity 致 Mesh.bounds 剔除错位（坑 48）、共享 material _ObjectMatrix 覆盖（坑 47）。
 
@@ -790,6 +790,24 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 **解决**：改 `dampened=min((lo-np)*PULL_RATIO, vp*PULL_RATIO)` 单打折（对照 fgui），最大越界 `vp*0.5`，回弹幅度翻倍。
 **教训**：fgui `PULL_RATIO=0.5`（`:90`）是位移打折比，LoomGUI 误实现成"先 cap 再打折"双重作用。对照 fgui 时 `min(a*c, b*c)` ≠ `min(a,b)*c`——抄公式先展开代数确认。
 
+### 坑 71：CSS 分组选择器 `.op,.tr` 逗号不展开——规则整条失效（v1-showcase §3 验收）
+**症状**：§3 .op/.tr 蓝底不显示，width/height/bg 全丢（rect 压成文字 intrinsic 尺寸）。
+**根因**：parse_css 把 `.op,.tr` 整段 selector_text 喂 parse_selector，后者不认逗号 → compound class 切成 `["op,","tr"]`（逗号进 token）→ 要求元素同时含 "op," 和 "tr" → 永不匹配。
+**解决**：parse_css 按逗号展开成多条 Rule（共享 declarations）；parse_selector/match_element 不感知逗号。
+**教训**：CSS 分组选择器在 parse_css 层（prelude 整段切逗号）展开，别让 selector parser 处理。dump_render example 一眼定位（.tr rect 39x25 + no-bg vs 期望 80x60 + bg）。
+
+### 坑 72：NativeHost GO 挂 root handedness flip——3D GO 被 cull（v1-showcase §1.6 验收）
+**症状**：1m³ Cube 放 NativeHost 看不见 + 上下颠倒。
+**根因**：LoomGUI `root.localScale=(sf,-sf,sf)` 在 transform 做 y-flip（fgui Stage `(upp,upp,upp)` 全正，y-flip 放 StageCamera position）→ GO 挂 root 子树 handedness flip（det<0）→ mesh winding 反 → Cull Back 剔除。
+**解决**：建 `_container` 挂 root `localScale=(1,-1,1)` → worldScale=(sf,sf,sf) positive 翻正 handedness；GO 挂 _container + layer=LoomUILayer + material renderQueue=3000 + sortingOrder=sort_key（照 fgui GoWrapper 渲染顺序）。per-node wrapper（fgui GoWrapper cachedTransform 两层结构）保留用户 GO scale（Sync 设 wrapper 不动用户 GO）。
+**教训**：LoomGUI root y-flip（vs fgui Stage 全正）致子树 handedness flip——3D GO/粒子挂 root 必 cull。独立 _container 翻正（不能改 root，UI mesh 依赖 y-flip）。照 fgui `temp/FairyGUI-unity/Assets/Scripts/Core/GoWrapper.cs`。
+
+### 坑 73：_ObjectMatrix 三层 bug——非 pure 节点字消失（v1-showcase 按钮验收）
+**症状**：按钮 :active{transform:scale} 字消失（按下/松手切换 pure↔非 pure 触发；按住显示松手消失循环）。
+**根因**（三层叠加）：① `_ObjectMatrix` 在 CBUFFER 无 Properties 对应 → MPB.SetMatrix 不覆盖（**纠正坑 52**：非 Properties CBUFFER 字段 MPB 也不覆盖，坑 52「放 CBUFFER MPB 覆盖」错）；② 拆 4 Vector 后 HLSL `float4x4(v0..v3)` 是 **row-major**（v0..3=行），MirrorPool `GetColumn`（列）错位 → Mtx/Mty 没进 x/y（跑 w 分量）+ Mb/Mc 错位；③ I1 fix（坑 48）mutate `Mesh.bounds.center` 做 culling，非 pure→pure 切回时 GO localPosition=(Mtx,Mty) + mesh bounds（含旧 Mtx）= 双 translate → frustum culling 误剔（bounds 跑到 design y≈2630 超视口）。
+**解决**：① `_ObjectMatrix` 拆 4 Vector Properties + MPB SetVector ×4；② `GetRow`（配 HLSL row-major）；③ 删 I1 fix，非 pure 也 GO localPosition=(Mtx,Mty)（translate 进 GO），_ObjectMatrix 只 scale/rotate → renderer.bounds 自动 world（culling 正确）。
+**教训**：MPB 只覆盖 Properties 字段（坑 52 需纠正）；HLSL `float4x4(v0..v3)` row-major 不是 column；**别 mutate Mesh.bounds 做 culling**（mesh 持久资产，pure↔非 pure 切换污染）——用 GO transform 让 renderer.bounds 自动 world。
+
 ## 6. 调试/验证技巧
 
 - **★ 实现 v1+ 后端/渲染/对象模型前，先参考 `temp/FairyGUI-unity/` 源码**（对照机制、避免走歪——本 session 因没先看 fgui 的 sortingOrder/rect-mask/MaterialManager，初版设计走了弯路：误用 z 排序、误以为 rect mask 要独立 GO、把绘制序想复杂）。
@@ -831,6 +849,9 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 - **红色实验验渲染**（v1-showcase 验收）：怀疑某节点没渲染时，临时改其 bg 为红色（style.css + 重打 pkg）→ 重进 PlayMode 看是否变红。红=节点渲染正常（"灰"是颜色空间/对比度/感知），灰=没渲染（GO/material/camera/未进 render tree）。core 端 `dump_sw` example 验 pkg 里节点 base_style/bg 值确认数据对。
 - **改 parse-time 逻辑要重打 pkg**（坑 66）：改 cascade/resolve/mapping/parse 后重编 .dll 不够——`base_style` 是打包期产物，`cargo run -p loomgui_pkg` 重打 pkg 才进包（html/css 未变也要）。判据：runtime 用 pkg 的逻辑改 .dll，parse-time 进 pkg 的逻辑改要重打。
 - **fgui ScrollPane 物理参照行号**（坑 69/70）：`temp/FairyGUI-unity/Assets/Scripts/UI/ScrollPane.cs`（2320 行）。松手物理：`__touchEnd:1610`（越界 flag→直接 bounce / 界内→inertia）、`UpdateTargetAndDuration:2048`（二次 ratio `((v2-thresh)/thresh)²` 削弱低速 + `dur=log(60/v2_eff)/log(decel)`，坑 54 `v2=|v|·scale` 非 v²）、`RunTween:2245`（cubic_out 推进 + 运行时越界>20 截断启回弹 tween = 弹性过冲）、`__touchMove:1430`（drag 越界打折 `min(位移*0.5, vp*PULL_RATIO)`）。常量：`PULL_RATIO=0.5`(:90)、`TWEEN_TIME_DEFAULT=0.3`(:89)、过冲阈值 20（RunTween 硬编码 `>20+threshold`）。**fgui pos 负**（`container.y∈[-overlap,0]`），LoomGUI `scroll_pos` 正（`[0,overlap]`）——对照时符号反转。
+- **dump_render 渲染节点 payload**（坑 71/73 诊断）：`examples/dump_render.rs` 加载 showcase（inline 读 html/css 或 pkg）+ tick_and_render，遍历 frame.nodes dump `node_id/classes/rect/payload kind(Mesh/Text/Unchanged)/colors[0]/style.bg`。一眼定位：bg 缺失（no-bg + Mesh c0 透明）/ 尺寸错（rect 39x25 vs 期望 80x60）/ 逗号规则失效（.tr 应有 bg 但 no-bg）。**inline 模式验 parse 修复**（绕过旧 pkg 缓存，不需重打）。
+- **dump_interact 交互帧 sequence**（坑 73 诊断）：`examples/dump_interact.rs` 构造最小复现（btn+Text+`:active{transform:scale}`）→ 打包伪类 → load → tick(首帧) → set_input Down/Up + tick×N → 逐帧 dump btn+Text 子 `payload kind + world_matrix`。定位 Unchanged/re-emit 切换 + world 进 transform 的帧延迟（compute_world_transforms 在 rematch 前，transform 次帧才进 world）+ pure↔非 pure 路径切换。core emit 正常（frame5 Text re-emit Text L1）→ bug 在 Unity。
+- **fgui GoWrapper 参照行号**（坑 72）：`temp/FairyGUI-unity/Assets/Scripts/Core/GoWrapper.cs`。渲染顺序 3 机制：`SetWrapTarget:94`（GO SetParent cachedTransform）、`SetGoLayers:113`（GO+子 layer=UI 层，UI 相机渲染）、`CacheRenderers:167`（material renderQueue=3000 Transparent）、`SetRenderingOrder:261`（GO sortingOrder=GoWrapper renderingOrder）。**fgui Stage `(upp,upp,upp)` 全正 scale**（Stage.cs:252/935，y-flip 放 StageCamera.cs:115 position y 负）—— vs LoomGUI root `(sf,-sf,sf)` transform 做 y-flip，是 NativeHost handedness bug 根因。
 
 ## 7. 已知问题/未完成（v0 ledger）
 
@@ -926,6 +947,8 @@ HTML/CSS → parse(ElementTree/StyleSheet) → style(ResolvedStyle) → scene(No
 - virtualization/shape mask/NativeHost 完整版：v1.x。
 
 完整 defer 表见各 spec §7；v1a Phase 1 实现 ledger 见 `.git/sdd/progress.md`。
+
+**v1-showcase 验收（main 进行中，待家里机 PlayMode 验）**：4 bug + review 最近提交。① bug 1 disabled 按下变蓝（driver 补 `SetNodeDisabled`，CSS `.disabled` 只样式不行为，LoomGUI disabled 是 API 驱动）② bug 2 按下字消失（坑 73 三层修复：_ObjectMatrix 拆 Vector Properties + GetRow + 删 I1 fix）—— **拖动 1.3 img/1.4 span 底消失（scroll 纯平移不走 OBJECT_MATRIX，可能独立 clip/culling）待家里机验**，handoff `docs/v1-showcase-bug2-unity-debug.md`（§3.3 transform 对照实验 + FrameDebugger 步骤）③ bug 3 NativeHost 缩放（坑 72：`_container` 翻正 handedness + per-node wrapper + renderQueue/sortingOrder；非对称模型镜像遗留 v1.x，Cube 对称已够）④ bug 4 §3 蓝底（坑 71 逗号展开）+ §2 Text bg（span→div，Text 节点只画 glyph 跟 fgui GTextField 一致）。review 最近 3 commit（常量全具名对照 fgui；2 中等问题：height:Percent 未 dump 验、UV swap/矩阵下标 `wm[4]` 可读性，记后续）。core test 全绿（343+47）。**不需重编 .dll**（逗号修复 parse-time 进 pkg，pkg 已重打 252520B）；C# + shader 改动 Unity 编。
 
 ## 维护
 
