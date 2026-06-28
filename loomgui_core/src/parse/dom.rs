@@ -23,7 +23,7 @@ pub struct ElementTree {
     pub nodes: Vec<ElementData>,
 }
 
-/// 围栏内支持的 tag 白名单（§4.2）。
+/// 围栏内支持的 tag 白名单。
 /// 未识别 tag（`<video>`/`<input>`/`<b>`/…）一律报错，不降级——
 /// AI 可预测性口径：写什么得到什么，围栏外即失败。
 const FENCE_TAGS: &[&str] = &["div", "span", "img", "button", "l-container"];
@@ -58,8 +58,8 @@ fn build_element(
 ) -> Result<ElementId, String> {
     let el_val = el_node.value();
     let tag = el_val.name().to_string();
-    // 围栏白名单检查（§4.2）：未识别 tag 一律报错，不降级。
-    // scene 层据此可把 build_rec 的 match 改成显式无 fallback（parse 保证只来围栏内 tag）。
+    // 围栏白名单检查：未识别 tag 一律报错，不降级。
+    // parse 保证只来围栏内 tag，scene 层 match 可无 fallback。
     if !FENCE_TAGS.contains(&tag.as_str()) {
         return Err(format!(
             "围栏外元素 <{}> 不支持，用 div/span/img/button 或 l-rich",
@@ -201,7 +201,7 @@ mod tests {
 
     #[test]
     fn rejects_fence_out_element() {
-        // §4.2 围栏白名单：div/span/img/button/l-container。其余 tag 一律报错，不降级。
+        // 围栏白名单：div/span/img/button/l-container。其余 tag 一律报错，不降级。
         // AI 可预测性核心：写什么得到什么，围栏外即失败。
         let video = parse_html(r#"<video src="x.mp4"></video>"#);
         assert!(video.is_err(), "<video> 应被围栏拒绝");

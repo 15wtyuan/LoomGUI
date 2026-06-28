@@ -1,8 +1,8 @@
-//! Stage 层：串起 parse → style → scene → layout → render 的端到端入口（§4-§6）。
+//! Stage 层：串起 parse → style → scene → layout → render 的端到端入口。
 //!
-//! v0 内存直通：`load_inline` 吃 HTML+CSS 文本，`tick_and_render` 跑首帧
-//! solve + build_render_nodes。`render_json` serde 序列化产 spec §5 JSON。
-//! v0 无输入/动画/打包器，Stage 只是「装配 + 单帧」的薄壳。
+//! 内存直通：`load_inline` 吃 HTML+CSS 文本，`tick_and_render` 跑首帧
+//! solve + build_render_nodes。`render_json` serde 序列化产渲染 JSON。
+//! 无输入/动画/打包器，Stage 只是「装配 + 单帧」的薄壳。
 
 use crate::input::{EventRecord, PointerEvent, PointerState};
 use crate::layout::solve;
@@ -25,29 +25,29 @@ pub struct Stage {
     pub scene: Option<Scene>,
     pub font: Arc<Font>,
     pub root_size: (f32, f32),
-    pub textures: crate::asset::texture::TextureRegistry, // v1b.2：src→tex_id+维度
-    /// v1b.3：图集元数据（.pkg.bin v2 AtlasSection.atlases）。FFI T5 读（atlas_count/info）。
+    pub textures: crate::asset::texture::TextureRegistry, // src→tex_id+维度
+    /// 图集元数据（.pkg.bin AtlasSection.atlases）。FFI atlas_count/info 读。
     /// inline 路径恒空（inline 不走打包器，无图集）。
     pub atlases: Vec<crate::asset::AtlasInfo>,
-    /// v1c.1：单指针状态机（hover/active 状态 + 命中 diff + 产事件）。
+    /// 单指针状态机（hover/active 状态 + 命中 diff + 产事件）。
     pub pointer_state: PointerState,
-    /// v1c.1：set_input 缓存的本帧输入；tick_and_render 消费后 clear。
+    /// set_input 缓存的本帧输入；tick_and_render 消费后 clear。
     pub pending_input: Vec<PointerEvent>,
-    /// v1c.1：本帧 tick 产出的事件序列（process 返回）；last_events/borrow_events 读。
+    /// 本帧 tick 产出的事件序列（process 返回）；last_events/borrow_events 读。
     pub last_events: Vec<EventRecord>,
-    /// v1d.2：set_key_input 缓存的本帧键盘输入；tick 消费后 clear。
+    /// set_key_input 缓存的本帧键盘输入；tick 消费后 clear。
     pub pending_keys: Vec<crate::input::KeyEvent>,
-    /// v1d.5-T8：set_wheel_input 缓存的本帧滚轮输入；T10 tick 消费（apply_wheel_to_hit）后 clear。
+    /// set_wheel_input 缓存的本帧滚轮输入；tick 消费（apply_wheel_to_hit）后 clear。
     /// 累积式（extend，非 clear-then-set）——多组滚轮合并到一帧。
     pub pending_wheel: Vec<crate::scroll::WheelEvent>,
-    /// v1d.2：编程聚焦/清焦点请求（request_focus/blur tick 外调记，tick 最前消费）。
+    /// 编程聚焦/清焦点请求（request_focus/blur tick 外调记，tick 最前消费）。
     /// 外层 Some=有请求；内层 Some(id)=聚焦某节点 / None=清焦点。
     pub pending_focus_request: Option<Option<NodeId>>,
-    /// v1d.4：tween 引擎（每 tick update 写 scene.anim + 产 complete 事件）。
+    /// tween 引擎（每 tick update 写 scene.anim + 产 complete 事件）。
     pub tweens: crate::tween::TweenManager,
-    /// v1d.4：advance_time stash 的本帧 dt（tick_and_render 消费，喂 tweens.update）。
+    /// advance_time stash 的本帧 dt（tick_and_render 消费，喂 tweens.update）。
     pub pending_dt: f32,
-    /// v1e：上帧每节点 dirty hash（NodeId 索引）。跨 tick 持续，供 build_render_nodes
+    /// 上帧每节点 dirty hash（NodeId 索引）。跨 tick 持续，供 build_render_nodes
     /// 比较决定 emit Unchanged。transient 不进 pkg（Stage 字段非 Scene 字段）。
     /// reload/节点数变 → clear → 下帧全 dirty（无基线）。
     pub prev_node_hashes: Vec<u64>,
@@ -55,7 +55,7 @@ pub struct Stage {
 
 impl Stage {
     pub fn new(font_path: &str, root_size: (f32, f32)) -> Result<Self, String> {
-        // Font::from_path 返回 Result<_, String>，直接 ? 传播（原 .map_err(|e| e)? 是 no-op）。
+        // Font::from_path 返回 Result<_, String>，直接 ? 传播。
         let font = Font::from_path(font_path)?;
         Ok(Stage {
             scene: None,
@@ -75,7 +75,7 @@ impl Stage {
         })
     }
 
-    /// v0 内存直通：HTML+CSS 文本直接构 scene（不走打包器）。
+    /// 内存直通：HTML+CSS 文本直接构 scene（不走打包器）。
     #[cfg(feature = "parse")]
     pub fn load_inline(&mut self, html: &str, css: &str) -> Result<(), String> {
         self.textures.clear();
@@ -83,26 +83,26 @@ impl Stage {
         let tree = parse_html(html)?;
         let sheet = parse_css(css)?;
         let styles = resolve_styles(&tree, &sheet);
-        self.tweens.clear();   // v1d.4：旧 tween 指向失效 node_id，随 scene 重建清空
-        if let Some(scene) = self.scene.as_mut() { scene.scroll.clear(); }   // v1d.5-T4：旧 scroll 槽随 scene 重建清空（防悬空 NodeId）
-        self.prev_node_hashes.clear();   // v1e：旧 hash 基线随 scene 重建失效（防 NodeId 错位）
+        self.tweens.clear();   // 旧 tween 指向失效 node_id，随 scene 重建清空
+        if let Some(scene) = self.scene.as_mut() { scene.scroll.clear(); }   // 旧 scroll 槽随 scene 重建清空（防悬空 NodeId）
+        self.prev_node_hashes.clear();   // 旧 hash 基线随 scene 重建失效（防 NodeId 错位）
         self.scene = Some(build_scene(&tree, &styles));
         Ok(())
     }
 
-    /// 从二进制包加载（spec §8）：read_package → self.scene + root_size（用包 header 的）。
+    /// 从二进制包加载：read_package → self.scene + root_size（用包 header 的）。
     /// 与 `load_inline` 二选一设 scene；后续 tick_and_render 不变。不需 parse feature。
     ///
-    /// v1b.3：read_package 解出 AtlasSection → build_registry 建 TextureRegistry
+    /// read_package 解出 AtlasSection → build_registry 建 TextureRegistry
     /// （atlas[0]→tex_id 1，sprite UV 来自 AtlasSprite），atlas 表存 self.atlases。
     pub fn load_package(&mut self, bytes: &[u8]) -> Result<(), String> {
         let (scene, root_size, atlas_section) =
             crate::asset::read_package(bytes).map_err(|e| e.to_string())?;
         self.textures = crate::asset::build_registry(&atlas_section);
         self.atlases = atlas_section.atlases;
-        self.tweens.clear();   // v1d.4：旧 tween 指向失效 node_id，随 scene 重建清空
-        if let Some(s) = self.scene.as_mut() { s.scroll.clear(); }   // v1d.5-T4：旧 scroll 槽随 scene 重建清空（防悬空 NodeId）
-        self.prev_node_hashes.clear();   // v1e：旧 hash 基线随 scene 重建失效（防 NodeId 错位）
+        self.tweens.clear();   // 旧 tween 指向失效 node_id，随 scene 重建清空
+        if let Some(s) = self.scene.as_mut() { s.scroll.clear(); }   // 旧 scroll 槽随 scene 重建清空（防悬空 NodeId）
+        self.prev_node_hashes.clear();   // 旧 hash 基线随 scene 重建失效（防 NodeId 错位）
         self.scene = Some(scene);
         self.root_size = root_size;
         Ok(())
@@ -129,7 +129,7 @@ impl Stage {
         self.scene.as_ref().and_then(|s| s.find_by_id_attr(id))
     }
 
-    /// UI 挡住时游戏不响应点击（§10.6）。v1c.3：委托 PointerState（任一活跃槽命中非根）。
+    /// UI 挡住时游戏不响应点击。委托 PointerState（任一活跃槽命中非根）。
     pub fn is_pointer_on_ui(&self) -> bool {
         match &self.scene {
             None => false,
@@ -146,31 +146,31 @@ impl Stage {
         self.pointer_state.remove_touch_monitor(node);
     }
 
-    /// v1c.4：累积时间（C# 传 Time.unscaledDeltaTime；双击窗口用）。
+    /// 累积时间（C# 传 Time.unscaledDeltaTime；双击窗口用）。
     pub fn advance_time(&mut self, dt: f32) {
         self.pointer_state.time_s += dt;
-        self.pending_dt = dt;   // v1d.4：stash 给 tick_and_render 喂 tweens.update
+        self.pending_dt = dt;   // stash 给 tick_and_render 喂 tweens.update
     }
 
-    /// v1c.4：外部取消待 click（照 fgui CancelClick）。FFI cancel_click 转发。
+    /// 外部取消待 click（照 fgui CancelClick）。FFI cancel_click 转发。
     pub fn cancel_click(&mut self, touch_id: i32) {
         self.pointer_state.cancel_click(touch_id);
     }
 
-    /// v1d.2：缓存本帧键盘输入（tick 前调；覆盖式）。
+    /// 缓存本帧键盘输入（tick 前调；覆盖式）。
     pub fn set_key_input(&mut self, keys: &[crate::input::KeyEvent]) {
         self.pending_keys.clear();
         self.pending_keys.extend_from_slice(keys);
     }
 
-    /// v1d.5-T8：缓存本帧滚轮输入（tick 前调；**累积式** extend——多组滚轮合并）。
-    /// T10 wire 进 tick 消费（apply_wheel_to_hit）；本任务不接 tick。
+    /// 缓存本帧滚轮输入（tick 前调；**累积式** extend——多组滚轮合并）。
+    /// wire 进 tick 消费（apply_wheel_to_hit）。
     pub fn set_wheel_input(&mut self, events: &[crate::scroll::WheelEvent]) {
         self.pending_wheel.extend_from_slice(events);
     }
 
-    /// v1d.5-T11：编程滚动到指定位置。非 scroll 容器 / 越界 node → no-op（不 panic）。
-    /// animated=false 直接 snap+clamp；true 启 cubic-out tween（调 T6 set_pos）。
+    /// 编程滚动到指定位置。非 scroll 容器 / 越界 node → no-op（不 panic）。
+    /// animated=false 直接 snap+clamp；true 启 cubic-out tween（调 set_pos）。
     pub fn set_scroll_pos(&mut self, node: NodeId, x: f32, y: f32, animated: bool) {
         if let Some(scene) = self.scene.as_mut() {
             if node.0 < scene.nodes.len() {
@@ -181,7 +181,7 @@ impl Stage {
         }
     }
 
-    /// v1d.2：编程聚焦（照 fgui RequestFocus）。强制聚焦任意非 disabled 节点
+    /// 编程聚焦（照 fgui RequestFocus）。强制聚焦任意非 disabled 节点
     /// （含 tabindex=None/-1——request_focus 是编程 API，不查 tabindex）。
     /// disabled 拒 / 越界跳过。记 pending_focus_request，下 tick 最前消费（不直接写 last_events）。
     pub fn request_focus(&mut self, node_id: NodeId) {
@@ -190,7 +190,7 @@ impl Stage {
                 return;
             }
             if scene.nodes[node_id.0].disabled {
-                return; // §3.5 disabled 拒
+                return; // disabled 拒
             }
         } else {
             return;
@@ -198,12 +198,12 @@ impl Stage {
         self.pending_focus_request = Some(Some(node_id));
     }
 
-    /// v1d.2：编程清焦点。记 pending_focus_request = Some(None)，下 tick 消费。
+    /// 编程清焦点。记 pending_focus_request = Some(None)，下 tick 消费。
     pub fn blur(&mut self) {
         self.pending_focus_request = Some(None);
     }
 
-    /// v1d.4：注册 tween。start/end 取前 value_size 个分量（prop 决定 size）。
+    /// 注册 tween。start/end 取前 value_size 个分量（prop 决定 size）。
     /// duration<=0 → update 首帧即结束并产 complete。无 scene / 越界 node → update 跳过（不报错）。
     #[allow(clippy::too_many_arguments)]   // 参数与 C# FFI 签名 1:1 对齐（同 text/layout.rs 惯例）
     pub fn tween(
@@ -214,19 +214,19 @@ impl Stage {
         self.tweens.tween(node, prop, start, end, ease, delay, duration, tag);
     }
 
-    /// v1d.4：停该节点该 prop 的 tween（override 保留末值）。
+    /// 停该节点该 prop 的 tween（override 保留末值）。
     pub fn kill_tween(&mut self, node: NodeId, prop: crate::tween::TweenProp) {
         self.tweens.kill(node, prop);
     }
 
-    /// v1d.4：清该节点所有动画 override（回 CSS）。
+    /// 清该节点所有动画 override（回 CSS）。
     pub fn clear_anim(&mut self, node: NodeId) {
         if let Some(scene) = self.scene.as_mut() {
             scene.anim.clear_node(node);
         }
     }
 
-    /// v1d.4：清该节点某 prop 对应通道（回 CSS）。
+    /// 清该节点某 prop 对应通道（回 CSS）。
     pub fn clear_anim_prop(&mut self, node: NodeId, prop: crate::tween::TweenProp) {
         if let Some(scene) = self.scene.as_mut() {
             scene.anim.clear_prop(node, prop);
@@ -238,11 +238,11 @@ impl Stage {
         &self.last_events
     }
 
-    /// 每帧管线（§8 + v1d.5-T10 重排）：
-    /// ①tween ②focus_request ③solve ④refresh_content_sizes（v1d.5）
+    /// 每帧管线：
+    /// ①tween ②focus_request ③solve ④refresh_content_sizes
     /// ⑤process（仲裁+拖拽跟手写 scroll_pos；hit_test 读上帧 world_transforms，1 帧延迟
-    ///   spec §8.2 已认） ⑥scroll update（消费 pending_wheel + inertia/bounce advance）
-    /// ⑦process_keys ⑧compute_world_transforms（v1d.5 移 process 后：读 scroll_pos 同帧
+    ///   已认） ⑥scroll update（消费 pending_wheel + inertia/bounce advance）
+    /// ⑦process_keys ⑧compute_world_transforms（移 process 后：读 scroll_pos 同帧
     ///   进 world matrix，零拖拽延迟） ⑨rematch_pseudo_classes ⑩build_render_nodes
     ///
     /// **首帧 guard**：process 前若 world_transforms 未计算，solve 后即时算一次。
@@ -251,22 +251,22 @@ impl Stage {
     pub fn tick_and_render(&mut self) -> FrameData {
         let scene = self.scene.as_mut().expect("load first");
         let mut out: Vec<EventRecord> = Vec::new();
-        // v1d.4：tween 推进（写 scene.anim + 产 complete 事件进 out）。须在 solve/compute_world_transforms 前。
+        // tween 推进（写 scene.anim + 产 complete 事件进 out）。须在 solve/compute_world_transforms 前。
         let dt = self.pending_dt;
         self.pending_dt = 0.0;
         self.tweens.update(dt, scene, &mut out);
-        // v1d.2：消费 pending_focus_request（编程聚焦/清焦点，tick 外 request_focus/blur 记）
-        // 最前消费——下 tick 才生效，避免 R3（tick 覆写 last_events 丢请求事件）。
+        // 消费 pending_focus_request（编程聚焦/清焦点，tick 外 request_focus/blur 记）。
+        // 最前消费——下 tick 才生效，避免 tick 覆写 last_events 丢请求事件。
         if let Some(req) = self.pending_focus_request.take() {
             crate::input::focus_node(scene, req, &mut out);
         }
         // 1. solve（先解 layout_rect，hit_test 要用）
         solve(scene, &self.font, self.root_size, &self.textures);
-        // 2. content_size 填充（v1d.5 §2.3：solve 后 content_size/viewport/overlap）
+        // 2. content_size 填充（solve 后 content_size/viewport/overlap）
         crate::scroll::refresh_content_sizes(scene);
-        // v1d.5-T10：compute_world_transforms 移到 process 后（读 scroll_pos 同帧进 world matrix）。
+        // compute_world_transforms 移到 process 后（读 scroll_pos 同帧进 world matrix）。
         // 首帧 guard：hit_test 需有效 world_transforms，solve 后即时算一次。
-        // 后续 tick process 读上帧 world_transforms（1 帧延迟，spec §8.2 已认）。
+        // 后续 tick process 读上帧 world_transforms（1 帧延迟，已认）。
         if scene.world_transforms.is_empty() {
             crate::scene::transform::compute_world_transforms(scene);
         }
@@ -285,12 +285,12 @@ impl Stage {
         // 5. 键盘事件（keydown/up + Tab 导航 + FocusIn/Out）
         let keys = std::mem::take(&mut self.pending_keys);
         crate::input::process_keys(scene, &keys, &mut out);
-        // 6. compute_world_transforms（v1d.5 移此：读 scroll_pos，offset 同帧生效）
+        // 6. compute_world_transforms（读 scroll_pos，offset 同帧生效）
         crate::scene::transform::compute_world_transforms(scene);
         self.last_events = out;
         // 7. 伪类重匹配（按新 hover/active/focused 改 Node.style——视觉变本帧 render 吃到）
         rematch_pseudo_classes(scene);
-        // 8. 渲染（+ 合成 scrollbar）。v1e：传上帧 hash 基线，未变节点 emit Unchanged；
+        // 8. 渲染（+ 合成 scrollbar）。传上帧 hash 基线，未变节点 emit Unchanged；
         //    返回新 hash 存 self.prev_node_hashes 供下帧比。
         let (frame, new_hashes) = build_render_nodes(scene, &self.font, &self.textures, &self.prev_node_hashes);
         self.prev_node_hashes = new_hashes;
@@ -308,7 +308,7 @@ mod tests {
     use super::*;
 
     /// 黄金等价（最强门）：inline 渲染 == 包渲染。
-    /// v0 fixture（div + 文本 + img + rect mask）经 pkg→load_package→render_json
+    /// fixture（div + 文本 + img + rect mask）经 pkg→load_package→render_json
     /// 必须 == inline load_inline→render_json。
     #[test]
     fn package_load_renders_identical_to_inline() {
@@ -322,7 +322,7 @@ mod tests {
         // inline 路径
         let mut s_inline = Stage::new(font_path, (200.0, 100.0)).unwrap();
         s_inline.load_inline(html, css).unwrap();
-        s_inline.textures.insert("logo.png", crate::asset::texture::TexMeta { tex_id: 1, uv_min: [0.0, 0.0], uv_max: [1.0, 1.0], width: 64, height: 32 }); // v1b.2：强化真实 tex_id + 真实尺寸路径
+        s_inline.textures.insert("logo.png", crate::asset::texture::TexMeta { tex_id: 1, uv_min: [0.0, 0.0], uv_max: [1.0, 1.0], width: 64, height: 32 }); // 强化真实 tex_id + 真实尺寸路径
         let inline_json = s_inline.render_json();
 
         // 序列化 inline 的 scene → 包（v2：空 AtlasSection——此测手工 insert 真 TexMeta，
@@ -402,7 +402,7 @@ mod tests {
         assert!(!s.is_pointer_on_ui(), "空 scene → false");
     }
 
-    /// v1d.5-T4：load 时 scroll 表清空（防 reload 后旧容器 NodeId 悬空，同 tween clear）。
+    /// load 时 scroll 表清空（防 reload 后旧容器 NodeId 悬空，同 tween clear）。
     /// 塞 scroll_pos 后 reload → scroll 表为空（get 返 None）；重新 ensure 后归零。
     #[cfg(feature = "parse")]
     #[test]
@@ -420,7 +420,7 @@ mod tests {
             "reload 后 scroll 表清空，旧 NodeId 槽不存在");
     }
 
-    /// v1d.4：tween 经 Stage 公共 API 注册 → advance_time stash dt → tick update 写 anim + 产 complete。
+    /// tween 经 Stage 公共 API 注册 → advance_time stash dt → tick update 写 anim + 产 complete。
     /// 注：.b 是 CSS class 不是 id 属性，find_node_by_id("b") 返 None。div.b 在 build 序为 NodeId(0)。
     #[test]
     fn stage_tween_advances_opacity_and_emits_complete() {
@@ -444,7 +444,7 @@ mod tests {
             && e.touch_id == 99), "结束 → complete(tag=99)");
     }
 
-    /// v1d.4：零回归门——直接 tick_and_render()（不 advance_time）→ pending_dt=0。
+    /// 直接 tick_and_render()（不 advance_time）→ pending_dt=0。
     /// 用 delay=1.0 注册 tween：elapsed(0) < delay(1) → update 跳过 apply，opacity 保持 None。
     /// 验证 tween 集成对「不 advance_time」的现有 stage 调用模式无副作用。
     #[test]
@@ -460,7 +460,7 @@ mod tests {
         assert!(s.scene.as_ref().unwrap().anim.0[0].opacity.is_none(), "dt=0 不写 override");
     }
 
-    /// v1d.5-T10：拖拽滚动容器 → 同 tick world_transforms 已含 scroll_pos（零延迟）。
+    /// 拖拽滚动容器 → 同 tick world_transforms 已含 scroll_pos（零延迟）。
     /// process 写 scroll_pos（drag_follow）→ compute_world_transforms 在 process 后读 scroll_pos
     /// → world matrix 含 T(-scroll_pos) offset。
     #[cfg(feature = "parse")]

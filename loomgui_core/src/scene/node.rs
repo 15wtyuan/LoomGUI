@@ -17,7 +17,7 @@ pub enum NodeKind {
     #[default]
     Container,
     Text { content: String },
-    /// v0：src 原样存（不加载），render 层映射到占位 tex_id。
+    /// src 原样存（不加载），render 层映射到占位 tex_id。
     /// src 取自元素的 `src` 属性（`<img src="...">`），不是文本内容。
     Image { src: String },
     Button,
@@ -53,7 +53,7 @@ pub struct Node {
     pub classes: Vec<String>,
     /// 运行时 id（建树时从 ElementData.id 填；供动态规则 id 选择器匹配）。
     pub id_attr: Option<String>,
-    /// pointer-events:auto=true / none=false（T1 解析，建树时从 style.touchable 填）。
+    /// pointer-events:auto=true / none=false（解析时落，建树时从 style.touchable 填）。
     pub touchable: bool,
     /// 当前帧命中（运行时，每帧命中 diff 更新）。
     pub hovered: bool,
@@ -61,12 +61,12 @@ pub struct Node {
     pub active: bool,
     /// 业务设（set_node_disabled），伪类源 + active/click 抑制。
     pub disabled: bool,
-    /// v1d.1：opt-in 可拖拽（HTML `draggable="true"` 属性）。drag 状态机据此发起 drag。
+    /// opt-in 可拖拽（HTML `draggable="true"` 属性）。drag 状态机据此发起 drag。
     pub draggable: bool,
-    /// v1d.2：HTML tabindex 属性值。None=不可聚焦；Some(-1)=仅编程聚焦；
+    /// HTML tabindex 属性值。None=不可聚焦；Some(-1)=仅编程聚焦；
     /// Some(0)=DOM 序可聚焦；Some(N>0)=显式序可聚焦。
     pub tabindex: Option<i32>,
-    /// v1d.2：当前是否聚焦（运行时，:focus 伪类源）。仅 focused_node 链上节点 true。
+    /// 当前是否聚焦（运行时，:focus 伪类源）。仅 focused_node 链上节点 true。
     pub focused: bool,
 }
 
@@ -163,22 +163,22 @@ impl AnimTable {
 pub struct Scene {
     pub roots: Vec<NodeId>,
     pub nodes: Vec<Node>,
-    /// 运行时伪类重匹配规则表（spec §5.5）。默认空；T7 包加载填，T8 inline 路径空。
+    /// 运行时伪类重匹配规则表。默认空；包加载填，inline 路径空。
     pub dynamic_rules: crate::style::dynamic::DynamicRuleTable,
-    /// v1d.2：当前焦点节点（单一全局，照 fgui Stage.focus）。None=无焦点。
+    /// 当前焦点节点（单一全局，照 fgui Stage.focus）。None=无焦点。
     pub focused_node: Option<NodeId>,
-    /// v1d.3：每节点累计世界矩阵（compute_world_transforms 填）。index = NodeId.0。运行时态，不进 pkg。
+    /// 每节点累计世界矩阵（compute_world_transforms 填）。index = NodeId.0。运行时态，不进 pkg。
     pub world_transforms: Vec<crate::transform::Affine2>,
-    /// v1d.4：每节点动画 override（TweenManager.update 填）。index = NodeId.0。运行时态，不进 pkg。
+    /// 每节点动画 override（TweenManager.update 填）。index = NodeId.0。运行时态，不进 pkg。
     pub anim: AnimTable,
-    /// v1d.5：每节点滚动状态（refresh_content_sizes / scroll 物理填）。index = NodeId.0。运行时态，不进 pkg。
+    /// 每节点滚动状态（refresh_content_sizes / scroll 物理填）。index = NodeId.0。运行时态，不进 pkg。
     pub scroll: crate::scroll::ScrollTable,
-    /// 坑 67：每节点 text 测量结果（layout solve 填，render 复用——消除双测量不一致）。
+    /// 每节点 text 测量结果（layout solve 填，render 复用——消除双测量不一致）。
     /// index = NodeId.0，仅 Text 节点 Some。运行时态，不进 pkg。
     ///
     /// 根因：layout 闭包用 taffy 选定 max_width 测（短文本 intrinsic≈available → taffy 传 None
-    /// 不换行；长文本 → Some(available) 换行），render 原用 rect.w（stretch 后的 available 整数宽）
-    /// 重测，短文本因 intrinsic 亚像素超 available 误判换行。修复：render 复用 layout 结果，不重测。
+    /// 不换行；长文本 → Some(available) 换行），render 若用 rect.w（stretch 后的 available 整数宽）
+    /// 重测，短文本因 intrinsic 亚像素超 available 误判换行。故 render 复用 layout 结果，不重测。
     pub text_layouts: Vec<Option<crate::text::layout::TextLayout>>,
 }
 
@@ -186,7 +186,7 @@ impl Scene {
     /// 从扁平 entries（DFS 先序）建 Node 树。`NodeId = entries 下标`；
     /// `parent_idx` 指向 entries 下标，`None` = 根。
     /// clip_rect slot / dirty 标志按 style.overflow_x/y（非 Visible 即 clip）/ kind 派生。
-    /// parse 路径（build_scene）与包加载路径（read_package）共用——防建树逻辑分叉。
+    /// parse 路径（build_scene）与包加载路径（read_package）共用。
     pub fn build(entries: &[(Option<usize>, NodeKind, ResolvedStyle, Vec<String>, Option<String>, bool, Option<i32>)]) -> Scene {
         let mut scene = Scene {
             roots: Vec::new(),
@@ -225,7 +225,7 @@ impl Scene {
                 focused: false,
             });
         }
-        // 接 children + roots（entries 先序 → 按 parent 出现序填，与旧 build_rec 一致）
+        // 接 children + roots（entries 先序 → 按 parent 出现序填）
         for i in 0..entries.len() {
             match entries[i].0 {
                 Some(p) => scene.nodes[p].children.push(NodeId(i)),
@@ -239,7 +239,7 @@ impl Scene {
 
     /// 按 CSS id 属性查节点（首个匹配）。无匹配 / 空 id → None。
     /// 供 FFI find_node_by_id：业务用 id 注册 listener / 设 disabled，替代硬编码 build 序 id
-    /// （auto Text 子会偏移 build 序，硬编码不可靠——见 LoomInteractDemo nodeId 推断 smell）。
+    /// （auto Text 子会偏移 build 序，硬编码不可靠）。
     pub fn find_by_id_attr(&self, id: &str) -> Option<NodeId> {
         self.nodes
             .iter()
@@ -288,16 +288,16 @@ fn gather_rec(
             el.tag
         ),
     };
-    // v1d.1：draggable="true" → Node.draggable（HTML 原生属性，AI 熟悉）。
+    // draggable="true" → Node.draggable（HTML 原生属性）。
     // 非 "true" 一律 false（draggable="false"/缺省/任意值 → false，照 HTML truthy 语义简化）。
     let draggable = el.attrs.get("draggable").map(|v| v == "true").unwrap_or(false);
-    // v1d.2：tabindex 属性 → Option<i32>。非数字 → None（照 DOM 容错：无效值忽略）。
+    // tabindex 属性 → Option<i32>。非数字 → None（照 DOM 容错：无效值忽略）。
     // 语义：None=不可聚焦；Some(-1)=仅编程；Some(0)=DOM 序；Some(N>0)=显式序。
     let tabindex = el.attrs.get("tabindex").and_then(|v| v.parse::<i32>().ok());
     let my_idx = entries.len();
     entries.push((parent_idx, kind.clone(), style.clone(), el.classes.clone(), el.id.clone(), draggable, tabindex));
 
-    // §4.2：Container/Button 的裸文本 → Text 子节点。文本子像无 class 的 <span>：
+    // Container/Button 的裸文本 → Text 子节点。文本子像无 class 的 <span>：
     // taffy_style 取 DEFAULT（由测量定尺寸），视觉/字体字段继承父值。
     // 不能直接克隆父 style——父若是 .h{height:30px} 会让文本子也高 30px，
     // 既不正确也压制了文本自然测量。
@@ -441,7 +441,7 @@ mod tests {
 
     #[test]
     fn build_clip_rect_slot_for_scroll_auto_and_single_axis() {
-        // T2 确认：overflow != Visible（任一轴）→ clip slot。覆盖 scroll/auto/单轴。
+        // overflow != Visible（任一轴）→ clip slot。覆盖 scroll/auto/单轴。
         for (x, y, desc) in [
             (OverflowMode::Scroll, OverflowMode::Scroll, "scroll 双轴"),
             (OverflowMode::Auto, OverflowMode::Auto, "auto 双轴"),
@@ -599,7 +599,7 @@ mod parse_tests {
 
     #[test]
     fn div_raw_text_becomes_text_child() {
-        // §4.2：div 的裸文本 → Text 子节点（文本是 flex item，参与布局）。
+        // div 的裸文本 → Text 子节点（文本是 flex item，参与布局）。
         // 匹配 AI 的 HTML 先验：<div>标题</div> 里的"标题"应可见、参与 flex 排列。
         let html = r#"<div>标题</div>"#;
         let css = "";
@@ -639,7 +639,7 @@ mod parse_tests {
 
     #[test]
     fn text_child_inherits_parent_text_fields_resets_size() {
-        // §4.2 + §5.2.3：Text 子节点应像无 class 的 <span>——继承父 color/font，
+        // Text 子节点应像无 class 的 <span>——继承父 color/font，
         // 但 taffy_style 取 DEFAULT（无固定 size，由测量决定）。
         // 父 .h{height:30px} 不应让文本子也高 30px。
         let html = r#"<div class="h">txt</div>"#;

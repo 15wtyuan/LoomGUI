@@ -4,17 +4,13 @@
 //! - 首次接受：`INSTA_UPDATE=always cargo test -p loomgui_core --test snapshot`
 //! - 之后：`cargo test -p loomgui_core --test snapshot`（绿=锁定）
 //!
-//! 字体策略：测试字体锁仓库内 `tests/fixtures/DejaVuSans.ttf`（开源，跨平台一致），
-//! 不再依赖系统 arial.ttf / DejaVuSans（Linux CI 无 arial 会漂移）。
-//! DejaVu Sans 无 CJK glyph，故 fixture 用 ASCII 文本；CJK 渲染验证留 v1
-//! （需 CJK 字体策略，见 spec §9）。
-//! 覆盖：simple_panel（flex 列布局 + Container/Button/Text）、
-//! cascade_inheritance（root color/font-size 经 cascade 传子）。
+//! 字体锁仓库内 `tests/fixtures/DejaVuSans.ttf`（开源，跨平台一致），
+//! 不依赖系统字体（Linux CI 无 arial 会漂移）。DejaVu Sans 无 CJK glyph，
+//! 故 fixture 用 ASCII 文本；CJK 渲染需 CJK 字体策略，另测。
 
 use loomgui_core::stage::Stage;
 
 /// 测试字体：仓库内 DejaVuSans.ttf，跨平台一致。
-/// 用 `env!("CARGO_MANIFEST_DIR")` 拼绝对路径，不依赖系统字体安装。
 fn test_font_path() -> String {
     format!(
         "{}/tests/fixtures/DejaVuSans.ttf",
@@ -23,7 +19,6 @@ fn test_font_path() -> String {
 }
 
 /// 缺字体时 skip（return，不算失败）。
-/// 防御性保留：仓库内字体正常情况下必存在，实际不会 skip。
 fn skip_if_no_font(font: &str) -> bool {
     if std::fs::read(font).is_err() {
         eprintln!("skip: no font at {}", font);
@@ -38,7 +33,7 @@ fn snapshot_simple_panel() {
     if skip_if_no_font(&font) {
         return;
     }
-    // fixture 用 ASCII（DejaVuSans 无 CJK，CJK 验证留 v1）
+    // fixture 用 ASCII（DejaVuSans 无 CJK glyph）
     let html = r#"<div class="root"><div class="h">Title</div><button class="b">OK</button></div>"#;
     let css = r#".root { width: 300px; height: 200px; flex-direction: column; gap: 8px; } .h { height: 30px; } .b { width: 100px; height: 40px; }"#;
     let mut stage = Stage::new(&font, (300.0, 200.0)).unwrap();
@@ -61,9 +56,9 @@ fn snapshot_cascade_inheritance() {
     insta::assert_snapshot!("cascade_inheritance", json);
 }
 
-/// v1b.2：`<img>` 渲染路径 snapshot（锁纹理路径输出）。
-/// img 有显式 CSS 尺寸 → measure 用声明值；纹理路径由 render 层 tex_id 体现
-/// （未注册 src 兜底 tex_id=0，注册后走真实 tex_id——此测只锁几何 + payload 形状）。
+/// `<img>` 渲染路径 snapshot（锁纹理路径输出）。
+/// img 有显式 CSS 尺寸 → measure 用声明值；此测只锁几何 + payload 形状
+/// （未注册 src 兜底 tex_id=0）。
 #[cfg(feature = "parse")]
 #[test]
 fn snapshot_image_with_texture() {

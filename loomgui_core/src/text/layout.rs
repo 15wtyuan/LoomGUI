@@ -1,9 +1,9 @@
 //! Text 层：给定文本 + 字体 + 约束宽，产出 TextLayout（SOA 三表 glyphs/runs/lines）。
 //!
-//! 对应主文档 §9。v0 实现要点：
-//! - 字体度量走 ttf-parser（ttf-parser 0.20 API，见下方适配注释）。
-//! - 断行用贪心按空白 + 宽度约束（unicode-linebreak 留作 v1.x 严格换行）。
-//! - glyph 存绝对坐标（已累加 advance + 已应用 align 偏移），后端拼 quad 零累加（§9.2 核心）。
+//! 实现要点：
+//! - 字体度量走 ttf-parser（API 适配见下方）。
+//! - 断行用贪心按空白 + 宽度约束（unicode-linebreak UAX#14 提供换行机会）。
+//! - glyph 存绝对坐标（已累加 advance + 已应用 align 偏移），后端拼 quad 零累加。
 
 use serde::Serialize;
 use ttf_parser::Face;
@@ -12,8 +12,8 @@ use ttf_parser::Face;
 #[derive(Debug, Clone, Serialize)]
 pub struct Glyph {
     pub glyph_id: u16,
-    /// Unicode 码点（v1a Phase 2 新增：Unity `Font.GetCharacterInfo(char)` 按码点查，
-    /// 非 ttf glyph_id）。`measure_text` 遍历 `content.chars()` 时 `c as u32` 填入。
+    /// Unicode 码点：Unity `Font.GetCharacterInfo(char)` 按码点查（非 ttf glyph_id）。
+    /// `measure_text` 遍历 `content.chars()` 时 `c as u32` 填入。
     pub codepoint: u32,
     /// pen x（已累加 advance + 已应用 align 偏移）。
     pub x: f32,
@@ -25,7 +25,7 @@ pub struct Glyph {
     pub bearing_y: f32,
 }
 
-/// 单 run：一组连续字形。v0 单字体单 run，glyphs 直接内联。
+/// 单 run：一组连续字形。单字体单 run，glyphs 直接内联。
 #[derive(Debug, Clone, Serialize)]
 pub struct GlyphRun {
     pub font_size: f32,
@@ -37,7 +37,7 @@ pub struct GlyphRun {
 pub struct Line {
     /// 行顶 y（相对布局原点）。
     pub y: f32,
-    /// 行高（line-height 已烤进，后端不重套；§9.1）。
+    /// 行高（line-height 已烤进，后端不重套）。
     pub height: f32,
     /// 行 baseline（绝对 y）。
     pub baseline: f32,
@@ -54,15 +54,11 @@ pub struct TextLayout {
     pub lines: Vec<Line>,
 }
 
-/// 封装一个 ttf 字体。v0 单字体无 fallback。
+/// 封装一个 ttf 字体（进程级单字体，无 fallback）。
 ///
-/// Face 借用 bytes；用 `Box::leak` 拿 `'static` 切片满足生命周期。
-/// 这是 v0 单字体的简化做法——leak 的内存不释放，进程级单字体可接受。
+/// Face 借用 `Box::leak` 产出的 `'static` 切片；leak 的内存不释放，进程级单字体可接受。
 pub struct Font {
     pub face: Face<'static>,
-    // 持有字体字节；face 实际借用的是 leaked 副本（见 from_bytes）。
-    // 保留原 bytes 仅为完整性，不参与生命周期（leaked 切片才真正存活）。
-    _bytes: Vec<u8>,
 }
 
 impl Font {
@@ -72,13 +68,10 @@ impl Font {
     }
 
     pub fn from_bytes(bytes: Vec<u8>) -> Result<Self, String> {
-        // ttf-parser Face 借用 bytes；用 Box::leak 拿 'static 切片（v0 单字体够用）。
-        let leaked: &'static [u8] = Box::leak(bytes.clone().into_boxed_slice());
+        // Face 借用 leaked 切片（进程级单字体，leak 不释放可接受）。
+        let leaked: &'static [u8] = Box::leak(bytes.into_boxed_slice());
         let face = Face::parse(leaked, 0).map_err(|e| format!("{:?}", e))?;
-        Ok(Font {
-            face,
-            _bytes: bytes,
-        })
+        Ok(Font { face })
     }
 
     pub fn ascent(&self, font_size: f32) -> f32 {
@@ -106,17 +99,14 @@ impl Font {
 /// - `line_height`：倍数，`0.0` = normal（= ascent - descent + line_gap）。
 /// - `max_width`：`None` 表示不换行；`nowrap=true` 时强制单行（white-space:nowrap）。
 ///
-/// # ttf-parser 0.20 API 适配（与 brief 推测的差异）
+/// # ttf-parser 0.20 API 适配
 /// - `glyph_advance_width(GlyphId) -> Option<i16>` 在 0.20 不存在；
 ///   用 `glyph_hor_advance(GlyphId) -> Option<u16>`（注意返回 u16）。
 /// - `kerning_for(GlyphId, GlyphId) -> Option<i16>` 在 0.20 的 Face 上不直接暴露；
 ///   通过 `face.tables().kern.as_ref().and_then(|k| k.glyphs_kerning(l, r))`。
 /// - `glyph_index(ch) -> Option<GlyphId>`、`GlyphId(pub u16)`、`glyph_bounding_box(GlyphId)`
 ///   返回 `Rect{x_min,y_min,x_max,y_max}`、`ascender/descender/line_gap/units_per_em`、
-///   `Face::parse(bytes, 0)` 均与 brief 一致。
-//
-// 参数清单是 brief verbatim 契约（下游 Task 6 layout 的 MeasureFunc 消费），
-// 不为 clippy 折叠——见 docs 主文档 §9。
+///   `Face::parse(bytes, 0)` 均与预期一致。
 #[allow(clippy::too_many_arguments)]
 pub fn measure_text(
     content: &str,
@@ -140,7 +130,7 @@ pub fn measure_text(
     } else {
         ascent - descent + line_gap
     };
-    // baseline：v0 简化占位——实现期对照 Chrome 调（§9.1）。
+    // baseline：简化占位。
     let baseline = if line_height > 0.0 {
         (line_h + ascent - descent) / 2.0 - descent.abs()
     } else {
@@ -191,13 +181,12 @@ pub fn measure_text(
         pen
     };
 
-    // 断行：unicode-linebreak UAX#14 换行机会 + 贪心填行（§9.1 CJK 逐字）。
-    // 替换 v0 的 split(' ') 贪心（对 CJK 完全失效——中文无空格 → 整段一 word 无法换行）。
+    // 断行：unicode-linebreak UAX#14 换行机会 + 贪心填行（CJK 逐字）。
     // white-space:nowrap 强制单行。
     //
-    // unicode-linebreak 0.1.5 实测 API（已核对 crates 源码，与 brief 草稿有出入）：
+    // unicode-linebreak 0.1.5 API：
     // - `linebreaks(s)` 返回 `impl Iterator<Item=(usize, BreakOpportunity)>`（非 Vec）；
-    // - 枚举名是 `BreakOpportunity`（非 brief 的 BreakType），变体 `Mandatory`/`Allowed`；
+    // - 枚举名是 `BreakOpportunity`，变体 `Mandatory`/`Allowed`；
     // - offset 语义 = "断点之后字符的字节序号"，即前段 = content[..offset]，后段 = content[offset..]。
     use unicode_linebreak::{linebreaks, BreakOpportunity};
     let max_w = max_width.unwrap_or(f32::MAX);
@@ -206,7 +195,7 @@ pub fn measure_text(
     let opportunities: Vec<(usize, BreakOpportunity)> = linebreaks(content).collect();
 
     // 2. 切 segments：相邻 break 之间的文本片段。unicode-linebreak 在空白后断，
-    //    segment 自含尾空白 → 行首无多余空格（删 v0 的 space_w 重加逻辑）。
+    //    segment 自含尾空白 → 行首无多余空格。
     let mut segments: Vec<(&str, BreakOpportunity)> = Vec::new();
     let mut prev = 0usize;
     for &(offset, btype) in &opportunities {
@@ -228,8 +217,8 @@ pub fn measure_text(
         let seg_w = measure_width(seg);
         let seg_chars = seg.chars().count();
 
-        // 超长词边界（§5）：segment 本身超 max_w 且多字符 → 逐字填
-        // （参考 fgui BuildLines toMoveChars=1；防无 break point 的长串如 URL 溢出）。
+        // 超长词边界：segment 本身超 max_w 且多字符 → 逐字填。
+        // 防无 break point 的长串（如 URL）溢出。
         if !nowrap && seg_w > max_w && seg_chars > 1 {
             if !cur.is_empty() {
                 lines.push((std::mem::take(&mut cur), cur_w));
@@ -466,7 +455,7 @@ mod tests {
     #[test]
     fn newline_is_mandatory_break() {
         let font = match test_font() { Some(f) => f, None => { eprintln!("skip"); return; } };
-        // \n 应强制换行（v0 split(' ') 不处理 \n，本 task 改进）。
+        // \n 应强制换行。
         let layout = measure_text(
             "aaaa\nbbbb", 16.0, 0.0, 0.0, TextAlign::Left, false, None, &font,
         );
@@ -488,7 +477,7 @@ mod tests {
     #[test]
     fn super_long_word_breaks_per_char() {
         let font = match test_font() { Some(f) => f, None => { eprintln!("skip"); return; } };
-        // 无空格长 ASCII 串（超 max_w）→ 超长词边界：逐字断（§5，参考 fgui toMoveChars=1）。
+        // 无空格长 ASCII 串（超 max_w）→ 超长词边界：逐字断。
         let layout = measure_text(
             "aaaaaaaaaaaaaaaaaaaa", 16.0, 0.0, 0.0, TextAlign::Left, false, Some(50.0), &font,
         );

@@ -133,7 +133,7 @@ pub fn parse_selector(raw: &str) -> Result<ParsedSelector, String> {
                 "active" => pseudo_active = true,
                 "disabled" => pseudo_disabled = true,
                 "focus" => pseudo_focus = true,
-                _ => {} // 未知伪类静默忽略（v1d.2 认 hover/active/disabled/focus）
+                _ => {} // 未知伪类静默忽略（仅认 hover/active/disabled/focus）
             }
             rest = &after[end..];
         }
@@ -160,7 +160,7 @@ fn compound_matches(c: &Compound, el: &ElementData) -> bool {
     // 伪类规则不参与 base cascade——运行时由 rematch_pseudo_classes + match_element_with_state
     // 按节点 hovered/active/disabled/focused 状态动态应用。base 只烤静态规则（与
     // extract_dynamic_rules 配套：伪类规则进 DynamicRuleSection）。
-    // 坑：漏检会让 .btn:focus 紫污染 .btn base（specificity 同级源序后胜 → 全 .btn 紫）。
+    // 漏检会让 .btn:focus 紫污染 .btn base（specificity 同级源序后胜 → 全 .btn 紫）。
     if c.pseudo_hover || c.pseudo_active || c.pseudo_disabled || c.pseudo_focus {
         return false;
     }
@@ -363,8 +363,8 @@ mod tests {
         assert_eq!(matched.len(), 3); // div, .panel, #main 命中；span 不中
     }
 
-    /// 后代选择器跨多层匹配：`div.a span` 应在 `<div class=a><div><span>` 上命中 span。
-    /// （修复前：matches 只查直接父，div.a 是 span 的祖父 → 静默失败。）
+    /// 后代选择器跨多层匹配：`div.a span` 应在 `<div class=a><div><span>` 上命中 span
+    /// （div.a 是 span 的祖父，后代匹配须沿祖先链回溯，而非只查直接父）。
     #[test]
     fn descendant_matches_across_layers() {
         // nodes: 0=div.a (root), 1=div, 2=span

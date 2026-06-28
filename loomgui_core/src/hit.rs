@@ -1,6 +1,6 @@
-//! 命中测试（§10.1）：输入 design 坐标点 → 返回命中 NodeId。
+//! 命中测试：输入 design 坐标点 → 返回命中 NodeId。
 //! 逆等效绘制序遍历（顶层优先），layout_rect AABB + clip 门控 + pointer-events。
-//! v1c.1 不做 transform world_to_local（defer v1d，无动画故无影响）。
+//! 不做 transform world_to_local（无动画故无影响）。
 
 use crate::scene::node::{NodeId, Rect, Scene};
 
@@ -20,7 +20,7 @@ fn effective_draw_order(scene: &Scene, parent: NodeId) -> Vec<NodeId> {
     kids
 }
 
-/// v1d.5 T9：命中合成 scrollbar thumb → (container_id, axis: 0=v 1=h)。None 不命中。
+/// 命中合成 scrollbar thumb → (container_id, axis: 0=v 1=h)。None 不命中。
 /// scrollbar 最上层——遍历所有容器 check v/h thumb rect。
 pub fn hit_scrollbar_grip(scene: &Scene, point: (f32, f32)) -> Option<(NodeId, u8)> {
     for id in 0..scene.nodes.len() {
@@ -39,8 +39,8 @@ pub fn hit_scrollbar_grip(scene: &Scene, point: (f32, f32)) -> Option<(NodeId, u
     None
 }
 
-/// §10.1 命中测试。逆等效绘制序遍历，第一个命中即返回（顶层优先）。
-/// v1d.5 T9：scrollbar thumb 最上层，前置 check。
+/// 命中测试。逆等效绘制序遍历，第一个命中即返回（顶层优先）。
+/// scrollbar thumb 最上层，前置 check。
 pub fn hit_test(scene: &Scene, point: (f32, f32)) -> Option<NodeId> {
     // scrollbar grip 最上层（先于所有 Scene 节点）
     if let Some((container, axis)) = hit_scrollbar_grip(scene, point) {
@@ -76,7 +76,7 @@ fn hit_subtree(scene: &Scene, id: NodeId, point: (f32, f32)) -> Option<NodeId> {
         }
     }
     // 子都不命中 → 自身 fallback：touchable + 点经 world matrix 逆投到本地 box
-    // v1d.3：world_to_local —— 点经 world matrix 逆投到本地，判本地 box (0,0,w,h)
+    // world_to_local：点经 world matrix 逆投到本地，判本地 box (0,0,w,h)
     if node.touchable {
         let wm = scene.world_transforms[id.0];
         let inv = crate::transform::inverse(&wm);
@@ -190,7 +190,7 @@ mod tests {
 
     #[test]
     fn hit_test_disabled_node_still_target() {
-        // §4.4：disabled 仍参与命中（active/click 抑制在状态机层，hit_test 只返回几何命中）
+        // disabled 仍参与命中（active/click 抑制在状态机层，hit_test 只返回几何命中）
         let mut s = overlap_scene();
         compute_world_transforms(&mut s);
         s.nodes[2].disabled = true; // b disabled
@@ -229,7 +229,7 @@ mod tests {
                 dynamic_rules: Default::default(), focused_node: None, world_transforms: Vec::new(), anim: Default::default(), scroll: Default::default(), text_layouts: Vec::new() }
     }
 
-    // ── v1d.5 T9：hit_scrollbar_grip ─────────────────────────────────
+    // ── hit_scrollbar_grip ─────────────────────────────────
 
     fn scroll_scene_with_thumb() -> Scene {
         use crate::style::resolved::{OverflowMode, ResolvedStyle};

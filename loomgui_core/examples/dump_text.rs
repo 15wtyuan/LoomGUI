@@ -1,8 +1,8 @@
-//! 诊断坑 67：dump showcase 所有 Text 节点，比对
+//! 诊断：dump showcase 所有 Text 节点，比对
 //!   ① layout 阶段语义：measure_text(content, None)         —— intrinsic（不换行）
 //!   ② render 阶段实际：measure_text(content, Some(rect.w))  —— 用 taffy 最终宽作 max_width 重测
 //!   ③ 自指模拟：       measure_text(content, Some(text_width①))
-//! flag：② 行数 ≠ ① 行数 → render 二次测量换行（bug 现场）。
+//! flag：② 行数 ≠ ① 行数 → render 二次测量换行（回归现场）。
 //! 用 CJK 字体（showcase 含中文标题），与 Unity 实际字体族接近。
 use loomgui_core::stage::Stage;
 use loomgui_core::scene::node::NodeKind;
@@ -27,7 +27,7 @@ fn main() {
     let font = s.font.as_ref();
     println!("n_nodes={} font=wqy-microhei", scene.nodes.len());
     println!("{:<22} {:>8} {:>9} {:>8} {:>8} {:>8}  content", "id", "rect.w", "none.tw", "none.ln", "before", "after");
-    // before = measure(rect.w).lines（修复前 render 行为）；after = scene.text_layouts.lines（修复后 render 复用）。
+    // before = measure(rect.w).lines（用 rect.w 重测）；after = scene.text_layouts.lines（render 复用 layout 结果）。
     let mut flagged = 0;
     for n in &scene.nodes {
         let content = match &n.kind { NodeKind::Text { content } => content.clone(), _ => continue };

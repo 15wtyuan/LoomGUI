@@ -1,4 +1,4 @@
-//! 打包器库（spec §5）：HTML+CSS+散图 → .pkg.bin + atlas.png。
+//! 打包器库：HTML+CSS+散图 → .pkg.bin + atlas.png。
 //! 复用 core parse/style/scene + asset::write_package；新加 image crate 解码/编码 PNG + shelf 打包。
 
 use loomgui_core::asset::{AtlasInfo, AtlasSection, AtlasSprite};
@@ -25,8 +25,8 @@ struct PlacedSprite {
 
 /// 把 HTML+CSS+res_dir 下散图打成 .pkg.bin + atlas.png。
 /// res_dir = 解析 `<img src>` 的基准目录（CLI 传 html_path.parent()）。
-/// 无图 → 空 atlas（atlas_count=0，pkg.bin 仍 v2，runtime 跳过 atlas 加载）。
-/// 缺图 → Err（build-time fail，§5.5）。
+/// 无图 → 空 atlas（atlas_count=0，pkg.bin 仍可读，runtime 跳过 atlas 加载）。
+/// 缺图 → Err（build-time fail）。
 fn pack_inner(
     html: &str,
     css: &str,
@@ -104,7 +104,7 @@ fn pack_inner(
         .write_to(&mut Cursor::new(&mut png_bytes), image::ImageFormat::Png)
         .map_err(|e| format!("encode atlas png: {e}"))?;
 
-    // 7. AtlasSection + write_package v2。
+    // 7. AtlasSection + write_package。
     let atlas_section = AtlasSection {
         atlases: vec![AtlasInfo {
             filename: atlas_name.into(),
@@ -131,7 +131,7 @@ fn pack_inner(
     })
 }
 
-/// 向后兼容：atlas 名固定 "loom.atlas.png"（现有 sample 行为不变）。
+/// atlas 名固定 "loom.atlas.png"（默认 sample 行为）。
 pub fn pack(html: &str, css: &str, root_size: (f32, f32), res_dir: &Path) -> Result<PackedPackage, String> {
     pack_inner(html, css, root_size, res_dir, "loom.atlas.png")
 }

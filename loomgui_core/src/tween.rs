@@ -1,4 +1,4 @@
-//! v1d.4 GTween-lite：tween 引擎（TweenManager + Ease/TweenProp）。
+//! GTween-lite：tween 引擎（TweenManager + Ease/TweenProp）。
 //! 动 opacity / transform(translate·scale·rotate) / 颜色(bg·text)。
 //! replace-override：动画值覆盖 ResolvedStyle 读取点（None 退回 CSS）。
 
@@ -120,7 +120,6 @@ struct Tween {
     prop: TweenProp,
     start: [f32; 4],
     end: [f32; 4],
-    value_size: u8,
     ease: Ease,
     delay: f32,
     duration: f32,
@@ -142,7 +141,7 @@ impl TweenManager {
     /// 清空所有 tween（load 重建 scene 时调，防残留指向失效 node_id）。
     pub fn clear(&mut self) { self.tweens.clear(); }
 
-    /// 注册一个 tween。start/end 取前 value_size 个分量。越界 node 由 update 跳过。
+    /// 注册一个 tween。越界 node 由 update 跳过。
     pub fn tween(
         &mut self, node: NodeId, prop: TweenProp,
         start: [f32; 4], end: [f32; 4],
@@ -150,7 +149,6 @@ impl TweenManager {
     ) {
         self.tweens.push(Tween {
             node, prop, start, end,
-            value_size: prop_value_size(prop),
             ease, delay, duration,
             elapsed: 0.0, tag, started: false, killed: false,
         });
@@ -185,7 +183,7 @@ impl TweenManager {
             let tt = t.elapsed - t.delay;
             let clamped = if tt >= t.duration { t.duration } else { tt };
             let norm = t.ease.evaluate(clamped, t.duration);
-            apply(anim, t.node, t.prop, t.start, t.end, norm, t.value_size);
+            apply(anim, t.node, t.prop, t.start, t.end, norm);
             if tt >= t.duration {
                 t.killed = true;
                 out.push(EventRecord {
@@ -203,7 +201,7 @@ impl TweenManager {
 }
 
 /// 逐分量 lerp start→end 写入 anim 对应通道（n=已算的 normalized）。
-fn apply(anim: &mut [NodeAnim], node: NodeId, prop: TweenProp, start: [f32; 4], end: [f32; 4], n: f32, _size: u8) {
+fn apply(anim: &mut [NodeAnim], node: NodeId, prop: TweenProp, start: [f32; 4], end: [f32; 4], n: f32) {
     let a = &mut anim[node.0];
     let lerp = |i: usize| start[i] + (end[i] - start[i]) * n;
     match prop {
@@ -278,7 +276,7 @@ mod tests {
         assert!(v < 0.0, "BackIn 初段须 <0，得 {}", v);
     }
 
-    // ===== T4 TweenManager 测 =====
+    // ===== TweenManager 测 =====
 
     use crate::scene::node::{AnimTable, Node, NodeKind, Rect};
     use crate::input::EVT_TWEEN_COMPLETE;

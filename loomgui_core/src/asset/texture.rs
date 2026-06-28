@@ -1,4 +1,4 @@
-//! 纹理注册表（v1b.3 atlas）：src → TexMeta{tex_id, uv_min, uv_max, w, h}。per Stage。
+//! 纹理注册表（atlas）：src → TexMeta{tex_id, uv_min, uv_max, w, h}。per Stage。
 //! atlas 模型：core 在 load_package 时从 AtlasSprite 表建（asset::build_registry），
 //! 同图集 sprite 共享 tex_id。tex_id 0 保留 = 未注册哨兵。
 //! core 只持整数 id + UV region + 维度；GPU 纹理由后端持有。
@@ -10,7 +10,7 @@ pub struct TexMeta {
     pub tex_id: u32,        // atlas root tex_id（同图集 sprite 共享）；0=未注册哨兵
     pub uv_min: [f32; 2],   // sprite 在 atlas 内 UV 左上（核心 y-down 约定，[0,1]）
     pub uv_max: [f32; 2],   // UV 右下
-    pub width: u32,         // sprite 原始像素宽（measure；甲-B = region.w，无 trim）
+    pub width: u32,         // sprite 原始像素宽（measure；= region.w，无 trim）
     pub height: u32,        // sprite 原始像素高
 }
 

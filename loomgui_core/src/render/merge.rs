@@ -1,4 +1,4 @@
-//! Mesh 合并（spec §7）：按 sort_key 扫描，连续同 DrawState 的 program=0 Mesh 节点
+//! Mesh 合并：按 sort_key 扫描，连续同 DrawState 的 program=0 Mesh 节点
 //! 拼成单个 merged Mesh payload → 1 draw call。
 //!
 //! 前置：`batch::reorder_for_batching` 已把同 DrawState 不相交元素排到 sort_key 相邻。
@@ -19,9 +19,9 @@ fn mesh_key(rn: &RenderNode) -> Option<(u32, u32, u32)> {
 }
 
 /// 按 sort_key 扫描，连续同 DrawState 的 Mesh 节点合并成单个 merged Mesh payload。
-/// merged node_id = batch 内最小原始 node_id（锚，spec §8）。
+/// merged node_id = batch 内最小原始 node_id（锚）。
 pub fn merge_meshes(nodes: Vec<RenderNode>) -> Vec<RenderNode> {
-    // 1. 按 sort_key 排序（T1 重排后序）。
+    // 1. 按 sort_key 排序（重排后序）。
     let mut order: Vec<usize> = (0..nodes.len()).collect();
     order.sort_by_key(|&i| nodes[i].sort_key);
 

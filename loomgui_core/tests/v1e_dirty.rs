@@ -1,4 +1,4 @@
-//! v1e dirty 跟踪端到端：Stage 跨 tick 保持 hash 基线，静态帧产 Unchanged。
+//! dirty 跟踪端到端：Stage 跨 tick 保持 hash 基线，静态帧产 Unchanged。
 
 use loomgui_core::stage::Stage;
 

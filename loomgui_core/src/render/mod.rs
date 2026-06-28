@@ -1,4 +1,4 @@
-//! Render 层入口：遍历 solve 后的 Scene → `Vec<RenderNode>`（§8.7）。
+//! Render 层入口：遍历 solve 后的 Scene → `Vec<RenderNode>`。
 //!
 //! 顺序与 `scene.nodes` 索引一致（便于 node_id 对齐），payload 按 kind 决定：
 //! - Container/Button → Mesh quad（背景色；无背景色时透明）
@@ -8,7 +8,7 @@
 //! 最后调 `batch::assign_sort_keys` 填 sort_key + mask_context。
 
 pub mod batch;
-pub mod dirty;   // v1e：dirty hash（逐节点 → u64，跨帧比决定 Unchanged emit）
+pub mod dirty;   // dirty hash（逐节点 → u64，跨帧比决定 Unchanged emit）
 pub mod merge;
 pub mod mesh;
 pub mod node;
@@ -23,7 +23,7 @@ use taffy::style::LengthPercentage;
 /// clip 表条目：context_id（mask_context>0 的层级）→ 该层级的交集绝对 design rect。
 ///
 /// 由 `batch::assign_sort_keys` 在 DFS 时产；`context_id` 与 RenderNode 的
-/// `mask_context.0` 对齐（被该 clip 约束的节点引用同一 id）。§4.4 rect mask / §4.1 clip 表。
+/// `mask_context.0` 对齐（被该 clip 约束的节点引用同一 id）。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ClipEntry {
     pub context_id: u32,
@@ -40,7 +40,7 @@ pub struct FrameData {
     pub clips: Vec<ClipEntry>,
 }
 
-/// v1d.5 T9：构造合成 scrollbar thumb RenderNode。
+/// 构造合成 scrollbar thumb RenderNode。
 /// node_id=sentinel (container|flag)，world_matrix=IDENTITY (design 绝对坐标)，
 /// mask_context=0 (不裁剪)，半透明灰 quad。
 fn thumb_render_node(node_id: u32, rect: Rect, sort_key: u32) -> RenderNode {
@@ -72,8 +72,8 @@ fn thumb_render_node(node_id: u32, rect: Rect, sort_key: u32) -> RenderNode {
 ///
 /// 顺序与 `scene.nodes` 同序（node_id == scene 索引），便于 batch DFS 对齐。
 /// Text 节点调 `measure_text` 产 TextLayout；Container/Image 产 Mesh quad。
-/// `font` 仅 Text 节点用（v0 单字体）。clip 表由 `batch::assign_sort_keys` 算
-/// 祖先 clip 链交集后产出（§4.4）。
+/// `font` 仅 Text 节点用（单字体）。clip 表由 `batch::assign_sort_keys` 算
+/// 祖先 clip 链交集后产出。
 pub fn build_render_nodes(
     scene: &Scene,
     font: &Font,
@@ -97,7 +97,7 @@ pub fn build_render_nodes(
             payload: NodePayload::Unchanged,
         })
         .collect();
-    // v1e：本帧每节点的新 hash（emit 后算）。
+    // 本帧每节点的新 hash（emit 后算）。
     let mut new_hashes: Vec<u64> = vec![0; n_nodes];
     let baselined = prev_hashes.len() == n_nodes;
 
@@ -112,11 +112,10 @@ pub fn build_render_nodes(
         rn.world_matrix = wm;
         rn.visible = true;
         let rect = if crate::transform::is_pure_translation(&wm) {
-            // v1d.5 scroll：world.tx 含 scroll offset（world = T(layout−scroll)）。
+            // scroll：world.tx 含 scroll offset（world = T(layout−scroll)）。
             // rect 用 world.tx 位置 → quad 产 world 位置 vert → blob re-base 减 world.tx → 正好 top-local
             // → MirrorPool GO at world.tx → 渲染 = world.tx = layout−scroll（scroll 跟随）。
-            // 修复前 rect=layout（绝对）→ vert=layout → re-base 减 world.tx(含 scroll) → scroll 抵消
-            // → 控件不动（仅 Text 动，Text 不走 re-base）。无 scroll 时 world.tx=layout → 零回归。
+            // 无 scroll 时 world.tx=layout → 零回归。
             crate::scene::node::Rect { x: wm[4], y: wm[5], w: n.layout_rect.w, h: n.layout_rect.h }
         } else {
             crate::scene::node::Rect { x: 0.0, y: 0.0, w: n.layout_rect.w, h: n.layout_rect.h }
@@ -144,11 +143,9 @@ pub fn build_render_nodes(
             }
             NodeKind::Text { content } => {
                 let s = &n.style;
-                // 坑 67：复用 layout 阶段 TextLayout（taffy 选定 max_width 测），不重测。
-                // render 原用 rect.w（stretch 后 available 整数宽）重测，短文本 intrinsic
-                // 亚像素超 available（如 152.052 > 152）→ 误判换行 → 末字"换行"到无高度的第 2 行。
-                // 复用 layout 结果（短文本 None=不换行，长文本 available=换行）消除不一致。
-                // fallback（text_layouts 空，如 test 未走 solve）：用 rect.w 测，保向后兼容。
+                // 复用 layout 阶段 TextLayout（taffy 选定 max_width 测），不重测：
+                // 用 rect.w（stretch 后整数宽）重测，短文本 intrinsic 亚像素超 available
+                // 会误判换行。fallback（text_layouts 空，如 test 未走 solve）：用 rect.w 测。
                 let mut layout = scene
                     .text_layouts
                     .get(n.id.0)
@@ -171,8 +168,7 @@ pub fn build_render_nodes(
                 };
             }
         }
-        // v1e：算本帧 hash，与上帧比。相等（且有基线）→ payload 改回 Unchanged。
-        // ponytail: hash 碰撞最坏 1 帧延迟；换全量 hash 若 profiling 显示遗漏。
+        // 算本帧 hash，与上帧比。相等（且有基线）→ payload 改回 Unchanged。
         let h = crate::render::dirty::node_hash(rn);
         new_hashes[n.id.0] = h;
         if baselined && prev_hashes[n.id.0] == h {
@@ -184,7 +180,7 @@ pub fn build_render_nodes(
     let max_sort = nodes.iter().map(|n| n.sort_key).max().unwrap_or(0);
     batch::reorder_for_batching(scene, &mut nodes);
     let mut nodes = merge::merge_meshes(nodes);
-    // v1d.5 T9：合成 scrollbar thumb（merge 后追加——sentinel id = container|V/H_THUMB_FLAG 高位，
+    // 合成 scrollbar thumb（merge 后追加——sentinel id = container|V/H_THUMB_FLAG 高位，
     // batch.rs reorder 用 node 索引 scene.nodes，sentinel 越界；故不参与 batch，独立 quad 末尾追加）。
     for id in 0..scene.nodes.len() {
         let nid = NodeId(id);
@@ -211,9 +207,9 @@ pub fn build_render_nodes(
 ///
 /// - `Length(v)` → v。
 /// - `Percent(_)` → 0.0。**已知缺口**（记 ledger）：渲染阶段无父 content-box 宽度上下文，
-///   无法解析百分比的 padding/border。v0 `style::mapping::parse_four` 对 padding/border
+///   无法解析百分比的 padding/border。`style::mapping::parse_four` 对 padding/border
 ///   只产 `Length`（裸数字/px），故实际不会命中 Percent 分支；若未来 CSS 允许百分比
-///   padding/border，需在 layout 阶段把解析结果写回 ResolvedStyle（v1b 补）。
+///   padding/border，需在 layout 阶段把解析结果写回 ResolvedStyle。
 fn resolve_lp(lp: LengthPercentage) -> f32 {
     match lp {
         LengthPercentage::Length(v) => v,
@@ -431,7 +427,7 @@ mod tests {
         }
     }
 
-    /// §4.3：pen 必须 GO-local——measure_text 产 content-box 相对坐标，
+    /// pen 必须 GO-local——measure_text 产 content-box 相对坐标，
     /// build_render_nodes 烤 (border_left+padding_left, border_top+padding_top) 偏移。
     /// 设 padding=4px、border=2px → content 偏移 (6, 6)，每 glyph 的 (x,y) 应 +6。
     #[test]
@@ -490,7 +486,7 @@ mod tests {
                 // 首 glyph x 原 = 0（Left align），+6 = 6.0；次 glyph x 应 > 6（advance）。
                 assert_eq!(g[0].x, 6.0, "首 glyph pen_x = align 偏移0 + content 偏移6");
                 assert!(g[1].x > 6.0, "次 glyph pen_x > 6（含 advance + 偏移）");
-                // codepoint 也顺带验（T3 Step 1）。
+                // codepoint 也顺带验。
                 assert_eq!(g[0].codepoint, b'A' as u32);
                 assert_eq!(g[1].codepoint, b'B' as u32);
             }
@@ -500,9 +496,8 @@ mod tests {
 
     #[test]
     fn build_assigns_monotonic_keys() {
-        // v1b.4 后：reorder+merge 接入。3 个同 DrawState Container 会合并成 1 个节点，
-        // 故原「root > [a, b]」结构不再保 3 节点。改用嵌套 clip 链（root > mid > leaf，
-        // 每层 clip_rect 开新 mask_context）→ 3 个不同 DrawState → 不合并 → 保 3 节点。
+        // 用嵌套 clip 链（root > mid > leaf，每层 clip_rect 开新 mask_context）
+        // → 3 个不同 DrawState → 不合并 → 保 3 节点。
         // 验 sort_key 单调（batch 已测，这里走端到端确认 build 接通 assign_sort_keys）。
         let mut scene = Scene {
             roots: vec![NodeId(0)],
@@ -533,9 +528,8 @@ mod tests {
         assert!(rns[1].sort_key < rns[2].sort_key);
     }
 
-    /// §8.5/§8.8 v1b.4：端到端——build_render_nodes 已接 reorder + merge。
-    /// root(Container, tex_id=0) > [img A, img B]（同 tex_id=1、同 mask_context、
-    /// AABB 不相交）。reorder 让两 Image 相邻，merge 合两 Image 成 1 个 8-vert
+    /// 端到端 merge：root(Container, tex_id=0) > [img A, img B]（同 tex_id=1、
+    /// 同 mask_context、AABB 不相交）。reorder 让两 Image 相邻，merge 合两 Image 成 1 个 8-vert
     /// merged mesh；root 是 Container(tex_id=0) 不同 DrawState → 不合。
     /// 结果：FrameData 含恰好 1 个 8-vert Mesh payload（两 Image 合并）。
     #[test]
@@ -591,7 +585,7 @@ mod tests {
 
     #[test]
     fn image_uv_flips_v_for_design_y_down() {
-        // §1.2：design y-down + LoomStage scale (sf,-sf,sf) 把 design 顶映到屏幕上；
+        // design y-down + LoomStage scale (sf,-sf,sf) 把 design 顶映到屏幕上；
         // mesh::quad 固定 TL→(umin,vmin)（texture 底）→ Unity 上下颠倒。须 swap v：TL→(umin,vmax)。
         let mut scene = Scene {
             roots: vec![NodeId(0)], nodes: vec![],
@@ -623,7 +617,7 @@ mod tests {
         }
     }
 
-    /// v1d.4：build_render_nodes 读 anim.opacity/bg_color override（replace-override）。
+    /// build_render_nodes 读 anim.opacity/bg_color override（replace-override）。
     /// CSS opacity=1.0、bg=红；anim opacity=0.25、bg=蓝 → alpha=0.25、Mesh colors=蓝。
     #[test]
     fn build_reads_anim_opacity_and_bg_override() {
@@ -656,7 +650,7 @@ mod tests {
         }
     }
 
-    // ── v1d.5 T9：合成 scrollbar thumb ─────────────────────────
+    // ── 合成 scrollbar thumb ─────────────────────────
 
     #[test]
     fn effective_scroll_container_emits_thumb_node() {
@@ -730,7 +724,7 @@ mod tests {
         assert!(!has_thumb, "non-effective 容器无 thumb");
     }
 
-    // ── v1e-T2：dirty Unchanged emit ─────────────────────────
+    // ── dirty Unchanged emit ─────────────────────────
 
     /// 首帧（prev_hashes 空）→ 全 emit Mesh，无 Unchanged。
     #[test]
@@ -808,10 +802,9 @@ mod tests {
             "prev_hashes 长度不符 → 全 emit（防错位）");
     }
 
-    /// 坑 67 方案 A：render 复用 layout 阶段 TextLayout，不重测。
+    /// render 复用 layout 阶段 TextLayout，不重测。
     /// 验证：solve 填 scene.text_layouts，build_render_nodes 的 Text payload 行数
     /// == text_layouts 行数（render 直接读，不再 measure_text）。
-    /// showcase 72 个短标题"末字换行"修复由 dump_text 端到端验收（before=2 after=1）。
     #[test]
     fn render_text_payload_matches_layout_text_layout() {
         let font = match test_font() {
@@ -842,8 +835,7 @@ mod tests {
         assert_eq!(render_lines, layout_lines, "render 应复用 layout TextLayout（行数一致，不重测）");
     }
 
-    /// 方案 A 回归：长文本（intrinsic 远超 container）仍正确换行。
-    /// 防修复"复用 layout TextLayout"后长文本变成单行溢出。
+    /// 长文本回归（intrinsic 远超 container）仍正确换行。
     #[test]
     fn render_long_text_still_wraps_with_layout_reuse() {
         let font = match test_font() {

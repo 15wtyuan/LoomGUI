@@ -2,30 +2,23 @@
 //!
 //! 消费 `Scene`（Node 树 + `ResolvedStyle`），建 taffy 树，注册叶子节点的
 //! 测量上下文（Text/Image），solve 后把 taffy 的 `Layout.location`/`size`
-//! 回写进 `Node.layout_rect`/`clip_rect`。对应主文档 §7。
+//! 回写进 `Node.layout_rect`/`clip_rect`。
 //!
-//! # taffy 0.5.2 API 适配（与 task-6-brief 的差异）
+//! # taffy 0.5.2 API 边界
 //!
-//! brief 草稿用 `MeasureFunc::Boxed`（move 闭包进叶子），但 taffy 0.5.2 没有
-//! `MeasureFunc` 枚举。实际 API 是 trait 对象模式：
+//! taffy 0.5.2 用 trait 对象模式（无 `MeasureFunc` 枚举）：
 //! - `TaffyTree<NodeContext>`：节点上下文是泛型，叶子节点用
 //!   `new_leaf_with_context(style, ctx)` 存一个 owned `NodeContext`。
 //! - 单个 `compute_layout_with_measure(root, avail, FnMut(...))` 闭包负责按
 //!   `Option<&mut NodeContext>` 分派到 Text/Image 测量。
 //!
-//! **carry 项 1（Arc<Font>）因此自然消解**：brief 假设每个叶子闭包独立捕获
-//! `font`，故要 'static → Arc。但 0.5.2 的测量是单个 `FnMut`（非 'static），
-//! 生命周期与 `compute_layout_with_measure` 调用同界——闭包内借 `&font` 完全
-//! 合法。每个叶子的 *文本参数*（content/font_size 等）已 owned 进
-//! `NodeContext::Text`，font 不进 context 而走闭包借用。`solve` 签名保持收
-//! `font: &Font`（与 brief 一致，不破下游 stage 契约）。
+//! 测量是单个 `FnMut`（非 'static），生命周期与 `compute_layout_with_measure`
+//! 调用同界——闭包内借 `&font` 合法。每个叶子的文本参数（content/font_size 等）已
+//! owned 进 `NodeContext::Text`，font 不进 context 而走闭包借用。`solve` 签名
+//! 收 `font: &Font`（不破下游 stage 契约）。
 //!
-//! **carry 项 2（measure_text 8 参数）**：原样保留，从 `NodeContext::Text`
-//! 取参数 + 闭包借用 font 传入。
-//!
-//! **order 字段**：taffy 0.5.2 的 `Style` 无 `order`（确认见 `style/mod.rs`）。
-//! v0 不做 flex order 排序，留 ledger（render 层按 DOM 顺序 / layout 输出的
-//! `Layout.order` 渲染）。
+//! taffy 0.5.2 的 `Style` 无 `order`，不做 flex order 排序（render 层按 DOM 顺序 /
+//! layout 输出的 `Layout.order` 渲染）。
 
 use crate::asset::texture::TextureRegistry;
 use crate::scene::node::{NodeId, NodeKind, Rect, Scene};
@@ -37,7 +30,7 @@ use taffy::prelude::*;
 /// LoomGUI OverflowMode → taffy Overflow（Auto→Scroll，taffy 0.5 无 Auto）。
 /// Hidden/Scroll 让 taffy flex automatic min-size=0（CSS flex §4.5，taffy style/mod.rs:124）——
 /// 容器不被 content min-content 撑开，content 可溢出 scroll。不设则 taffy 默认 Visible →
-/// 容器被 content 撑开（viewport=content）→ overlap=0 → scroll 失效（v1d.5 家里机坑）。
+/// 容器被 content 撑开（viewport=content）→ overlap=0 → scroll 失效。
 fn map_overflow(m: OverflowMode) -> taffy::style::Overflow {
     match m {
         OverflowMode::Visible => taffy::style::Overflow::Visible,
@@ -60,7 +53,7 @@ enum MeasureContext {
         nowrap: bool,
     },
     /// Image 叶子：intrinsic 像素 + css width/height 维度。闭包消费 taffy 的 known 解析
-    /// Percent/fit（坑 65 + 坑 68：Percent width taffy 传 known.width=Some(解析宽)，闭包据此等比 height）。
+    /// Percent/fit（Percent width taffy 传 known.width=Some(解析宽)，闭包据此等比 height）。
     Image {
         iw: f32,
         ih: f32,
@@ -75,7 +68,7 @@ enum MeasureContext {
 /// `compute_layout_with_measure` 结束，闭包内解引用喂给 `measure_text`。
 pub fn solve(scene: &mut Scene, font: &Font, root_size: (f32, f32), textures: &TextureRegistry) {
     // 防御：空 roots（空 scene）无几何可 solve——直接返回，避免 roots[0] 越界 panic。
-    // v1c.1：Stage 可能在 scene 未装内容时 tick（如测/边界），不应 panic。
+    // Stage 可能在 scene 未装内容时 tick（如测/边界），不应 panic。
     if scene.roots.is_empty() {
         return;
     }
@@ -95,7 +88,7 @@ pub fn solve(scene: &mut Scene, font: &Font, root_size: (f32, f32), textures: &T
         let mut style = node.style.taffy_style.clone();
         // overflow != visible → 设 taffy overflow，让 flex automatic min-size=0（CSS flex §4.5）。
         // 不设则 taffy 默认 Visible → min-size=min-content → 容器被 content 撑开（viewport=content）
-        // → overlap=0 → scroll 失效（v1d.5 家里机坑：main-scroll 被撑到 7311=content）。
+        // → overlap=0 → scroll 失效。
         style.overflow = taffy::geometry::Point {
             x: map_overflow(node.style.overflow_x),
             y: map_overflow(node.style.overflow_y),
@@ -122,8 +115,8 @@ pub fn solve(scene: &mut Scene, font: &Font, root_size: (f32, f32), textures: &T
             }
             NodeKind::Image { src } => {
                 // 存 intrinsic + css 维度；等比与 Percent 解析留到 measure 闭包（消费 taffy known）。
-                // v1b.2 + 坑 68：Percent width 在 measure 期 taffy 传 known.width=Some(解析宽)，
-                // 闭包据此算等比 height（之前 build 时算 w/h，Percent 走不通 → 50% 压扁）。
+                // Percent width 在 measure 期 taffy 传 known.width=Some(解析宽)，
+                // 闭包据此算等比 height。
                 let s = &node.style.taffy_style;
                 let (iw, ih) = textures.get(src).map(|m| (m.width as f32, m.height as f32)).unwrap_or((64.0, 64.0));
                 Some(MeasureContext::Image {
@@ -156,7 +149,7 @@ pub fn solve(scene: &mut Scene, font: &Font, root_size: (f32, f32), textures: &T
 
     let root_tid = build(scene, &mut taffy_tree, &mut taffy_ids, scene.roots[0], textures, false);
 
-    // 坑 67：taffy NodeId → scene NodeId 反查，供 measure 闭包按 taffy nid 把 TextLayout
+    // taffy NodeId → scene NodeId 反查，供 measure 闭包按 taffy nid 把 TextLayout
     // 存进 scene 索引的 text_layouts。render 复用，消除 layout/render 双测量不一致。
     let mut taffy_to_scene: HashMap<taffy::NodeId, NodeId> = HashMap::new();
     for (scene_idx, tid) in taffy_ids.iter().enumerate() {
@@ -199,7 +192,7 @@ pub fn solve(scene: &mut Scene, font: &Font, root_size: (f32, f32), textures: &T
                     Some(MeasureContext::Image { iw, ih, w_dim, h_dim }) => {
                         let (iw, ih, wd, hd) = (*iw, *ih, *w_dim, *h_dim);
                         // width：known.width（Percent/fit 解析后，taffy 传）> css Length > 等比 height > intrinsic。
-                        //   Percent width：taffy 第二次传 known.width=Some(解析宽)（坑 68 实测）。
+                        //   Percent width：taffy 第二次传 known.width=Some(解析宽)。
                         let w = match (known.width, wd, hd) {
                             (Some(v), _, _) => v,
                             (None, Dimension::Length(v), _) => v,
@@ -225,10 +218,10 @@ pub fn solve(scene: &mut Scene, font: &Font, root_size: (f32, f32), textures: &T
                             known.width,
                             font,
                         );
-                        // 坑 67：存 TextLayout 供 render 复用。Some（available 测量）优先——
+                        // 存 TextLayout 供 render 复用。Some（available 测量）优先——
                         // 短文本 taffy 只传 None（max-content ≤ available，不换行），长文本传
                         // Some(available)（换行）。一旦存了 Some，后续 None 不覆盖（taffy 末尾
-                        // 可能补测 None，见 dump_text 诊断：长文本 [None,None,Some,Some,None]）。
+                        // 可能补测 None）。
                         if let Some(sid) = taffy_to_scene.get(&nid) {
                             let slot = &mut text_layouts[sid.0];
                             if slot.is_none() || known.width.is_some() {
@@ -267,7 +260,7 @@ pub fn solve(scene: &mut Scene, font: &Font, root_size: (f32, f32), textures: &T
         }
     }
     write_back(scene, &taffy_tree, &taffy_ids, scene.roots[0], (0.0, 0.0));
-    // 坑 67：layout 阶段 TextLayout 缓存交还 scene，供 render 复用（不重测）。
+    // layout 阶段 TextLayout 缓存交还 scene，供 render 复用（不重测）。
     scene.text_layouts = text_layouts;
 }
 
@@ -287,10 +280,8 @@ mod tests {
 
     #[test]
     fn column_stack_sizes_children() {
-        // brief 原样保留 inline-style 版本作语义对照（v0 无 inline style → 用 class）。
-        let _html = r#"<div class="root"><div style="height:50px"></div><div style="height:30px"></div></div>"#;
         let html2 = r#"<div class="root"><div class="a"></div><div class="b"></div></div>"#;
-        // §4.1：div 默认 flex-direction: column（ResolvedStyle::default 落地）。
+        // div 默认 flex-direction: column（ResolvedStyle::default 落地）。
         // CSS 不写 flex-direction，子项也应垂直堆叠。
         let css = r#".root { width: 200px; height: 200px; } .a { height: 50px; } .b { height: 30px; }"#;
         let tree = parse_html(html2).unwrap();
@@ -307,7 +298,7 @@ mod tests {
         assert!((b.layout_rect.y - 50.0).abs() < 0.1); // 垂直堆叠
     }
 
-    /// §4.1 回归：未显式写 flex-direction 的 div 默认垂直堆叠（column）。
+    /// 回归：未显式写 flex-direction 的 div 默认垂直堆叠（column）。
     /// 防止有人把 ResolvedStyle::default 的 flex_direction 改回 Row。
     #[test]
     fn default_div_is_column() {
@@ -335,7 +326,7 @@ mod tests {
         assert!(b.layout_rect.x.abs() < 0.1);
     }
 
-    /// v1b.2：Image measure 三档优先级（CSS Length > 真实像素 > 64×64 兜底）。
+    /// Image measure 三档优先级（CSS Length > 真实像素 > 64×64 兜底）。
     /// 用 Scene::build 手搓 Image scene，不走 parse_html。
     ///
     /// **布局陷阱**：`solve` 会用 `root_size` 覆盖根节点的 taffy size（见 prod
@@ -401,7 +392,7 @@ mod tests {
 
     #[test]
     fn image_measure_scales_height_to_width_aspect() {
-        // §1.2：img style="width:80px" intrinsic 40×20 → height 等比 = 40（80×20/40），非 intrinsic 20。
+        // img style="width:80px" intrinsic 40×20 → height 等比 = 40（80×20/40），非 intrinsic 20。
         let mut img_style = ResolvedStyle::default();
         img_style.taffy_style.size.width = Dimension::Length(80.0);
         img_style.taffy_style.align_self = Some(AlignSelf::FlexStart);

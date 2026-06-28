@@ -1,22 +1,20 @@
-//! 包格式（spec §5）：.pkg.bin v7。
-//! Rust-internal（packager 写、runtime 读，C# 不解析）。
+//! 包格式（.pkg.bin，当前 version=7）：Rust-internal（packager 写、runtime 读，C# 不解析）。
 //!
 //! 扁平布局：Header(28B) + StringTable + NodeBlock（DFS 先序，含 classes/id/flags/tabindex）+
-//! AtlasSection + DynamicRuleSection（v3 新增，bincode 整个 DynamicRuleTable）。
+//! AtlasSection + DynamicRuleSection（bincode 整个 DynamicRuleTable）。
 //! style 字段 = bincode(ResolvedStyle)。字符串表放 text content + image src +
 //! atlas filename + sprite src + classes + id_attr（统一 intern 去重）。
-//! v4：NodeBlock 末 +1 byte flags（bit0=draggable）。v5：flags 后 +tabindex:i32（None→i32::MIN）。
-//! v6：ResolvedStyle +transform 字段（bincode，视觉层不进 taffy）。
-//! v7：ResolvedStyle overflow_hidden:bool → overflow_x/overflow_y:OverflowMode（bincode 字段变）。
+//! NodeBlock 末含 flags（bit0=draggable）+ tabindex:i32（None→i32::MIN）。
+//! ResolvedStyle 含 transform 字段（bincode，视觉层不进 taffy）、overflow_x/overflow_y。
 
 use crate::scene::{NodeKind, NodeId, Scene};
 use crate::style::dynamic::DynamicRuleTable;
 use crate::style::resolved::ResolvedStyle;
 
-pub mod texture; // v1b.2：纹理注册表（src→TexMeta）
+pub mod texture; // 纹理注册表（src→TexMeta）
 
 pub const PKG_MAGIC: u32 = 0x474B504C; // 磁盘字节(LE) "LPKG"（不与 frame blob "LOOM" 撞）
-pub const PKG_FORMAT_VERSION: u32 = 7; // v7：ResolvedStyle overflow_hidden→overflow_x/y（bincode，v6=transform, v5=tabindex, v4=draggable, v3=DynamicRuleSection, v2=AtlasSection）
+pub const PKG_FORMAT_VERSION: u32 = 7; // ResolvedStyle overflow_x/y + transform 字段（bincode）
 const MIN_VERSION: u32 = 7;
 const MAX_VERSION: u32 = 7;
 const NULL_IDX: u16 = 0xFFFF;
@@ -26,13 +24,13 @@ const KIND_BUTTON: u8 = 1;
 const KIND_IMAGE: u8 = 2;
 const KIND_TEXT: u8 = 3;
 
-/// atlas 元数据（.pkg.bin v2 AtlasSection 的内存形）。
-/// 甲-B 单图集：atlas.len()≤1，所有 sprite 属 atlas[0]（build_registry 硬编码 tex_id=1）。
-/// 多图集（v1b.4+）需 sprite 带 atlas_idx 才能分流——当前模型不支持。
+/// atlas 元数据（.pkg.bin AtlasSection 的内存形）。
+/// 单图集：atlas.len()≤1，所有 sprite 属 atlas[0]（build_registry 硬编码 tex_id=1）。
+/// 多图集需 sprite 带 atlas_idx 才能分流——当前模型不支持。
 #[derive(Debug, Clone, PartialEq)]
 pub struct AtlasSection {
-    pub atlases: Vec<AtlasInfo>,   // 甲-B len=1
-    pub sprites: Vec<AtlasSprite>, // 全部 sprite（甲-B 都属 atlas 0）
+    pub atlases: Vec<AtlasInfo>,   // len=1
+    pub sprites: Vec<AtlasSprite>, // 全部 sprite（都属 atlas 0）
 }
 impl Default for AtlasSection {
     fn default() -> Self {
@@ -59,9 +57,9 @@ pub struct AtlasSprite {
     pub h: u32,
 }
 
-/// 从 AtlasSection 建 TextureView registry。甲-B 单图集：atlas[0] 得 tex_id=1，
+/// 从 AtlasSection 建 TextureView registry。单图集：atlas[0] 得 tex_id=1，
 /// 所有 sprite 属它。空 atlas（inline / 空 package）→ 空 registry。
-/// （多图集 v1b.4+ 需 sprite 带 atlas_idx 才能分流。）
+/// （多图集需 sprite 带 atlas_idx 才能分流。）
 pub fn build_registry(section: &AtlasSection) -> crate::asset::texture::TextureRegistry {
     let mut reg = crate::asset::texture::TextureRegistry::default();
     if section.atlases.is_empty() {
@@ -125,7 +123,7 @@ impl From<bincode::Error> for PkgError {
     }
 }
 
-/// §5.5：从 StyleSheet 抽含 :hover/:active/:disabled/:focus 的规则 → DynamicRuleTable。
+/// 从 StyleSheet 抽含 :hover/:active/:disabled/:focus 的规则 → DynamicRuleTable。
 /// 纯静态规则不进（已在 base_style 烤好）。判定：parse_selector 后任一 compound 含伪类标志。
 ///
 /// **parse-gated：**消费 parse 后的 StyleSheet（CSS 文本产物），runtime 无此输入。
@@ -153,7 +151,7 @@ pub fn extract_dynamic_rules(sheet: &crate::parse::css::StyleSheet) -> DynamicRu
     DynamicRuleTable { rules }
 }
 
-/// 序列化 Scene → .pkg.bin bytes（spec §5；v3 = +NodeBlock classes/id_attr + 末段 DynamicRuleSection）。
+/// 序列化 Scene → .pkg.bin bytes。
 ///
 /// 布局：Header(28B) + StringTable + NodeBlock + AtlasSection + DynamicRuleSection。
 /// StringTable 收 text content + image src + atlas filename + sprite src +
@@ -203,7 +201,7 @@ pub fn write_package(
         sprite_src_idx.push(intern(&s.src, &mut strings, &mut idx_of));
     }
 
-    // 预 intern 每节点 classes + id_attr（v3：NodeBlock 新增段，与 NodeBlock/atlas
+    // 预 intern 每节点 classes + id_attr（NodeBlock 段，与 NodeBlock/atlas
     // 字符串共用同一 stringTable）。classes 每元素 intern；id_attr 若 None → NULL_IDX。
     let mut node_class_idx: Vec<Vec<u16>> = Vec::with_capacity(scene.nodes.len());
     let mut node_id_idx: Vec<u16> = Vec::with_capacity(scene.nodes.len());
@@ -226,7 +224,7 @@ pub fn write_package(
     // Header (28B)
     out.extend_from_slice(&PKG_MAGIC.to_le_bytes());
     out.extend_from_slice(&PKG_FORMAT_VERSION.to_le_bytes());
-    out.extend_from_slice(&0u32.to_le_bytes()); // flags（v1 uncompressed）
+    out.extend_from_slice(&0u32.to_le_bytes()); // flags（uncompressed）
     out.extend_from_slice(&(scene.nodes.len() as u32).to_le_bytes());
     out.extend_from_slice(&(strings.len() as u32).to_le_bytes());
     out.extend_from_slice(&root_size.0.to_le_bytes());
@@ -245,20 +243,20 @@ pub fn write_package(
         out.extend_from_slice(style_blob);
         out.extend_from_slice(&text_idx.to_le_bytes());
         out.extend_from_slice(&src_idx.to_le_bytes());
-        // v3：classes + id_attr（每节点）
+        // classes + id_attr（每节点，StringTable 索引）
         out.extend_from_slice(&(node_class_idx[node_i].len() as u16).to_le_bytes());
         for &cidx in &node_class_idx[node_i] {
             out.extend_from_slice(&cidx.to_le_bytes());
         }
         out.extend_from_slice(&node_id_idx[node_i].to_le_bytes());
-        // v4：flags byte（bit0=draggable）
+        // flags byte（bit0=draggable）
         let flags: u8 = if scene.nodes[node_i].draggable { 0x01 } else { 0x00 };
         out.push(flags);
-        // v5：tabindex i32（None→i32::MIN 哨兵，反序列化还原 None）
+        // tabindex i32（None→i32::MIN 哨兵，反序列化还原 None）
         let tab = scene.nodes[node_i].tabindex.unwrap_or(i32::MIN);
         out.extend_from_slice(&tab.to_le_bytes());
     }
-    // —— AtlasSection（v2 新增，NodeBlock 之后）——
+    // —— AtlasSection（NodeBlock 之后）——
     // atlas_count + 每 atlas{filename_idx,u16; w,u32; h,u32}
     //   + sprite_count + 每 sprite{src_idx,u16; x,y,w,h 各 u32}
     out.extend_from_slice(&(atlas.atlases.len() as u32).to_le_bytes());
@@ -275,7 +273,7 @@ pub fn write_package(
         out.extend_from_slice(&s.w.to_le_bytes());
         out.extend_from_slice(&s.h.to_le_bytes());
     }
-    // —— DynamicRuleSection（v3 新增，AtlasSection 之后）——
+    // —— DynamicRuleSection（AtlasSection 之后）——
     // bincode 整个 DynamicRuleTable（含 ParsedSelector + Declarations，均已 Serialize/Deserialize）。
     let dynamic_blob = bincode::serialize(dynamic).expect("DynamicRuleTable serializable");
     out.extend_from_slice(&(dynamic_blob.len() as u32).to_le_bytes());
@@ -283,8 +281,8 @@ pub fn write_package(
     out
 }
 
-/// 反序列化 .pkg.bin → (Scene, root_size, AtlasSection)（spec §5 + §6 版本协商）。
-/// v3：NodeBlock 含 classes/id_attr；末段 DynamicRuleSection 填 Scene.dynamic_rules。
+/// 反序列化 .pkg.bin → (Scene, root_size, AtlasSection)（含版本协商）。
+/// NodeBlock 含 classes/id_attr；末段 DynamicRuleSection 填 Scene.dynamic_rules。
 /// 返回元组不变（dynamic 填进 Scene，不外露）。
 pub fn read_package(bytes: &[u8]) -> Result<(Scene, (f32, f32), AtlasSection), PkgError> {
     let mut r = Reader::new(bytes);
@@ -312,7 +310,7 @@ pub fn read_package(bytes: &[u8]) -> Result<(Scene, (f32, f32), AtlasSection), P
         let s = r.utf8(len, "str_bytes")?;
         strings.push(s);
     }
-    // NodeBlock → entries（v5：tabindex 来自 flags 后 i32，i32::MIN→None）
+    // NodeBlock → entries（tabindex 来自 flags 后 i32，i32::MIN→None）
     let mut entries: Vec<(Option<usize>, NodeKind, ResolvedStyle, Vec<String>, Option<String>, bool, Option<i32>)> = Vec::with_capacity(node_count);
     for _ in 0..node_count {
         let pidx = r.i32("parent_idx")?;
@@ -321,7 +319,7 @@ pub fn read_package(bytes: &[u8]) -> Result<(Scene, (f32, f32), AtlasSection), P
         let style: ResolvedStyle = bincode::deserialize(r.take(style_len, "style_blob")?)?;
         let text_idx = r.u16("text_idx")?;
         let src_idx = r.u16("src_idx")?;
-        // v3：classes + id_attr
+        // classes + id_attr
         let class_count = r.u16("class_count")? as usize;
         let mut classes: Vec<String> = Vec::with_capacity(class_count);
         for _ in 0..class_count {
@@ -334,10 +332,10 @@ pub fn read_package(bytes: &[u8]) -> Result<(Scene, (f32, f32), AtlasSection), P
         } else {
             Some(string_at(&strings, id_idx)?)
         };
-        // v4：flags byte（bit0=draggable）
+        // flags byte（bit0=draggable）
         let flags = r.u8("flags")?;
         let draggable = (flags & 0x01) != 0;
-        // v5：tabindex i32（i32::MIN 哨兵 → None）
+        // tabindex i32（i32::MIN 哨兵 → None）
         let tab_raw = r.i32("tabindex")?;
         let tabindex = if tab_raw == i32::MIN { None } else { Some(tab_raw) };
         let parent = if pidx < 0 { None } else { Some(pidx as usize) };
@@ -354,7 +352,7 @@ pub fn read_package(bytes: &[u8]) -> Result<(Scene, (f32, f32), AtlasSection), P
         };
         entries.push((parent, kind, style, classes, id_attr, draggable, tabindex));
     }
-    // —— AtlasSection（v2）——
+    // —— AtlasSection ——
     let atlas_count = r.u32("atlas_count")? as usize;
     let mut atlases: Vec<AtlasInfo> = Vec::with_capacity(atlas_count);
     for _ in 0..atlas_count {
@@ -383,7 +381,7 @@ pub fn read_package(bytes: &[u8]) -> Result<(Scene, (f32, f32), AtlasSection), P
             h,
         });
     }
-    // —— DynamicRuleSection（v3）——
+    // —— DynamicRuleSection ——
     let dynamic_len = r.u32("dynamic_len")? as usize;
     let dynamic: DynamicRuleTable = bincode::deserialize(r.take(dynamic_len, "dynamic_blob")?)?;
     let mut scene = Scene::build(&entries);
@@ -569,7 +567,7 @@ mod tests {
 
     #[test]
     fn build_registry_maps_sprites_to_atlas_zero_tex_id_one() {
-        // 甲-B 单图集契约：atlas[0] → tex_id=1，sprite UV = (x,y,w,h)/atlas_size。
+        // 单图集契约：atlas[0] → tex_id=1，sprite UV = (x,y,w,h)/atlas_size。
         // build_registry 是 load_package 的核心步骤，独立测锁住其映射。
         let section = AtlasSection {
             atlases: vec![AtlasInfo { filename: "a.png".into(), width: 512, height: 256 }],
@@ -640,7 +638,7 @@ mod tests {
 
     #[test]
     fn pkg_v3_rejects_v2() {
-        // 手搓 v2 包（version=2）——应被 MIN=4 拒 TooOld
+        // 手搓 v2 包（version=2）——应被拒 TooOld
         let mut pkg = Vec::new();
         pkg.extend_from_slice(&PKG_MAGIC.to_le_bytes());
         pkg.extend_from_slice(&2u32.to_le_bytes()); // version=2
@@ -762,7 +760,7 @@ mod tests {
 
     #[test]
     fn pkg_v4_rejects_v3() {
-        // 手搓 v3 包（version=3）——v5 MIN=5 仍拒 TooOld
+        // 手搓 v3 包（version=3）——应被拒 TooOld
         let mut pkg = Vec::new();
         pkg.extend_from_slice(&PKG_MAGIC.to_le_bytes());
         pkg.extend_from_slice(&3u32.to_le_bytes()); // version=3
@@ -773,7 +771,7 @@ mod tests {
         pkg.extend_from_slice(&50.0f32.to_le_bytes());
         match read_package(&pkg) {
             Err(PkgError::TooOld(3)) => (), // 预期
-            other => panic!("v3 应被 v5 拒，got {:?}", other),
+            other => panic!("v3 应被拒，got {:?}", other),
         }
     }
 
@@ -797,7 +795,7 @@ mod tests {
 
     #[test]
     fn pkg_v6_rejects_v5() {
-        // 手搓 v5 包（version=5）——v6 MIN=6 应拒 TooOld
+        // 手搓 v5 包（version=5）——应被拒 TooOld
         let mut pkg = Vec::new();
         pkg.extend_from_slice(&PKG_MAGIC.to_le_bytes());
         pkg.extend_from_slice(&5u32.to_le_bytes()); // version=5
@@ -808,7 +806,7 @@ mod tests {
         pkg.extend_from_slice(&50.0f32.to_le_bytes());
         match read_package(&pkg) {
             Err(PkgError::TooOld(5)) => (), // 预期
-            other => panic!("v5 应被 v6 拒，got {:?}", other),
+            other => panic!("v5 应被拒，got {:?}", other),
         }
     }
 }

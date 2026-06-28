@@ -1,4 +1,4 @@
-//! 2D 仿射矩阵（v1d.3 transform 核心）。被 LocalTransform / world_transforms / RenderNode / hit 共用。
+//! 2D 仿射矩阵。被 LocalTransform / world_transforms / RenderNode / hit 共用。
 //!
 //! Affine2 = [a, b, c, d, tx, ty]，列主序含义：
 //!   x' = a·x + c·y + tx

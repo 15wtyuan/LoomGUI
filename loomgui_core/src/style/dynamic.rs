@@ -1,13 +1,12 @@
-//! 运行时伪类重匹配的动态规则表（spec §5.5）。
+//! 运行时伪类重匹配的动态规则表。
 //!
-//! `DynamicRuleTable`/`DynamicRule` 在 T3 定义；本模块填实
-//! `match_element_with_state`（完整后代链匹配 + 伪类状态门）+
+//! 本模块填实 `match_element_with_state`（完整后代链匹配 + 伪类状态门）+
 //! `rematch_pseudo_classes`（全量节点重 cascade，写 Node.style + 标 layout dirty）。
 //!
 //! **常驻（不 gate）：**本模块的选择器数据模型（`ParsedSelector`/`Compound`/`Combinator`/
 //! `Specificity`）+ `Declaration`（CSS 声明）+ `compound_matches_node`（运行时 compound 匹配）+
 //! 动态规则匹配全不依赖 parse feature——bincode 序列化进 `.pkg.bin` 的就是这些结构
-//! （spec §5.2/坑 21：runtime 不重新 parse，直接用反序列化结构）。`parse::selector`/`parse::css`
+//! （runtime 不重新 parse，直接用反序列化结构）。`parse::selector`/`parse::css`
 //! 只保留解析器函数（string → 这些结构），仍 `#[cfg(feature="parse")]`，本模块 `pub use` 重导出
 //! 数据类型以维持路径兼容（`loomgui_core::parse::selector::ParsedSelector` 仍可达）。
 
@@ -177,11 +176,11 @@ fn match_chain_with_state(
     }
 }
 
-/// 全量节点重匹配（仅动态规则子集，§4.1）。每节点从 base_style 重起，
+/// 全量节点重匹配（仅动态规则子集）。每节点从 base_style 重起，
 /// 收集命中的动态规则（match_element_with_state），按 specificity 升序排
 /// （高 specificity 后 apply 胜出）→ apply_decl 叠加 → 写 Node.style。
-/// 返回是否有任何节点 layout 字段变（taffy_style + order）。v1c.1 solve
-/// 每帧全量，返回值仅供观测/测试，不驱动 solve。
+/// 返回是否有任何节点 layout 字段变（taffy_style + order）。solve 每帧全量，
+/// 返回值仅供观测/测试，不驱动 solve。
 pub fn rematch_pseudo_classes(scene: &mut Scene) -> bool {
     let mut any_layout_dirty = false;
     // 预提取 specificity 元组（避免每节点重解引用）
@@ -350,7 +349,7 @@ mod tests {
 
     #[test]
     fn descendant_pseudo_rule_matched() {
-        // .parent:hover .child —— hover parent → child style 变（跨节点伪类，方案 A 价值）
+        // .parent:hover .child —— hover parent → child style 变（跨节点伪类联动）
         let mut root = Node::default();
         root.id = NodeId(0);
         root.classes = vec!["parent".to_string()];
@@ -392,7 +391,7 @@ mod tests {
 
     #[test]
     fn no_pseudo_rule_not_in_dynamic_rules() {
-        // 纯静态规则不进 dynamic_rules（打包器分流，§4.3）——rematch 不区分有无伪类，
+        // 纯静态规则不进 dynamic_rules（打包器分流）——rematch 不区分有无伪类，
         // 只看状态门。若纯静态规则混进 dynamic，hovered=true 时仍匹配（无伪类规则恒匹配）。
         // 打包器保证无伪类规则不进 dynamic_rules。此测断言 color 变红。
         let mut s = btn_scene();

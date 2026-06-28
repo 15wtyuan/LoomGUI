@@ -1,4 +1,4 @@
-//! 临时诊断：dump showcase pkg 所有 scroll 容器的 content/viewport/overlap。
+//! 诊断：dump showcase pkg 所有 scroll 容器的 content/viewport/overlap。
 //! 验 main-scroll overlap.y > 0（drag 能滚）还是 = 0（content 被 flex shrink）。
 use loomgui_core::stage::Stage;
 

@@ -2,9 +2,9 @@ use serde::{Deserialize, Serialize};
 use taffy::style::Style as TaffyStyle;
 use taffy::FlexDirection;
 
-/// v1d.5：CSS overflow 轴模式（替旧 `overflow_hidden: bool`）。
-/// `#[repr(u8)]` 保证 FFI/序列化稳定（坑 34），`Default = Visible` 零回归旧 `overflow_hidden=false`。
-/// Scroll/Auto 的物理/手势由 v1d.5 T6/T7 实现；本 enum 仅承载语义值。
+/// CSS overflow 轴模式（替旧 `overflow_hidden: bool`）。
+/// `#[repr(u8)]` 保证 FFI/序列化稳定，`Default = Visible` 零回归旧 `overflow_hidden=false`。
+/// Scroll/Auto 的物理/手势由 scroll 模块实现；本 enum 仅承载语义值。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[repr(u8)]
 pub enum OverflowMode {
@@ -37,7 +37,7 @@ pub struct ResolvedStyle {
     pub border_color: Option<[f32; 4]>,
     pub border_width: f32,
     pub opacity: f32,
-    /// v1d.5：overflow 两轴模式（替 `overflow_hidden: bool`）。Default 双轴 Visible。
+    /// overflow 两轴模式（替 `overflow_hidden: bool`）。Default 双轴 Visible。
     pub overflow_x: OverflowMode,
     pub overflow_y: OverflowMode,
     pub color: [f32; 4],
@@ -49,11 +49,11 @@ pub struct ResolvedStyle {
     pub letter_spacing: f32,
     pub white_space_nowrap: bool,
     /// flex 顺序（CSS `order`）。taffy 0.5 Style 无此字段，存在这里由
-    /// Task 6 layout 在 flex 排序前消费。默认 0 = DOM 顺序。
+    /// layout 在 flex 排序前消费。默认 0 = DOM 顺序。
     pub order: i32,
-    /// pointer-events:auto=true / none=false（v1c.1 命中门控）。默认 true。
+    /// pointer-events:auto=true / none=false（命中门控）。默认 true。
     pub touchable: bool,
-    /// v1d.3：CSS transform 解析产物（Affine2 矩阵，含多函数复合剪切）。默认 identity。
+    /// CSS transform 解析产物（Affine2 矩阵，含多函数复合剪切）。默认 identity。
     pub transform: crate::style::LocalTransform,
 }
 
@@ -66,7 +66,7 @@ pub enum TextAlign {
 
 impl Default for ResolvedStyle {
     fn default() -> Self {
-        // §4.1：div 永远是 flex 容器，默认 flex-direction: column。
+        // div 永远是 flex 容器，默认 flex-direction: column。
         // taffy Style::DEFAULT 是 Row，这里改默认为 Column。
         // CSS 显式声明 flex-direction 时，style::mapping::apply_decl 的对应分支
         // 无条件覆盖 ts.flex_direction——故显式声明永远胜出（写在 row 即 row）。
@@ -105,7 +105,7 @@ mod tests {
         assert_eq!(s.font_size, 16.0);
         assert_eq!(s.overflow_x, OverflowMode::Visible, "overflow_x 默认 Visible");
         assert_eq!(s.overflow_y, OverflowMode::Visible, "overflow_y 默认 Visible");
-        // §4.1：div 默认 flex-direction: column（taffy DEFAULT 是 row，必须显式覆盖）
+        // div 默认 flex-direction: column（taffy DEFAULT 是 row，必须显式覆盖）
         assert_eq!(s.taffy_style.flex_direction, taffy::FlexDirection::Column);
     }
 

@@ -129,7 +129,7 @@ fn func_to_matrix(name: &str, args: &str) -> Option<Affine2> {
     let parts: Vec<&str> = args.split(',').map(|p| p.trim()).collect();
     match name {
         "translate" => {
-            // v1d.3 只 px，拒 %
+            // translate 只支持 px，拒 %
             let x = parse_px(parts.first().copied().unwrap_or("0"))?;
             let y = parse_px(parts.get(1).copied().unwrap_or("0"))?;
             Some(transform::from_translate(x, y))
@@ -362,12 +362,12 @@ pub fn apply_decl(style: &mut ResolvedStyle, prop: &str, value: &str) -> bool {
         }
         "order" => {
             // taffy 0.5 Style 无 order 字段；存进 ResolvedStyle.order，
-            // 由 Task 6 layout 在 flex 排序前消费。非法值降级为 0。
+            // 由 layout 在 flex 排序前消费。非法值降级为 0。
             style.order = value.trim().parse::<i32>().unwrap_or(0);
             true
         }
         "pointer-events" => {
-            // v1c.1：auto/默认=true（可命中），none=false（跳过自身，继续测子——CSS 语义）
+            // auto/默认=true（可命中），none=false（跳过自身，继续测子——CSS 语义）
             style.touchable = value.trim() != "none";
             true
         }
@@ -375,11 +375,11 @@ pub fn apply_decl(style: &mut ResolvedStyle, prop: &str, value: &str) -> bool {
             style.transform = parse_transform(value);
             true
         }
-        _ => false, // 装饰属性静默忽略（§4.1）
+        _ => false, // 装饰属性静默忽略
     }
 }
 
-/// "10px" → 10.0；"10%" → None（v1d.3 拒 %）；"10" → 10.0（容错无单位）。
+/// "10px" → 10.0；"10%" → None（拒 %）；"10" → 10.0（容错无单位）。
 fn parse_px(s: &str) -> Option<f32> {
     let s = s.trim();
     if s.ends_with('%') { return None; }
@@ -415,7 +415,7 @@ mod tests {
         assert!(matches!(parse_lp("100px"), LengthPercentage::Length(100.0)));
         assert!(matches!(parse_lp("50%"), LengthPercentage::Percent(0.5)));
     }
-    /// 坑 68 回归：`width:auto` 必须解析成 `Dimension::Auto`（fit-content），
+    /// `width:auto` 必须解析成 `Dimension::Auto`（fit-content），
     /// 不能 fallback 到 `Length(0.0)`（→ img rect=(0,0) 不渲染）。
     #[test]
     fn parse_dimension_auto_is_auto_not_zero() {

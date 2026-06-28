@@ -1,12 +1,12 @@
-//! FairyBatching（§8.5 / §8.8）：sort_key 分配 + 绘制序 + rect clip mask_context。
+//! FairyBatching：sort_key 分配 + 绘制序 + rect clip mask_context。
 //!
-//! v0 简化（明确不做的事，留作 v1.x 优化）：
+//! 简化（明确不做的事，留作后续优化）：
 //! - **sort_key = DFS 出现序**：单一全局计数器，自增即赋值；不做 AABB 重排合并。
-//!   保序即正确意图（重排是性能优化，v0 保序能跑通管线即可）。
+//!   保序即正确意图（重排是性能优化，保序能跑通管线即可）。
 //! - **mask_context**：clip_rect 的 Container 是 BatchingRoot，开新层级；
-//!   子树继承。v0 用「出现序 + 1」当层级 id（计数器+1），不维护真 stencil 层级栈。
-//! - **BatchingRoot 边界**：v0 不在 Root 处断批合（FairyGUI 真实策略按贴图/program 断，
-//!   v0 没有贴图集 / 多 program，断无可断；留待 v1.x）。
+//!   子树继承。用「出现序 + 1」当层级 id（计数器+1），不维护真 stencil 层级栈。
+//! - **BatchingRoot 边界**：不在 Root 处断批合（FairyGUI 真实策略按贴图/program 断，
+//!   当前没有贴图集 / 多 program，断无可断；留待后续）。
 
 use crate::render::node::{MaskContext, NodePayload, RenderNode};
 use crate::scene::node::{NodeId, Rect, Scene};
@@ -19,7 +19,7 @@ use crate::render::ClipEntry;
 /// - right = min(a.x+a.w, b.x+b.w), bottom = min(a.y+a.h, b.y+b.h)
 /// - 若 right<=x 或 bottom<=y → 零面积（disjoint → empty）。
 ///
-/// fgui-faithful：嵌套 disjoint clip → 零面积 rect（T6 shader safe-blank 处理）。
+/// 嵌套 disjoint clip → 零面积 rect（shader safe-blank 处理）。
 pub fn rect_intersect(a: Rect, b: Rect) -> Rect {
     let x = a.x.max(b.x);
     let y = a.y.max(b.y);
@@ -54,7 +54,7 @@ fn aabb_overlap(a: Rect, b: Rect) -> bool {
     r.w > 0.0 && r.h > 0.0
 }
 
-/// 一个重排单元内做 fgui 式稳定插入排序（Container.cs:877-941）。
+/// 一个重排单元内做 fgui 式稳定插入排序。
 /// `unit` = 该单元内节点的 scene 索引（进入时为 DFS 序）；原地重排为 batch 聚拢后顺序。
 fn reorder_unit(scene: &Scene, nodes: &[RenderNode], unit: &mut Vec<usize>) {
     let n = unit.len();
@@ -107,7 +107,7 @@ fn reorder_unit(scene: &Scene, nodes: &[RenderNode], unit: &mut Vec<usize>) {
 /// 交集语义：进入 overflow:hidden 节点（`clip_rect.is_some()`）时，把本节点 clip 与
 /// 祖先 clip 链的累乘交 (`accumulated`) 求交，得 `intersected`；新 context 记
 /// `(ctx, intersected)` 入表；子树 `accumulated = intersected`。非 clipper 节点继承
-/// 父 `accumulated` 不变（其 mask_context 继承父层级）。修 v0「只裁最内层」bug。
+/// 父 `accumulated` 不变（其 mask_context 继承父层级）。
 pub fn assign_sort_keys(scene: &Scene, nodes: &mut [RenderNode]) -> Vec<ClipEntry> {
     let mut counter: u32 = 0;
     let mut clips: Vec<ClipEntry> = Vec::new();
@@ -152,7 +152,7 @@ pub fn assign_sort_keys(scene: &Scene, nodes: &mut [RenderNode]) -> Vec<ClipEntr
     clips
 }
 
-/// AABB 保序重排（spec §6）：按 BatchingRoot（mask_context）分段，段内对 program=0
+/// AABB 保序重排：按 BatchingRoot（mask_context）分段，段内对 program=0
 /// Mesh 节点做 fgui 式稳定插入排序（同 DrawState + AABB 不相交才前移），重排后重赋
 /// sort_key。Text（program=1）/ Unchanged 作为 batch break，不重排。
 ///
@@ -331,9 +331,9 @@ mod tests {
         assert_eq!(rns[2].mask_context, MaskContext(2));
     }
 
-    // —— T5：嵌套 clip 交集（rect mask）——
-    // v0 bug：只赋新 context 不交，leaf 的 clip rect 等于最内层 clipper（mid）的 box，
-    // 外层 disjoint clip 泄漏。T5 修：DFS 算祖先 clip 链交集，clip 表存 intersected rect。
+    // —— 嵌套 clip 交集（rect mask）——
+    // DFS 算祖先 clip 链交集，clip 表存 intersected rect（否则 leaf 的 clip rect
+    // 只等于最内层 clipper 的 box，外层 disjoint clip 泄漏）。
 
     /// nested disjoint: outer [0,0,100,100] > inner [200,200,50,50]（不相交）> leaf。
     /// inner 的 context 对应 clip rect 必须是零面积（交集空），不是 [200,200,50,50]。
@@ -381,10 +381,10 @@ mod tests {
         let ctx2 = clips.iter().find(|c| c.context_id == 2).expect("ctx 2 in table");
         assert_eq!(ctx2.rect.w, 0.0, "disjoint 交集 w=0");
         assert_eq!(ctx2.rect.h, 0.0, "disjoint 交集 h=0");
-        // 关键断言：不是 v0 的 [200,200,50,50]（只裁最内层）。
+        // 关键断言：不是 [200,200,50,50]（只裁最内层会泄漏外层 disjoint clip）。
         assert!(!(ctx2.rect.x == 200.0 && ctx2.rect.y == 200.0
                   && ctx2.rect.w == 50.0 && ctx2.rect.h == 50.0),
-                "inner context rect 不应等于 inner box（v0 只裁最内层 bug）");
+                "inner context rect 不应等于 inner box（只裁最内层会泄漏）");
     }
 
     /// nested overlapping: outer [0,0,100,100] > inner [50,50,100,100]（重叠）> leaf。
@@ -427,7 +427,7 @@ mod tests {
                    "overlapping 交集 = [50,50,50,50]");
     }
 
-    // —— v1b.4 T1：AABB 保序重排（reorder_unit / reorder_for_batching）——
+    // —— AABB 保序重排（reorder_unit / reorder_for_batching）——
     // NodePayload / MaskContext / BlendMode / Node / NodeKind / Rect / Scene
     // 已由上方 use 语句导入；以下测直接使用。
 

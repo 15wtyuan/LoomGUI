@@ -1,7 +1,7 @@
-//! MeshFactory（§8.2）：quad 几何生成。
+//! MeshFactory：quad 几何生成。
 //!
-//! v0 仅 quad（背景色块 / 图片占位）。UV 由 uv_min/uv_max 指定——纯色块/散图
-//! 全图 = (0,0)-(1,1)；atlas sprite = 子区（v1b.3 烤 region）。返回 SOA 四表，
+//! 仅 quad（背景色块 / 图片占位）。UV 由 uv_min/uv_max 指定——纯色块/散图
+//! 全图 = (0,0)-(1,1)；atlas sprite = 子区。返回 SOA 四表，
 //! 与 `NodePayload::Mesh` 同形。
 
 use crate::scene::node::Rect;
@@ -10,7 +10,7 @@ use crate::scene::node::Rect;
 ///
 /// - 4 顶点（左上 → 右上 → 右下 → 左下，CCW）。
 /// - UV 由 uv_min/uv_max 指定：TL→(umin,vmin) TR→(umax,vmin) BR→(umax,vmax) BL→(umin,vmax)。
-///   纯色块/散图全图 = [0,0],[1,1]；atlas sprite = 子区（v1b.3）。
+///   纯色块/散图全图 = [0,0],[1,1]；atlas sprite = 子区。
 /// - 4 顶点同色（quad 单色）。
 /// - 两个三角形：`(0,1,2)` + `(0,2,3)`。
 ///

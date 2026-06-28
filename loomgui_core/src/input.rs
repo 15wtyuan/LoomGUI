@@ -1,5 +1,5 @@
-//! 指针输入事件 + 多指针状态机（§10.3）。v1c.3：固定 5 槽（slot0=鼠标，slot1-4=触摸）。
-//! 消费 PointerEvent[] + 命中 → 产 EventRecord[]。click 阈值 ~10px（§10.3 鼠标）。
+//! 指针输入事件 + 多指针状态机。固定 5 槽（slot0=鼠标，slot1-4=触摸）。
+//! 消费 PointerEvent[] + 命中 → 产 EventRecord[]。click 阈值 ~10px（鼠标）。
 //! disabled 节点产 RollOver/Out 但不产 Down/Up/Click。
 
 use crate::hit::hit_test;
@@ -12,7 +12,7 @@ pub struct PointerEvent {
     pub kind: PointerKind,
     pub button: u8,
     pub pad: [u8; 2],
-    pub touch_id: i32,   // v1c.3：-1=鼠标主指 slots[0]；>=0=触摸 fingerId
+    pub touch_id: i32,   // -1=鼠标主指 slots[0]；>=0=触摸 fingerId
     pub x: f32,
     pub y: f32,
 }
@@ -24,10 +24,10 @@ pub enum PointerKind {
     Down = 0,
     Up = 1,
     Move = 2,
-    Canceled = 3,   // v1c.4：触摸 TouchPhase.Canceled（鼠标无）
+    Canceled = 3,   // 触摸 TouchPhase.Canceled（鼠标无）
 }
 
-/// v1d.2：键盘输入事件（FFI POD）。C# set_key_input 推一组；core process_keys 产 keydown/up EventRecord。
+/// 键盘输入事件（FFI POD）。C# set_key_input 推一组；core process_keys 产 keydown/up EventRecord。
 /// 8B：key_code@0(4) + modifiers@4(1) + is_down@5(1) + pad@6(2)。
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -38,22 +38,22 @@ pub struct KeyEvent {
     pub pad: [u8; 2],
 }
 
-/// v1d.2 modifiers 位掩码（KeyEvent.modifiers）。
+/// modifiers 位掩码（KeyEvent.modifiers）。
 pub const MOD_SHIFT: u8 = 0x01;
 pub const MOD_CTRL: u8 = 0x02;
 pub const MOD_ALT: u8 = 0x04;
 
-/// v1d.2：Tab 的 KeyCode 值（Unity KeyCode.Tab = 9）。core 内判定 Tab 导航用。
+/// Tab 的 KeyCode 值（Unity KeyCode.Tab = 9）。core 内判定 Tab 导航用。
 pub const KEY_TAB: u32 = 9;
 
 /// 事件输出（FFI 扁平 POD）。event_type: 0=Down,1=Up,2=Move,3=Click,4=RollOver,5=RollOut。
-/// v1c.3：+touch_id:i32 @8（破 v1c.2 零改，16→20 字节）。v1c.4：pad[0]→click_count（20B 不变）。
+/// +touch_id:i32 @8。pad[0]→click_count（20B 不变）。
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct EventRecord {
     pub node_id: u32,
     pub event_type: u8,
-    pub click_count: u8,    // v1c.4：1 或 2（仅 Click 有意义，其余=0）
+    pub click_count: u8,    // 1 或 2（仅 Click 有意义，其余=0）
     pub pad: [u8; 2],
     pub touch_id: i32,
     pub x: f32,
@@ -76,17 +76,15 @@ pub const EVT_FOCUS_IN: u8 = 14;
 pub const EVT_FOCUS_OUT: u8 = 15;
 pub const EVT_TWEEN_COMPLETE: u8 = 16;
 
-const CLICK_THRESHOLD_MOUSE: f32 = 10.0;   // fgui _clickTestThreshold(mouse)，per-axis
-const CLICK_THRESHOLD_TOUCH: f32 = 50.0;   // fgui _clickTestThreshold(touch)
-const DOUBLE_CLICK_TIME: f32 = 0.35;   // fgui 0.35f 秒
-const MOVE_CANCEL_PX: f32 = 50.0;      // fgui Move 硬编码取消阈值（per-axis，mouse+touch 通用）
-const DRAG_THRESHOLD_MOUSE: f32 = 2.0;    // fgui UIConfig.clickDragSensitivity（mouse）
-const DRAG_THRESHOLD_TOUCH: f32 = 10.0;   // fgui UIConfig.touchDragSensitivity（touch）
-const LONGPRESS_TRIGGER: f32 = 1.5;       // fgui LongPressGesture.TRIGGER（秒）
-// ponytail: LONGPRESS_RADIUS 与 MOVE_CANCEL_PX 同值（50），longpress 半径由 Move 臂置 longpress_cancelled
-// 间接实现（用 MOVE_CANCEL_PX）。本常量仅明义 longpress 半径意图，不直接被读，故 allow(dead_code)。
-#[allow(dead_code)]
-const LONGPRESS_RADIUS: f32 = 50.0;       // fgui holdRangeRadius（与 MOVE_CANCEL_PX 同值，独立常量明义）
+const CLICK_THRESHOLD_MOUSE: f32 = 10.0;   // per-axis click 容忍（鼠标）
+const CLICK_THRESHOLD_TOUCH: f32 = 50.0;   // per-axis click 容忍（触摸）
+const DOUBLE_CLICK_TIME: f32 = 0.35;   // 双击窗口秒
+const MOVE_CANCEL_PX: f32 = 50.0;      // Move 硬编码取消阈值（per-axis，mouse+touch 通用）
+const DRAG_THRESHOLD_MOUSE: f32 = 2.0;    // drag 启动阈值（鼠标）
+const DRAG_THRESHOLD_TOUCH: f32 = 10.0;   // drag 启动阈值（触摸）
+const LONGPRESS_TRIGGER: f32 = 1.5;       // 长按触发秒
+/// drag_follow 占位 dt（process 未收真实 dt，假定 60fps；非 60fps 速度计算有偏差）。
+const DRAG_FOLLOW_ASSUMED_DT: f32 = 0.016;
 
 fn click_threshold(touch_id: i32) -> f32 {
     if touch_id == -1 { CLICK_THRESHOLD_MOUSE } else { CLICK_THRESHOLD_TOUCH }
@@ -96,15 +94,15 @@ fn drag_threshold(touch_id: i32) -> f32 {
     if touch_id == -1 { DRAG_THRESHOLD_MOUSE } else { DRAG_THRESHOLD_TOUCH }
 }
 
-/// v1d.5 T7：scroll 手势触发阈值（mouse 8 / touch 20，spec §4.1/§5.3）。
+/// scroll 手势触发阈值（mouse 8 / touch 20）。
 /// 大于 drag 阈值（mouse 2 / touch 10）→ 两候选并存时 drag 通常先达。
 fn scroll_threshold(touch_id: i32) -> f32 {
     if touch_id == -1 { SCROLL_THRESHOLD_MOUSE } else { SCROLL_THRESHOLD_TOUCH }
 }
 
-/// v1d.5 T7：候选让出后沿 parent 找下一个 effective 滚动祖先。
+/// 候选让出后沿 parent 找下一个 effective 滚动祖先。
 /// 从 `pane` 的 parent 起向上查（不含 pane 自身），首个 eff_x||eff_y 节点返。
-/// 用于 V-only 容器遇水平手势时提升到外层可滚容器（spec §5.3 嵌套让出）。
+/// 用于 V-only 容器遇水平手势时提升到外层可滚容器（嵌套让出）。
 fn next_effective_ancestor(scene: &Scene, pane: NodeId) -> Option<NodeId> {
     let mut cur = scene.nodes.get(pane.0).and_then(|n| n.parent);
     while let Some(id) = cur {
@@ -124,7 +122,7 @@ fn next_effective_ancestor(scene: &Scene, pane: NodeId) -> Option<NodeId> {
     None
 }
 
-/// 单触摸槽状态（v1c.3）。slots[0]=鼠标主指（touch_id=-1 常驻），slots[1..4]=触摸。
+/// 单触摸槽状态。slots[0]=鼠标主指（touch_id=-1 常驻），slots[1..4]=触摸。
 #[derive(Debug, Clone)]
 pub struct TouchSlot {
     pub touch_id: i32,                  // -1=鼠标主指/空闲触摸槽；>=0=触摸 fingerId
@@ -132,33 +130,32 @@ pub struct TouchSlot {
     pub is_down: bool,
     pub down_node: Option<NodeId>,
     pub down_pos: (f32, f32),
-    pub last_hit: Option<NodeId>,       // v1c.3：本帧命中（hover_diff + is_pointer_on_ui 用）
+    pub last_hit: Option<NodeId>,       // 本帧命中（hover_diff + is_pointer_on_ui 用）
     pub last_hovered_chain: Vec<NodeId>,
-    pub touch_monitors: Vec<NodeId>,    // v1c.3：capture 的节点（T2 填派发逻辑）
-    pub down_targets: Vec<NodeId>,      // v1c.4：Down 时填 [leaf, …祖先]（照 fgui downTargets）
-    pub click_cancelled: bool,          // v1c.4：Move>50 / CancelClick / Canceled 置
-    pub last_click_time: f32,           // v1c.4：time_s（双击窗口）
-    pub last_click_pos: (f32, f32),     // v1c.4：上次 Click 位置
-    pub last_click_button: u8,          // v1c.4：上次 Click 键
-    pub click_count: u8,                // v1c.4：1→2→1 循环
-    pub drag_testing: bool,            // v1d.1：Down 在 draggable 链上置 true
-    pub dragging: bool,                // v1d.1：DragStart 后置 true
-    pub drag_target: Option<NodeId>,   // v1d.1：down_targets 中最近 draggable（含 down_node）；None 无 drag
-    pub down_time: f32,                // v1d.1：Down 时=time_s（longpress 用）
-    pub longpress_fired: bool,         // v1d.1：触发后置 true（本 press 不再发）
-    pub longpress_cancelled: bool,     // v1d.1：位移>50px 置 true（本 press 不再发）
-    // v1d.5 T7：scroll 手势仲裁（per-slot）。scroll-vs-drag 阈值赛跑 + 轴锁 + 嵌套让出提升。
+    pub touch_monitors: Vec<NodeId>,    // capture 的节点（Move/Up 派发用）
+    pub down_targets: Vec<NodeId>,      // Down 时填 [leaf, …祖先]
+    pub click_cancelled: bool,          // Move>50 / CancelClick / Canceled 置
+    pub last_click_time: f32,           // time_s（双击窗口）
+    pub last_click_pos: (f32, f32),     // 上次 Click 位置
+    pub last_click_button: u8,          // 上次 Click 键
+    pub click_count: u8,                // 1→2→1 循环
+    pub drag_testing: bool,            // Down 在 draggable 链上置 true
+    pub dragging: bool,                // DragStart 后置 true
+    pub drag_target: Option<NodeId>,   // down_targets 中最近 draggable（含 down_node）；None 无 drag
+    pub down_time: f32,                // Down 时=time_s（longpress 用）
+    pub longpress_fired: bool,         // 触发后置 true（本 press 不再发）
+    pub longpress_cancelled: bool,     // 位移>50px 置 true（本 press 不再发）
+    // scroll 手势仲裁（per-slot）。scroll-vs-drag 阈值赛跑 + 轴锁 + 嵌套让出提升。
     pub scroll_candidate: Option<NodeId>,    // Down 沿 down_targets 找的最近 effective 滚动容器（待阈值判定）
     pub scroll_testing: bool,                // Down 时候选存在 → true，达阈值/让出/Up 后清
     pub scrolling_pane: Option<NodeId>,      // 已判定：本槽正滚动该容器
     pub scroll_gesture: u8,                  // bit0=垂直手势（Y 位移） bit1=水平手势（X 位移）
-    pub grip_dragging: bool,                 // T9 scrollbar grip 拖拽中（grip 不启 inertia）
+    pub grip_dragging: bool,                 // scrollbar grip 拖拽中（grip 不启 inertia）
     pub scroll_down_pos: (f32, f32),         // Down 时刻 pos（scroll 阈值/跟手基准）
-    pub scroll_down_scroll_pos: (f32, f32),  // Down 时刻候选 scroll_pos（备用）
 }
 
 impl TouchSlot {
-    fn new_mouse() -> Self {
+    fn new_slot() -> Self {
         Self {
             touch_id: -1,
             last_pos: (0.0, 0.0),
@@ -186,54 +183,22 @@ impl TouchSlot {
             scroll_gesture: 0,
             grip_dragging: false,
             scroll_down_pos: (0.0, 0.0),
-            scroll_down_scroll_pos: (0.0, 0.0),
-        }
-    }
-    fn new_free() -> Self {
-        Self {
-            touch_id: -1,
-            last_pos: (0.0, 0.0),
-            is_down: false,
-            down_node: None,
-            down_pos: (0.0, 0.0),
-            last_hit: None,
-            last_hovered_chain: Vec::new(),
-            touch_monitors: Vec::new(),
-            down_targets: Vec::new(),
-            click_cancelled: false,
-            last_click_time: 0.0,
-            last_click_pos: (0.0, 0.0),
-            last_click_button: 0,
-            click_count: 1,
-            drag_testing: false,
-            dragging: false,
-            drag_target: None,
-            down_time: 0.0,
-            longpress_fired: false,
-            longpress_cancelled: false,
-            scroll_candidate: None,
-            scroll_testing: false,
-            scrolling_pane: None,
-            scroll_gesture: 0,
-            grip_dragging: false,
-            scroll_down_pos: (0.0, 0.0),
-            scroll_down_scroll_pos: (0.0, 0.0),
         }
     }
 }
 
-/// 多指针状态机（v1c.3：固定 5 槽）。slots[0]=鼠标，slots[1..4]=触摸。
+/// 多指针状态机（固定 5 槽）。slots[0]=鼠标，slots[1..4]=触摸。
 pub struct PointerState {
     pub slots: Vec<TouchSlot>,
-    pub time_s: f32,   // v1c.4：累积时间（Stage::advance_time 累加；双击窗口用）
+    pub time_s: f32,   // 累积时间（Stage::advance_time 累加；双击窗口用）
 }
 
 impl Default for PointerState {
     fn default() -> Self {
         let mut slots = Vec::with_capacity(5);
-        slots.push(TouchSlot::new_mouse());     // slot 0 = 鼠标主指
+        slots.push(TouchSlot::new_slot());     // slot 0 = 鼠标主指
         for _ in 0..4 {
-            slots.push(TouchSlot::new_free());  // slot 1..4 = 触摸
+            slots.push(TouchSlot::new_slot());  // slot 1..4 = 触摸
         }
         Self { slots, time_s: 0.0 }
     }
@@ -253,7 +218,7 @@ fn ancestor_chain(scene: &Scene, target: Option<NodeId>) -> Vec<NodeId> {
     chain
 }
 
-/// v1d.2：设焦点为 new（None=清除焦点）。发 FocusOut@旧焦点 + FocusIn@新焦点。
+/// 设焦点为 new（None=清除焦点）。发 FocusOut@旧焦点 + FocusIn@新焦点。
 /// 模块级 pub(crate) 自由函数——process（click-to-focus）+ process_keys（Tab）+ Stage（pending_focus_request）共用。
 /// 写 scene.focused_node + node.focused 标志 + 推 FocusOut/FocusIn 进 out。old==new → no-op。
 pub(crate) fn focus_node(scene: &mut Scene, new: Option<NodeId>, out: &mut Vec<EventRecord>) {
@@ -292,7 +257,7 @@ pub(crate) fn focus_node(scene: &mut Scene, new: Option<NodeId>, out: &mut Vec<E
     scene.focused_node = new;
 }
 
-/// v1d.2：DFS 先序收集 tabindex>=0 且非 disabled 节点，分桶 positive(>0)/zero(==0)。
+/// DFS 先序收集 tabindex>=0 且非 disabled 节点，分桶 positive(>0)/zero(==0)。
 fn dfs_collect(scene: &Scene, id: NodeId, positive: &mut Vec<(i32, NodeId)>, zero: &mut Vec<NodeId>) {
     if id.0 >= scene.nodes.len() {
         return;
@@ -312,7 +277,7 @@ fn dfs_collect(scene: &Scene, id: NodeId, positive: &mut Vec<(i32, NodeId)>, zer
     }
 }
 
-/// v1d.2：构造 Tab 链——正整数按 tabindex 升序（stable，同值保 DFS 序），后接 0 组（DFS 序）。
+/// 构造 Tab 链——正整数按 tabindex 升序（stable，同值保 DFS 序），后接 0 组（DFS 序）。
 /// 照 DOM：正整数显式序先于 0 组。tabindex=-1/None/disabled 不进。
 pub(crate) fn build_tab_chain(scene: &Scene) -> Vec<NodeId> {
     let mut positive: Vec<(i32, NodeId)> = Vec::new();
@@ -324,7 +289,7 @@ pub(crate) fn build_tab_chain(scene: &Scene) -> Vec<NodeId> {
     positive.into_iter().map(|(_, n)| n).chain(zero.into_iter()).collect()
 }
 
-/// v1d.2：从 current 焦点算 Tab/Shift+Tab 下一个焦点。空链 → None。
+/// 从 current 焦点算 Tab/Shift+Tab 下一个焦点。空链 → None。
 /// current 在链中 → 取前/后；不在（或 None）→ 链首(forward)/链尾(backward)；边界 wrap。
 fn next_focus(chain: &[NodeId], current: Option<NodeId>, backward: bool) -> Option<NodeId> {
     if chain.is_empty() {
@@ -349,7 +314,7 @@ fn next_focus(chain: &[NodeId], current: Option<NodeId>, backward: bool) -> Opti
     Some(next)
 }
 
-/// v1d.2：处理键盘事件——keydown/up（有焦点才发）+ Tab/Shift+Tab 导航（focus_node）。
+/// 处理键盘事件——keydown/up（有焦点才发）+ Tab/Shift+Tab 导航（focus_node）。
 /// Stage tick 在 pointer process 后调。Tab 被导航消费（不发 keydown，照 DOM Tab 默认动作=移焦）。
 pub(crate) fn process_keys(scene: &mut Scene, keys: &[KeyEvent], out: &mut Vec<EventRecord>) {
     for ke in keys {
@@ -365,7 +330,7 @@ pub(crate) fn process_keys(scene: &mut Scene, keys: &[KeyEvent], out: &mut Vec<E
             focus_node(scene, next, out); // 发 FocusOut(旧)+FocusIn(新)
             continue; // Tab 被消费，不发 keydown
         }
-        // 普通 keydown/up：有焦点才发（无焦点丢弃，spec §1）
+        // 普通 keydown/up：有焦点才发（无焦点丢弃）
         if let Some(n) = focused {
             let event_type = if ke.is_down { EVT_KEY_DOWN } else { EVT_KEY_UP };
             out.push(EventRecord {
@@ -386,12 +351,12 @@ impl PointerState {
         Self::default()
     }
 
-    /// 鼠标主指 last_pos（stage.rs tick_and_render 的 hit_test 用，保持 v1c.2 接口）。
+    /// 鼠标主指 last_pos（stage.rs tick_and_render 的 hit_test 用）。
     pub fn last_pos(&self) -> (f32, f32) {
         self.slots[0].last_pos
     }
 
-    /// 任一活跃槽命中非根节点 → UI 挡住（§10.6）。
+    /// 任一活跃槽命中非根节点 → UI 挡住。
     pub fn is_pointer_on_ui(&self, scene: &Scene) -> bool {
         let root_id = scene.roots.first().copied();
         for slot in &self.slots {
@@ -405,7 +370,7 @@ impl PointerState {
     }
 
     /// 加 touch monitor（去重）。touch_id 找槽（鼠标=-1→slot0）；找不到槽→no-op（Down 前调无效）。
-    /// 照 fgui AddTouchMonitor：仅加指定槽，不做 -1 广播（fgui 自身不用）。
+    /// 仅加指定槽，不做 -1 广播。
     pub fn add_touch_monitor(&mut self, touch_id: i32, node: NodeId) {
         let slot_idx = if touch_id == -1 { 0 } else {
             match (1..self.slots.len()).find(|&i| self.slots[i].touch_id == touch_id) { Some(i) => i, None => return }
@@ -416,7 +381,7 @@ impl PointerState {
         }
     }
 
-    /// 移除 touch monitor（从所有槽）。照 fgui RemoveTouchMonitor：置 sentinel 而非 RemoveAt（避免遍历偏移）。
+    /// 移除 touch monitor（从所有槽）。用 retain 移除（Vec 无 sentinel 需求，retain 更简且无遍历期偏移）。
     pub fn remove_touch_monitor(&mut self, node: NodeId) {
         for slot in &mut self.slots {
             // touch_monitors 是 Vec<NodeId>，用 retain 移除（Vec 无 sentinel 需求，retain 更简且无遍历期偏移）
@@ -424,7 +389,7 @@ impl PointerState {
         }
     }
 
-    /// 外部取消待 click（照 fgui Stage.CancelClick）：置对应槽 click_cancelled。
+    /// 外部取消待 click：置对应槽 click_cancelled。
     /// 触摸槽满 / 未找到 → no-op。下个 Up 的 click_test 见 cancelled → 不发 Click + reset。
     pub fn cancel_click(&mut self, touch_id: i32) {
         let slot_idx = if touch_id == -1 { 0 } else {
@@ -438,8 +403,7 @@ impl PointerState {
 
     /// 找/分配槽。鼠标(touch_id=-1)恒 slots[0]；触摸按 touch_id 找，找不到→分配首个空闲。
     /// 返回 slot index；找不到（触摸槽满）→ None。
-    /// 注：触摸槽在任意事件（Move/Down/Up）分配（fgui 触摸可 Move 先于 Down 合成），
-    /// Up 后释放（slot_idx>0 置 touch_id=-1）。
+    /// 触摸槽在任意事件（Move/Down/Up）分配（触摸可 Move 先于 Down 合成），Up 后释放（slot_idx>0 置 touch_id=-1）。
     fn find_or_alloc_slot(&mut self, ev: &PointerEvent) -> Option<usize> {
         if ev.touch_id == -1 {
             return Some(0); // 鼠标主指
@@ -463,9 +427,9 @@ impl PointerState {
     /// 消费本帧输入 → 产 EventRecord 序列。
     pub fn process(&mut self, scene: &mut Scene, events: &[PointerEvent]) -> Vec<EventRecord> {
         let mut out: Vec<EventRecord> = Vec::new();
-        let time_s = self.time_s;   // T2：本地化避免 &mut self 与 &mut slot 借用冲突
-        // v1c.4 T4：stationary hover follow——本帧无事件的活跃槽刷新命中 + hover diff
-        // （静止光标下元素移动 → :hover 刷新；fgui 依赖 Move 事件，LoomGUI 改进）。
+        let time_s = self.time_s;   // 本地化避免 &mut self 与 &mut slot 借用冲突
+        // stationary hover follow：本帧无事件的活跃槽刷新命中 + hover diff
+        // （静止光标下元素移动 → :hover 刷新）。
         let used_touch_ids: Vec<i32> = events.iter().map(|e| e.touch_id).collect();
         for i in 0..self.slots.len() {
             let active = i == 0 || self.slots[i].touch_id >= 0;
@@ -474,9 +438,9 @@ impl PointerState {
                 Self::hover_diff_slot(&mut self.slots[i], scene, &mut out);
             }
         }
-        // v1d.1：longpress tick 检查——每帧跑（含空事件 tick，此处先于 is_empty early-return）。
+        // longpress tick：每帧跑（含空事件 tick，此处先于 is_empty early-return）。
         // is_down 槽按住 ≥1.5s 且未取消 → 发一次 EVT_LONG_PRESS（与 Click 独立）。
-        // 半径 LONGPRESS_RADIUS 不直接查——Move>MOVE_CANCEL_PX(==50) 时 Move 臂已置 longpress_cancelled。
+        // longpress 取消靠 Move 臂：Move 超过 MOVE_CANCEL_PX(50) 时置 longpress_cancelled。
         for i in 0..self.slots.len() {
             let active = i == 0 || self.slots[i].touch_id >= 0;
             if !active { continue; }
@@ -512,15 +476,14 @@ impl PointerState {
                 None => continue,
             };
             let slot = &mut self.slots[slot_idx];
-            let prev_pos = slot.last_pos;   // v1d.5 T7：scroll 跟手 delta = new - prev
+            let prev_pos = slot.last_pos;   // scroll 跟手 delta = new - prev
             slot.last_pos = (ev.x, ev.y);
             let hit = hit_test(scene, slot.last_pos);
             slot.last_hit = hit;
             let touch_id = ev.touch_id;
             match ev.kind {
                 PointerKind::Move => {
-                    // v1c.4：按住中位移>50（per-axis，硬编码，mouse+touch 通用）→ 取消 click
-                    // v1d.1：同时取消 longpress（超半径）。
+                    // 按住中位移>50（per-axis，硬编码，mouse+touch 通用）→ 取消 click + longpress。
                     if slot.is_down {
                         let dx = slot.last_pos.0 - slot.down_pos.0;
                         let dy = slot.last_pos.1 - slot.down_pos.1;
@@ -529,7 +492,7 @@ impl PointerState {
                             slot.longpress_cancelled = true;
                         }
                     }
-                    // v1d.5 T7：scroll 阈值赛跑（drag/scroll 都未判定时）。scene 此处只读（查 effective）。
+                    // scroll 阈值赛跑（drag/scroll 都未判定时）。scene 此处只读（查 effective）。
                     if slot.is_down && slot.scroll_testing && slot.scrolling_pane.is_none() && !slot.dragging {
                         if let Some(pane_id) = slot.scroll_candidate {
                             if pane_id.0 < scene.nodes.len() {
@@ -574,8 +537,7 @@ impl PointerState {
                             }
                         }
                     }
-                    // v1d.1：drag 检测（仅 draggable 链）。scroll 赢时 drag_target 已清 → 不启动。
-                    // drag 先达时清 scroll 候选（互斥另一侧）。
+                    // drag 检测（仅 draggable 链）。scroll 赢时 drag_target 已清 → 不启动；drag 先达时清 scroll 候选（互斥）。
                     if slot.is_down && slot.drag_testing && !slot.dragging {
                         if let Some(tgt) = slot.drag_target {
                             let dx = slot.last_pos.0 - slot.down_pos.0;
@@ -611,8 +573,8 @@ impl PointerState {
                             });
                         }
                     }
-                    // v1d.5 T7：scrolling_pane 已判定 → 跟手 drag_follow（写 scene.scroll）。
-                    // v1d.5 T9：grip_dragging → grip 位置驱动 scroll_pos（非 delta 跟手）。
+                    // scrolling_pane 已判定 → 跟手 drag_follow（写 scene.scroll）。
+                    // grip_dragging → grip 位置驱动 scroll_pos（非 delta 跟手）。
                     // 复制 scrolling_pane 出 slot 解借用冲突（slot &mut 与 scene.scroll.get_mut &mut）。
                     // delta = 本帧 pos - 上帧 pos（prev_pos 在 last_pos 覆盖前捕获）。
                     let scrolling_pane = slot.scrolling_pane;
@@ -622,7 +584,7 @@ impl PointerState {
                             if let Some(s) = scene.scroll.get_mut(pane) {
                                 let lr = scene.nodes[pane.0].layout_rect;
                                 let pe = slot.last_pos;
-                                let min_thumb = 20.0f32;
+                                let min_thumb = crate::scroll::MIN_THUMB_SIZE;
                                 if slot.scroll_gesture & 1 != 0 {
                                     // 垂直 thumb
                                     let perc =
@@ -638,15 +600,14 @@ impl PointerState {
                             }
                         } else if let Some(s) = scene.scroll.get_mut(pane) {
                             // 触屏拖动：手指位移 → scroll_pos 反向（下拖看上方 = scroll_pos 减），
-                            // 与 apply_wheel 一致（wheel delta.y>0 → scroll_pos -= delta*STEP，scroll.rs:271）。
-                            // design y 向下（ScreenToDesign）→ 下拖 design delta.y>0 → scroll_pos 应减。
-                            // 修复前传 +位移 → 方向反（内容反向移 + 越界回弹 = "拖不动、四处晃动"）。
+                            // 与 apply_wheel 一致（wheel delta.y>0 → scroll_pos 减）。
+                            // design y 向下（ScreenToDesign）→ 下拖 design delta.y>0 → scroll_pos 应减（反之方向反 + 越界回弹）。
                             let scroll_delta = (prev_pos.0 - slot.last_pos.0, prev_pos.1 - slot.last_pos.1);
-                            s.drag_follow(scroll_delta, /*dt*/ 0.016);
+                            s.drag_follow(scroll_delta, DRAG_FOLLOW_ASSUMED_DT);
                         }
                     }
                     Self::hover_diff_slot(slot, scene, &mut out);
-                    // Move 派发：有 monitor 产 Move@monitor（T2 实现），无 monitor 不产
+                    // Move 派发：有 monitor 产 Move@monitor，无 monitor 不产
                     for m in &slot.touch_monitors {
                         out.push(EventRecord {
                             node_id: m.0 as u32,
@@ -660,7 +621,7 @@ impl PointerState {
                     }
                 }
                 PointerKind::Down => {
-                    // v1d.5 T9：grip 命中优先于 scroll 候选（scrollbar 最上层）
+                    // grip 命中优先于 scroll 候选（scrollbar 最上层）
                     if let Some(grip) = crate::hit::hit_scrollbar_grip(scene, (ev.x, ev.y)) {
                         slot.grip_dragging = true;
                         slot.scrolling_pane = Some(grip.0);
@@ -675,9 +636,9 @@ impl PointerState {
                     slot.is_down = true;
                     slot.down_pos = (ev.x, ev.y);
                     slot.down_node = hit;
-                    slot.down_targets = ancestor_chain(scene, hit);   // v1c.4：[leaf,…祖先]
+                    slot.down_targets = ancestor_chain(scene, hit);   // [leaf,…祖先]
                     slot.click_cancelled = false;                     // 新按下重置
-                    // v1d.1：drag/longpress 初始化
+                    // drag/longpress 初始化
                     slot.down_time = time_s;
                     slot.longpress_fired = false;
                     slot.longpress_cancelled = false;
@@ -687,7 +648,7 @@ impl PointerState {
                         .copied();
                     slot.drag_testing = slot.drag_target.is_some();
                     slot.dragging = false;
-                    // v1d.5 T7：scroll 候选——沿 down_targets（leaf 优先）找最近 effective 滚动容器。
+                    // scroll 候选——沿 down_targets（leaf 优先）找最近 effective 滚动容器。
                     slot.scroll_candidate = None;
                     slot.scroll_testing = false;
                     slot.scrolling_pane = None;
@@ -709,15 +670,13 @@ impl PointerState {
                             };
                             if eff_x || eff_y {
                                 slot.scroll_candidate = Some(id);
-                                slot.scroll_down_scroll_pos = scene.scroll.get(id)
-                                    .map(|s| s.scroll_pos).unwrap_or((0.0, 0.0));
                                 break;
                             }
                             cur = n.parent;
                         }
                         slot.scroll_testing = slot.scroll_candidate.is_some();
                     }
-                    // v1d.2：click-to-focus——pointer-down 命中 tabindex>=0 节点 → 聚焦（照 fgui+DOM）。
+                    // click-to-focus：pointer-down 命中 tabindex>=0 节点 → 聚焦（照 DOM）。
                     // 沿 down_targets（leaf 优先，同 drag_target 模式）找最近可聚焦非 disabled 节点。
                     // 不可聚焦/`-1` → 不夺焦（照 DOM：点空白不 blur）。
                     let focus_target = slot.down_targets.iter()
@@ -745,9 +704,9 @@ impl PointerState {
                 }
                 PointerKind::Up | PointerKind::Canceled => {
                     if ev.kind == PointerKind::Canceled {
-                        slot.click_cancelled = true;   // v1c.4：Canceled 隐式 CancelClick（不发 Click + reset）
+                        slot.click_cancelled = true;   // Canceled 隐式 CancelClick（不发 Click + reset）
                     }
-                    // v1d.1：drag 中 Up/Canceled → DragEnd（照 fgui onTouchEnd）
+                    // drag 中 Up/Canceled → DragEnd
                     if slot.dragging {
                         if let Some(tgt) = slot.drag_target {
                             out.push(EventRecord {
@@ -761,8 +720,8 @@ impl PointerState {
                             });
                         }
                     }
-                    // v1d.5 T7：scrolling_pane 中 Up（非 Canceled）→ begin_inertia；Canceled 不启惯性。
-                    // grip_dragging（T9 scrollbar）不启惯性。复制 scrolling_pane 出 slot 解借用冲突。
+                    // scrolling_pane 中 Up（非 Canceled）→ begin_inertia；Canceled 不启惯性。grip 拖拽不启惯性。
+                    // 复制 scrolling_pane 出 slot 解借用冲突。
                     let scrolling_pane_up = slot.scrolling_pane;
                     if ev.kind == PointerKind::Up {
                         if let Some(pane) = scrolling_pane_up {
@@ -774,8 +733,7 @@ impl PointerState {
                         }
                     }
                     slot.is_down = false;
-                    // v1d.5 T9：grip_dragging 时 hit 为 sentinel（scene.nodes 越界），
-                    // 跳过 EVT_UP/EVT_CLICK（grip Up 不产这些事件）。
+                    // grip_dragging 时 hit 为 sentinel（scene.nodes 越界），跳过 EVT_UP/EVT_CLICK（grip Up 不产这些事件）。
                     if !slot.grip_dragging {
                         if let Some(n) = hit {
                             if !scene.nodes[n.0].disabled {
@@ -802,7 +760,7 @@ impl PointerState {
                                         });
                                     }
                                 } else {
-                                    // click_test 返 None（位移超阈值/cancelled）→ 重置双击窗口（照 fgui End cancel 分支）
+                                    // click_test 返 None（位移超阈值/cancelled）→ 重置双击窗口
                                     slot.last_click_time = 0.0;
                                     slot.click_count = 1;
                                 }
@@ -829,12 +787,12 @@ impl PointerState {
                     slot.drag_testing = false;
                     slot.dragging = false;
                     slot.drag_target = None;
-                    // v1d.5 T7：清 scroll 仲裁字段
+                    // 清 scroll 仲裁字段
                     slot.scroll_testing = false;
                     slot.scrolling_pane = None;
                     slot.scroll_candidate = None;
                     slot.scroll_gesture = 0;
-                    slot.grip_dragging = false;   // v1d.5 T9：grip Up 清（不惯性）
+                    slot.grip_dragging = false;   // grip Up 清（不惯性）
                     Self::hover_diff_slot(slot, scene, &mut out);
                     if slot_idx > 0 {
                         slot.touch_id = -1; // 释放触摸槽（鼠标不释放）
@@ -847,7 +805,7 @@ impl PointerState {
         out
     }
 
-    /// click 目标判定（照 fgui ClickTest）。返 Click 应派发的节点；None=不产 Click。
+    /// click 目标判定。返 Click 应派发的节点；None=不产 Click。
     /// cancelled（Move>50/CancelClick/Canceled）→ None。位移 per-axis 超阈值 → None。
     /// 否则优先 down_targets[0]（按下叶，"still on stage"≈索引有效）；叶失效则沿当前 hit 祖先兜底。
     fn click_test(slot: &TouchSlot, scene: &Scene, current_hit: Option<NodeId>) -> Option<NodeId> {
@@ -878,7 +836,7 @@ impl PointerState {
         None
     }
 
-    /// 双击 clickCount 累进（照 fgui End：350ms + per-axis 位置 + 同键 → 1→2→1 循环）。
+    /// 双击 clickCount 累进：350ms + per-axis 位置 + 同键 → 1→2→1 循环。
     /// 返回本次 click_count 并更新 slot 的 last_click_* 状态。
     /// time_s 作参数传（非读 self.time_s），避免 &mut self 与 &mut slot 借用冲突。
     fn bump_click_count(slot: &mut TouchSlot, button: u8, time_s: f32) -> u8 {
@@ -966,10 +924,10 @@ impl PointerState {
                     if id.0 >= scene.nodes.len() {
                         break;
                     }
-                    // §4.4：disabled 节点截断 active 链——自身不设 active，其祖先也不（按下 disabled
+                    // disabled 节点截断 active 链——自身不设 active，其祖先也不（按下 disabled
                     // 子树不应让 disabled 节点或其上层变 active）。逐节点查（不只 down_node）：
-                    // hit 落 disabled 节点的非 disabled 子（如 Text 子，坑 29 同款挡命中）时，
-                    // 链上遇到 disabled 祖先须截断，而非只查 down_node（原 fix 漏判祖先）。
+                    // hit 落 disabled 节点的非 disabled 子（如 Text 子）时，链上遇到 disabled
+                    // 祖先须截断，而非只查 down_node。
                     if scene.nodes[id.0].disabled {
                         break;
                     }
@@ -1041,7 +999,7 @@ mod tests {
     #[test]
     fn hover_text_child_sets_ancestor_btn_hovered() {
         // b 根因回归测：hover btn 的 Text 子区（命中 Text NodeId 2，非 btn NodeId 1）
-        // → Text + btn + root 祖先链都 hovered（对齐 fgui rollOverChain + CSS :hover 祖先语义）。
+        // → Text + btn + root 祖先链都 hovered（CSS :hover 祖先语义）。
         // 这样 .btn:hover 伪类匹配 btn（即使命中的是 btn 的文字子）。
         let mut s = button_with_text_child_scene();
         let mut ps = PointerState::new();
@@ -1127,11 +1085,9 @@ mod tests {
 
     #[test]
     fn down_held_on_disabled_no_active() {
-        // §4.4 回归测：Down 命中 disabled 节点后【按住不松】（无同帧 Up）→
-        // disabled 节点及祖先都不应 active。v1c.3 recompute_active 曾漏 disabled 门控
-        // （down_node 在 Down handler 无条件赋值，recompute 沿链设 active 不查 disabled）。
-        // 注：现有 down_on_disabled_node_no_active_no_click 漏此 case（Down+Up 同 process 调用，
-        // recompute 时 is_down 已 false）。
+        // 回归测：Down 命中 disabled 节点后【按住不松】（无同帧 Up）→
+        // disabled 节点及祖先都不应 active。
+        // 注：down_on_disabled_node_no_active_no_click 漏此 case（Down+Up 同 process 调用，recompute 时 is_down 已 false）。
         let mut s = one_button_scene();
         s.nodes[1].disabled = true;
         let mut ps = PointerState::new();
@@ -1139,16 +1095,15 @@ mod tests {
             &mut s,
             &[PointerEvent { kind: PointerKind::Down, x: 50.0, y: 50.0, button: 0, pad: [0, 0], touch_id: -1 }],
         );
-        assert!(!s.nodes[1].active, "按住 disabled btn 不应 active（§4.4 active 抑制）");
+        assert!(!s.nodes[1].active, "按住 disabled btn 不应 active（active 抑制）");
         assert!(!s.nodes[0].active, "disabled 祖先 root 也不应 active");
     }
 
     #[test]
     fn down_held_on_disabled_via_text_child_no_active() {
-        // §4.4 回归测（Text 子命中路径）：按下 disabled 按钮的 Text 子（命中 Text，非 btn）→
-        // disabled btn 仍不应 active。原 fix 只查 down_node（=Text 子，非 disabled）→ 漏判 disabled 祖先。
-        // 坑 29 同款（文字子挡命中）的 active 版：hit 落 disabled 节点的非 disabled 子时，
-        // active 链会带上 disabled 祖先——须沿链逐节点查 disabled，不只查 down_node。
+        // 回归测（Text 子命中路径）：按下 disabled 按钮的 Text 子（命中 Text，非 btn）→
+        // disabled btn 仍不应 active。hit 落 disabled 节点的非 disabled 子时，active 链会带上
+        // disabled 祖先——须沿链逐节点查 disabled，不只查 down_node。
         let mut s = button_with_text_child_scene(); // root + btn(1) + Text(2)@(0,0,100,20) 挡 btn 上半
         s.nodes[1].disabled = true;
         let mut ps = PointerState::new();
@@ -1217,7 +1172,7 @@ mod tests {
         assert!(ro_idx.unwrap() < down_idx.unwrap(), "RollOver 在 Down 前（生成序）");
     }
 
-    /// v1c.2: root + parent(100x100) + child(50x50 in parent)。验 hover 祖先链 diff。
+    /// root + parent(100x100) + child(50x50 in parent)。验 hover 祖先链 diff。
     fn nested_scene() -> Scene {
         let mut root = Node::default();
         root.id = NodeId(0);
@@ -1274,7 +1229,7 @@ mod tests {
 
     #[test]
     fn hover_chain_idempotent() {
-        // 同点 Move 两次 → 第二次无 hover 事件（链不变；Move 仍产——§7.1 恒产，不抑制）。
+        // 同点 Move 两次 → 第二次无 hover 事件（链不变；Move 仍恒产，不抑制）。
         let mut s = nested_scene();
         let mut ps = PointerState::new();
         ps.process(&mut s, &[PointerEvent { kind: PointerKind::Move, x: 10.0, y: 10.0, button: 0, pad: [0, 0], touch_id: -1 }]);
@@ -1295,9 +1250,9 @@ mod tests {
         assert!(!out.iter().any(|e| e.event_type == EVT_ROLL_OVER), "移出 → 无 RollOver");
     }
 
-    // ===== v1c.3 多槽测试 =====
+    // ===== 多槽测试 =====
 
-    /// 鼠标 touch_id=-1 进 slots[0]，Down/Up/Click 等价 v1c.2 单指。
+    /// 鼠标 touch_id=-1 进 slots[0]，Down/Up/Click 等价单指。
     #[test]
     fn mouse_uses_slot0_touch_id_neg1() {
         let mut s = one_button_scene();
@@ -1362,14 +1317,14 @@ mod tests {
         assert!(out.iter().all(|e| e.event_type != EVT_MOVE), "无 Move 事件");
     }
 
-    /// 鼠标无 capture Move 不产（v1c.2 行为变化：v1c.2 鼠标 Move 产，v1c.3 不产）。
+    /// 鼠标无 capture Move 不产事件（与触摸行为一致）。
     #[test]
     fn mouse_move_no_capture_no_event() {
         let mut s = one_button_scene();
         let mut ps = PointerState::new();
         ps.process(&mut s, &[PointerEvent { kind: PointerKind::Move, x: 50.0, y: 50.0, button: 0, pad: [0, 0], touch_id: -1 }]);
         let out = ps.process(&mut s, &[PointerEvent { kind: PointerKind::Move, x: 51.0, y: 51.0, button: 0, pad: [0, 0], touch_id: -1 }]);
-        assert!(!out.iter().any(|e| e.event_type == EVT_MOVE), "v1c.3 鼠标无 capture Move 不产（对齐 fgui）");
+        assert!(!out.iter().any(|e| e.event_type == EVT_MOVE), "鼠标无 capture Move 不产");
     }
 
     /// hover 全局合并：两指命中不同元素 → 两元素都 hovered。
@@ -1451,7 +1406,7 @@ mod tests {
         assert!(ps.is_pointer_on_ui(&s), "触摸命中 btn → is_pointer_on_ui=true（任一指）");
     }
 
-    // ===== v1c.3 T2: touch_monitors capture 测 =====
+    // ===== touch_monitors capture 测 =====
 
     /// Down 后 add_touch_monitor → 后续 Move 产 Move@monitor。
     #[test]
@@ -1507,10 +1462,10 @@ mod tests {
         assert!(!out.iter().any(|e| e.event_type == EVT_MOVE), "remove 后 Move 不产给该 monitor");
     }
 
-    // ===== v1c.4 T1: click_test + per-axis 阈值 + down_targets =====
+    // ===== click_test + per-axis 阈值 + down_targets =====
 
     /// Click 目标 = down_leaf（非当前 hit）。Down@btn 边缘，漂出 btn 到 root（位移≤10），
-    /// Up → Click@btn（按下叶），Up 事件@root（当前 hit）。照 fgui ClickTest downTargets[0] 优先。
+    /// Up → Click@btn（按下叶），Up 事件@root（当前 hit）。down_targets[0] 优先。
     #[test]
     fn click_target_is_down_leaf_not_current_hit() {
         let mut s = one_button_scene();   // root(0,0,200,200) + btn(0,0,100,100)
@@ -1588,7 +1543,7 @@ mod tests {
             "down_leaf 销毁 → Click@root（祖先兜底）");
     }
 
-    // ===== v1c.4 T2: 双击 + Move 取消 =====
+    // ===== 双击 + Move 取消 =====
 
     /// 双击：两次 Click（time_s 间隔 0.2、同位置、同键）→ 第二次 click_count=2。
     #[test]
@@ -1649,7 +1604,7 @@ mod tests {
         assert!(out.iter().any(|e| e.event_type == EVT_UP), "Up 仍发");
     }
 
-    // ===== v1c.4 T3: Canceled + CancelClick =====
+    // ===== Canceled + CancelClick =====
 
     /// Canceled：发 Up、不发 Click。
     #[test]
@@ -1674,7 +1629,7 @@ mod tests {
         assert!(out.iter().any(|e| e.event_type == EVT_UP), "Up 仍发");
     }
 
-    /// Canceled reset 双击窗口（spec §0.6 偏离）：Canceled 后 click_count=1、last_click_time=0。
+    /// Canceled reset 双击窗口：Canceled 后 click_count=1、last_click_time=0。
     /// 用 time_s≥1.0（reset-to-0 在真实游戏时间下永远超 350ms；小 time_s 是测伪影）。
     #[test]
     fn canceled_resets_click_count() {
@@ -1693,7 +1648,7 @@ mod tests {
         assert_eq!(ps.slots[0].last_click_time, 0.0, "Canceled reset last_click_time=0");
     }
 
-    // ===== v1c.4 T4: Stationary hover 跟随 =====
+    // ===== Stationary hover 跟随 =====
 
     /// 静止光标下元素移走 → hover 跟随刷新（无 Move 事件）。
     /// Move@btn → hover btn；scene2 btn 移到 (150,150)，空事件 → re-hit-test (50,50)=root → RollOut(btn)。
@@ -1719,9 +1674,9 @@ mod tests {
             "root 已 hovered → 无 RollOver");
     }
 
-    // ===== v1d.1 T3: core drag 检测 =====
+    // ===== core drag 检测 =====
 
-    /// v1d.1：root(0,0,200,200) + draggable btn(0,0,100,100)。
+    /// root(0,0,200,200) + draggable btn(0,0,100,100)。
     fn one_draggable_button_scene() -> Scene {
         let mut root = Node::default();
         root.id = NodeId(0);
@@ -1861,7 +1816,7 @@ mod tests {
         assert!(out.iter().any(|e| e.event_type == EVT_DRAG_END && e.node_id == 1), "Canceled → DragEnd@btn");
     }
 
-    // ===== v1d.1 T4: core longpress 检测 =====
+    // ===== core longpress 检测 =====
 
     #[test]
     fn longpress_fires_after_1_5s_no_move() {
@@ -1916,7 +1871,7 @@ mod tests {
 
     #[test]
     fn longpress_independent_of_click() {
-        // LongPress 后 Up → Click 照发（独立，照 fgui）。
+        // LongPress 后 Up → Click 照发（独立）。
         let mut s = one_button_scene();
         let mut ps = PointerState::new();
         ps.time_s = 0.0;
@@ -1939,7 +1894,7 @@ mod tests {
         assert!(!out.iter().any(|e| e.event_type == EVT_LONG_PRESS), "disabled → 不发 LongPress");
     }
 
-    // ===== v1d.2 T4: 焦点 + 键盘 =====
+    // ===== 焦点 + 键盘 =====
 
     /// root + btnA(tabindex=0) + btnB(tabindex=0)，均 @ 各位可区分。
     fn two_focusable_scene() -> Scene {
@@ -2143,7 +2098,7 @@ mod tests {
         assert_eq!(s.focused_node, None);
     }
 
-    // ===== v1d.5 T7: scroll 手势仲裁 =====
+    // ===== scroll 手势仲裁 =====
 
     /// root(0) + scroll 容器(1) overflow_y=Scroll viewport 100x100 + content 子(2) 40x200（content>viewport y 轴）。
     /// refresh_content_sizes 后容器 1 overlap_y=100，effective_y=true（Scroll 永真），effective_x=false（Visible）。
@@ -2325,7 +2280,7 @@ mod tests {
         assert!(slot.scrolling_pane.is_none(), "无 scroll 容器 → scrolling_pane=None");
     }
 
-    // ── v1d.5 T9：scrollbar grip 拖拽 ─────────────────────────────
+    // ── scrollbar grip 拖拽 ─────────────────────────────
 
     fn grip_scroll_scene() -> Scene {
         use crate::scene::node::NodeKind;

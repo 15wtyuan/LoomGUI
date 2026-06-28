@@ -8,7 +8,7 @@ use loomgui_core::input::{EventRecord, KeyEvent, PointerEvent};
 use loomgui_core::scene::NodeId;
 use loomgui_core::stage::Stage;
 
-/// 版本字符串（C null-terminated `b"v1e\0"`）。Task 1 工具链 round-trip 用。
+/// 版本字符串（C null-terminated `b"v1e\0"`）。
 ///
 /// 返回 `*const u8`（csbindgen 映射为 C# `byte*`）；CString::as_ptr 给的是
 /// `*const c_char`（i8），这里 cast 对齐签名。OnceLock 缓存，避免每次分配+泄漏。
@@ -24,7 +24,7 @@ pub extern "C" fn loomgui_version() -> *const u8 {
 pub struct StageHandle {
     stage: Stage,
     frame_blob: Vec<u8>, // borrow_frame 返回 &this[..]；tick 时被覆盖。
-    dump_blob: CString, // v1d.3：dump_scene 缓存（Rust 拥有）
+    dump_blob: CString, // dump_scene 缓存（Rust 拥有）
 }
 
 /// 创建 Stage 句柄。`font_path` 为 UTF-8 字节（指针+len），失败返回 null。
@@ -130,7 +130,7 @@ pub extern "C" fn loomgui_stage_atlas_count(h: *const StageHandle) -> usize {
 
 /// 第 i 个 atlas 信息。返 atlas filename UTF-8 串指针（**无尾 NUL** + *out_src_len=字节长）；
 /// *out_tex_id = core 分配的 atlas tex_id（= i+1）；*out_w/*out_h = atlas 像素尺寸。
-/// OOB / null → null。串归 Stage 拥有，下次 load 前有效（坑16 len-based 读契约）。
+/// OOB / null → null。串归 Stage 拥有，下次 load 前有效（len-based 读契约）。
 #[no_mangle]
 pub extern "C" fn loomgui_stage_atlas_info(
     h: *const StageHandle,
@@ -153,7 +153,7 @@ pub extern "C" fn loomgui_stage_atlas_info(
     a.filename.as_ptr()
 }
 
-/// 跑一帧 tick_and_render → build_blob 写入缓存。v1c.4：dt 累积进 time_s（双击窗口，C# 传 unscaledDeltaTime）。
+/// 跑一帧 tick_and_render → build_blob 写入缓存。dt 累积进 time_s（双击窗口，C# 传 unscaledDeltaTime）。
 #[no_mangle]
 pub extern "C" fn loomgui_stage_tick(h: *mut StageHandle, dt: f32) {
     if h.is_null() {
@@ -193,7 +193,7 @@ pub extern "C" fn loomgui_stage_borrow_frame(
     sh.frame_blob.as_ptr()
 }
 
-/// v1d.3：dump 整树 JSON（调试）。返 Rust 拥有的 UTF-8 C 串 + len；下 tick 失效。
+/// dump 整树 JSON（调试）。返 Rust 拥有的 UTF-8 C 串 + len；下 tick 失效。
 #[no_mangle]
 pub extern "C" fn loomgui_stage_dump_scene(h: *mut StageHandle, out_len: *mut usize) -> *const u8 {
     if h.is_null() || out_len.is_null() { return std::ptr::null(); }
@@ -260,7 +260,7 @@ pub extern "C" fn loomgui_stage_borrow_events(
     events.as_ptr() as *const u8
 }
 
-/// UI 挡住时游戏不响应点击（§10.6）。= 任一活跃槽 last_hit 非空且非根（v1c.3 多指：鼠标 slot0 + 已分配触摸槽）。
+/// UI 挡住时游戏不响应点击（§10.6）。= 任一活跃槽 last_hit 非空且非根（多指：鼠标 slot0 + 已分配触摸槽）。
 /// null 句柄 → false。
 ///
 /// **常驻（不 gate）。**
@@ -290,9 +290,9 @@ pub extern "C" fn loomgui_stage_set_node_disabled(
     sh.stage.set_node_disabled(NodeId(node_id as usize), disabled);
 }
 
-/// 返 parent node_id（v1c.2：C# 事件路由沿链用，spec §4.2）。根/越界/无 scene → 0xFFFF_FFFF（sentinel）。
+/// 返 parent node_id（C# 事件路由沿链用，spec §4.2）。根/越界/无 scene → 0xFFFF_FFFF（sentinel）。
 ///
-/// **常驻（不 gate）：**runtime 稳定入口，`--no-default-features` 构建的 .dll 仍有本函数（坑 21）。
+/// **常驻（不 gate）：**runtime 稳定入口，`--no-default-features` 构建的 .dll 仍有本函数。
 #[no_mangle]
 pub extern "C" fn loomgui_node_parent(h: *const StageHandle, node_id: u32) -> u32 {
     const ROOT_SENTINEL: u32 = 0xFFFF_FFFF;
@@ -313,10 +313,10 @@ pub extern "C" fn loomgui_node_parent(h: *const StageHandle, node_id: u32) -> u3
     }
 }
 
-/// 按 CSS id 属性查节点（v1c.1+ enabler：业务用 id 定位节点替代硬编码 build 序 id）。
+/// 按 CSS id 属性查节点（业务用 id 定位节点替代硬编码 build 序 id）。
 /// id = UTF-8 字节（指针+len）。返 node_id；null 句柄/非 UTF-8/无匹配 → 0xFFFF_FFFF（sentinel，同 node_parent）。
 ///
-/// **常驻（不 gate）：**runtime 稳定入口，`--no-default-features` 构建的 .dll 仍有本函数（坑 21）。
+/// **常驻（不 gate）：**runtime 稳定入口，`--no-default-features` 构建的 .dll 仍有本函数。
 #[no_mangle]
 pub extern "C" fn loomgui_stage_find_node_by_id(
     h: *const StageHandle,
@@ -339,7 +339,7 @@ pub extern "C" fn loomgui_stage_find_node_by_id(
     }
 }
 
-/// 加 touch monitor（v1c.3：C# CaptureTouch 后调）。核心把 node 加进 touch_id 对应槽的 touch_monitors（去重）。
+/// 加 touch monitor（C# CaptureTouch 后调）。核心把 node 加进 touch_id 对应槽的 touch_monitors（去重）。
 /// touch_id=-1 → 鼠标主指槽；找不到槽 → no-op。null 句柄 → no-op。
 ///
 /// **常驻（不 gate）：**runtime 稳定入口。
@@ -350,7 +350,7 @@ pub extern "C" fn loomgui_stage_add_touch_monitor(h: *mut StageHandle, touch_id:
     sh.stage.add_touch_monitor(touch_id, NodeId(node_id as usize));
 }
 
-/// 移除 touch monitor（v1c.3：C# 主动释放调）。从所有槽移除该 node。null 句柄 → no-op。
+/// 移除 touch monitor（C# 主动释放调）。从所有槽移除该 node。null 句柄 → no-op。
 ///
 /// **常驻（不 gate）。**
 #[no_mangle]
@@ -360,7 +360,7 @@ pub extern "C" fn loomgui_stage_remove_touch_monitor(h: *mut StageHandle, node_i
     sh.stage.remove_touch_monitor(NodeId(node_id as usize));
 }
 
-/// v1c.4：外部取消待 click（照 fgui Stage.CancelClick(touchId)）。置对应槽 click_cancelled。
+/// 外部取消待 click（照 fgui Stage.CancelClick(touchId)）。置对应槽 click_cancelled。
 /// null 句柄 → no-op。
 #[no_mangle]
 pub extern "C" fn loomgui_stage_cancel_click(h: *mut StageHandle, touch_id: i32) {
@@ -371,7 +371,7 @@ pub extern "C" fn loomgui_stage_cancel_click(h: *mut StageHandle, touch_id: i32)
     sh.stage.cancel_click(touch_id);
 }
 
-/// v1d.2：注入本帧键盘事件（扁平 KeyEvent 数组）。tick 前调。null/len=0 = 无键盘输入。
+/// 注入本帧键盘事件（扁平 KeyEvent 数组）。tick 前调。null/len=0 = 无键盘输入。
 ///
 /// **常驻（不 gate）：**输入是 runtime 稳定入口。
 #[no_mangle]
@@ -386,7 +386,7 @@ pub extern "C" fn loomgui_stage_set_key_input(h: *mut StageHandle, keys: *const 
     sh.stage.set_key_input(ks);
 }
 
-/// v1d.5-T8：注入本帧滚轮事件（扁平 WheelEvent 数组）。tick 前调；**累积式**（多次调合并）。
+/// 注入本帧滚轮事件（扁平 WheelEvent 数组）。tick 前调；**累积式**（多次调合并）。
 /// null/len=0 = 本帧无滚轮（直接 return，不清空——与 set_key_input 不同；累积语义）。
 ///
 /// **常驻（不 gate）：**输入是 runtime 稳定入口。
@@ -405,7 +405,7 @@ pub extern "C" fn loomgui_stage_set_wheel_input(
     sh.stage.set_wheel_input(evs);
 }
 
-/// v1d.5-T11：编程滚动到指定位置。非 scroll 容器 / 越界 node → no-op（不 panic）。
+/// 编程滚动到指定位置。非 scroll 容器 / 越界 node → no-op（不 panic）。
 /// animated: u8（0=瞬移 1=缓动 cubic-out）。null 句柄 → no-op。
 #[no_mangle]
 pub extern "C" fn loomgui_stage_set_scroll_pos(
@@ -420,7 +420,7 @@ pub extern "C" fn loomgui_stage_set_scroll_pos(
     handle.stage.set_scroll_pos(NodeId(node_id as usize), x, y, animated != 0);
 }
 
-/// v1d.2：编程聚焦节点（照 fgui RequestFocus）。强制聚焦任意非 disabled 节点
+/// 编程聚焦节点（照 fgui RequestFocus）。强制聚焦任意非 disabled 节点
 /// （含 tabindex=None/-1）；disabled 拒；越界跳过。null 句柄 → no-op。
 ///
 /// **常驻（不 gate）。**
@@ -431,7 +431,7 @@ pub extern "C" fn loomgui_stage_request_focus(h: *mut StageHandle, node_id: u32)
     sh.stage.request_focus(NodeId(node_id as usize));
 }
 
-/// v1d.2：读当前焦点节点。无焦点/无 scene → 0xFFFF_FFFF（sentinel，同 node_parent）。null 句柄 → sentinel。
+/// 读当前焦点节点。无焦点/无 scene → 0xFFFF_FFFF（sentinel，同 node_parent）。null 句柄 → sentinel。
 ///
 /// **常驻（不 gate）。**
 #[no_mangle]
@@ -445,27 +445,23 @@ pub extern "C" fn loomgui_stage_focused_node(h: *const StageHandle) -> u32 {
     }
 }
 
-/// 全局 shutdown（Domain reload hook）。C# `LoomStage.ResetStatics`（SubsystemRegistration）
-/// 调用本函数——即使当前核心无全局态，hook 必须存在：v1b 引入 global texture/font registry
-/// 时此处自动清，无需再改接线。
+/// 全局 shutdown（Domain reload hook）。C# `LoomStage.ResetStatics`（SubsystemRegistration）调用。
 ///
-/// **v1a：near-no-op（诚实）。**核心无全局 native 态——Stage 是 per-handle（`loomgui_stage_free`
-/// drop 全部 Stage 拥有的内存）。
+/// 当前核心无全局 native 态——Stage 是 per-handle（`loomgui_stage_free` drop 全部 Stage 拥有的内存），
+/// 故本函数 near-no-op。但 hook 必须存在：将来引入全局 texture/font registry（进程级单例缓存）时，
+/// 此处自动成为清理入口，无需再改 C# 接线。
 ///
 /// **注意：Font 的 `Box::leak`（`text/layout.rs:76`）是真泄漏**——`bytes.clone()` 后 leak 取
-/// `'static` 切片喂 ttf-parser Face，原 Vec 虽被 `_bytes` 持有但与 leaked 切片**不是同一份**，
-/// Stage drop 时 `_bytes` 释放的是 clone 来源而非 leaked 副本。每次 Stage 创建（`loomgui_stage_new`
-/// → Font）都 leak 一份字体字节。这是 v0 已知简化（§4.6），**不可由 shutdown 回收**（leak 切片
-/// 无 handle 跟踪）——除非 Stage 句柄侧记录 leaked ptr 并在此处显式 `Box::from_raw` 释放，但
-/// v1a 不做（×20 域重载测的内存观测将决定是否 Phase 2 内做字体缓存化为进程单例）。
-///
-/// **v1b：**全局 texture/font registry（进程级单例缓存化后）将在此清——届时填实现。
+/// `'static` 切片喂 ttf-parser Face，原 Vec 虽被 `_bytes` 持有但与 leaked 切片不是同一份，
+/// Stage drop 时 `_bytes` 释放的是 clone 来源而非 leaked 副本。每次 Stage 创建都 leak 一份字体字节，
+/// 不可由 shutdown 回收（leak 切片无 handle 跟踪）。若未来域重载内存观测触发阈值，
+/// 再考虑字体缓存化为进程单例。
 #[no_mangle]
 pub extern "C" fn loomgui_shutdown() {}
 
-// ===== v1d.4 tween FFI =====
+// ===== tween FFI =====
 
-/// v1d.4：注册 tween。start/end 指向 ≥value_size 个 f32（value_size 由 prop 隐含）。
+/// 注册 tween。start/end 指向 ≥value_size 个 f32（value_size 由 prop 隐含）。
 /// null 句柄/null 指针 → no-op。越界 node / duration<=0 由 core update 处理（跳过/立即 complete）。
 #[no_mangle]
 pub extern "C" fn loomgui_stage_tween(
@@ -503,7 +499,7 @@ pub extern "C" fn loomgui_stage_tween(
     sh.stage.tween(NodeId(node_id as usize), prop, s, e, ease, delay, duration, tag);
 }
 
-/// v1d.4：停该节点该 prop 的 tween（override 保留末值）。
+/// 停该节点该 prop 的 tween（override 保留末值）。
 #[no_mangle]
 pub extern "C" fn loomgui_stage_kill_tween(h: *mut StageHandle, node_id: u32, prop: u32) {
     if h.is_null() {
@@ -515,7 +511,7 @@ pub extern "C" fn loomgui_stage_kill_tween(h: *mut StageHandle, node_id: u32, pr
     }
 }
 
-/// v1d.4：清该节点所有动画 override（回 CSS）。
+/// 清该节点所有动画 override（回 CSS）。
 #[no_mangle]
 pub extern "C" fn loomgui_stage_clear_anim(h: *mut StageHandle, node_id: u32) {
     if h.is_null() {
@@ -525,7 +521,7 @@ pub extern "C" fn loomgui_stage_clear_anim(h: *mut StageHandle, node_id: u32) {
     sh.stage.clear_anim(NodeId(node_id as usize));
 }
 
-/// v1d.4：清该节点某 prop 对应通道（回 CSS）。
+/// 清该节点某 prop 对应通道（回 CSS）。
 #[no_mangle]
 pub extern "C" fn loomgui_stage_clear_anim_prop(h: *mut StageHandle, node_id: u32, prop: u32) {
     if h.is_null() {
@@ -550,7 +546,7 @@ mod tests {
         }
     }
 
-    /// v1d.4 FFI tween：注册 opacity tween → tick 结束 → borrow_events 验 complete(tag)。
+    /// FFI tween：注册 opacity tween → tick 结束 → borrow_events 验 complete(tag)。
     /// borrow_events 返回 *const u8 + len=记录数（非字节数；见 lib.rs:237 注释）。
     /// 单切片：按记录数 len 切 typed slice，扫 event_type=EVT_TWEEN_COMPLETE && touch_id==tag。
     #[cfg(feature = "parse")]
@@ -585,7 +581,7 @@ mod abi_tests {
     use std::ffi::CString;
 
     /// 字体路径：CARGO_MANIFEST_DIR = loomgui_ffi_c/，字体在
-    /// ../loomgui_core/tests/fixtures/DejaVuSans.ttf（仓库内 v0 测试字体）。
+    /// ../loomgui_core/tests/fixtures/DejaVuSans.ttf（仓库内测试字体）。
     fn font_path() -> (CString, usize) {
         let p = format!(
             "{}/../loomgui_core/tests/fixtures/DejaVuSans.ttf",
@@ -653,7 +649,7 @@ mod abi_tests {
     }
 
     /// 契约：从未 tick 过的句柄 borrow_frame 必须返回 null + len=0
-    /// （空 Vec::as_ptr() 是非空悬挂哨兵，Fix-1 显式判空锁住"未 tick→null"契约）。
+    /// （空 Vec::as_ptr() 是非空悬挂哨兵，显式判空锁住"未 tick→null"契约）。
     #[test]
     fn borrow_frame_never_ticked_returns_null() {
         let (fp, fplen) = font_path();
@@ -667,7 +663,7 @@ mod abi_tests {
     }
 
     /// atlas_count/atlas_info：手搓含 atlas 的包 → load_package → 读 atlas 元数据。
-    /// 契约（坑16）：atlas_info 返 String::as_ptr（无尾 NUL）+ *out_src_len=字节长，
+    /// 契约：atlas_info 返 String::as_ptr（无尾 NUL）+ *out_src_len=字节长，
     /// 故用 slice::from_raw_parts + from_utf8 读，不能用 CStr（String 无 trailing \0）。
     /// *out_tex_id = atlas index + 1（atlas[0]→tex_id 1，build_registry 同约定）。
     #[test]
@@ -784,14 +780,14 @@ mod abi_tests {
         loomgui_stage_free(h);
     }
 
-    /// EventRecord/PointerEvent sizeof（v1c.3 契约）。
+    /// EventRecord/PointerEvent sizeof 契约。
     /// PointerEvent 16B：PointerKind repr(u8) 1B + button 1B + pad 2B + touch_id@4 + x@8 + y@12。
     /// EventRecord 20B：node_id@0(4) + event_type@4(1) + pad@5(3) + touch_id@8(4) + x@12(4) + y@16(4)。
     #[test]
     fn pointer_event_event_record_sizeof() {
         use loomgui_core::input::{PointerEvent, EventRecord};
         assert_eq!(std::mem::size_of::<PointerEvent>(), 16, "PointerEvent 16B（PointerKind repr(u8)）");
-        assert_eq!(std::mem::size_of::<EventRecord>(), 20, "EventRecord 20B（v1c.2 是 16，+touch_id@8）");
+        assert_eq!(std::mem::size_of::<EventRecord>(), 20, "EventRecord 20B（touch_id@8）");
     }
 
     /// 借事件读 touch_id 字段（POD @8 偏移）。装载按钮 + 触摸 Down，验 touch_id 贯穿。
@@ -864,10 +860,10 @@ mod abi_tests {
         loomgui_stage_free(h);
     }
 
-    /// 5 函数常驻契约：无 parse feature 也能编译（§14.6 坑21）。
+    /// 5 函数常驻契约：无 parse feature 也能编译（§14.6）。
     /// 此测在 normal build 跑，验证 5 函数 + PointerEvent/EventRecord 常驻可调。
     /// 不 tick（tick_and_render 需先 load scene）——本测只验常驻编译/调用安全；
-    /// 真正的 --no-default-features 验在 Step 5 `cargo build -p loomgui_ffi_c --no-default-features`。
+    /// 真正的 --no-default-features 验由 `cargo build -p loomgui_ffi_c --no-default-features` 完成。
     /// 行为验（含 set_input→tick→borrow_events/is_pointer_on_ui）在 parse-feature 测中覆盖。
     #[test]
     fn no_default_features_builds() {
@@ -885,7 +881,7 @@ mod abi_tests {
         loomgui_stage_free(h);
     }
 
-    /// node_parent 契约（v1c.2）：child.parent==root；root.parent==sentinel；OOB==sentinel。
+    /// node_parent 契约：child.parent==root；root.parent==sentinel；OOB==sentinel。
     #[test]
     fn node_parent_returns_chain_and_sentinel() {
         use loomgui_core::asset::{write_package, AtlasSection};
@@ -938,7 +934,7 @@ mod abi_tests {
         loomgui_stage_free(h);
     }
 
-    /// v1e：version 字符串 == "v1e"（原 v1d.5 lock，bump 后同步）。
+    /// version 字符串 == "v1e"。
     #[test]
     fn version_is_v1d_5() {
         let p = loomgui_version();
@@ -947,7 +943,7 @@ mod abi_tests {
         assert_eq!(s, "v1e");
     }
 
-    /// v1e：version 串 = "v1e"（FFI version bump，零契约改）。
+    /// version 串 = "v1e"。
     #[test]
     fn version_is_v1e() {
         let p = loomgui_version();
@@ -956,7 +952,7 @@ mod abi_tests {
         assert_eq!(s, "v1e");
     }
 
-    /// v1d.1：EventRecord 仍 20B（drag/longpress 复用 event_type 空位 6-9）、PointerEvent 16B、Canceled=3。
+    /// EventRecord 仍 20B（drag/longpress 复用 event_type 空位 6-9）、PointerEvent 16B、Canceled=3。
     #[test]
     fn event_record_and_pointer_event_sizes_unchanged() {
         use loomgui_core::input::{EventRecord, PointerEvent, PointerKind};
@@ -966,7 +962,7 @@ mod abi_tests {
         assert_eq!(PointerKind::Canceled as u8, 3, "Canceled=3");
     }
 
-    /// v1c.4：cancel_click FFI——Down → cancel_click → Up → 无 Click，Up 仍发。
+    /// cancel_click FFI——Down → cancel_click → Up → 无 Click，Up 仍发。
     /// 2-frame flow：frame1 Down@btn + tick，cancel_click(-1)，frame2 Up@btn + tick，borrow_events 验。
     #[cfg(feature = "parse")]
     #[test]
@@ -994,7 +990,7 @@ mod abi_tests {
         loomgui_stage_free(h);
     }
 
-    /// v1d.1：EVT 常量值锁（6/7/8/9）+ drag 端到端：draggable btn Down+Move>阈值 → borrow_events 含 DragStart。
+    /// EVT 常量值锁（6/7/8/9）+ drag 端到端：draggable btn Down+Move>阈值 → borrow_events 含 DragStart。
     #[cfg(feature = "parse")]
     #[test]
     fn drag_start_round_trip() {
@@ -1023,7 +1019,7 @@ mod abi_tests {
         loomgui_stage_free(h);
     }
 
-    /// v1d.1：longpress 端到端——Down@btn + tick dt 累积 1.5s → LongPress。
+    /// longpress 端到端——Down@btn + tick dt 累积 1.5s → LongPress。
     #[cfg(feature = "parse")]
     #[test]
     fn long_press_round_trip() {
@@ -1047,7 +1043,7 @@ mod abi_tests {
         loomgui_stage_free(h);
     }
 
-    /// v1d.2：KeyEvent sizeof 8B + EventRecord 仍 20B / PointerEvent 16B。
+    /// KeyEvent sizeof 8B + EventRecord 仍 20B / PointerEvent 16B。
     #[test]
     fn key_event_sizeof_and_unchanged() {
         use loomgui_core::input::{EventRecord, KeyEvent, PointerEvent};
@@ -1057,7 +1053,7 @@ mod abi_tests {
         assert_eq!(size_of::<PointerEvent>(), 16, "PointerEvent 16B 不变");
     }
 
-    /// v1d.2：EVT 常量值锁（12/13/14/15）。
+    /// EVT 常量值锁（12/13/14/15）。
     #[test]
     fn evt_constants_v1d2() {
         assert_eq!(loomgui_core::input::EVT_KEY_DOWN, 12);
@@ -1066,7 +1062,7 @@ mod abi_tests {
         assert_eq!(loomgui_core::input::EVT_FOCUS_OUT, 15);
     }
 
-    /// v1d.2：key 事件 round-trip——click-to-focus btn + Enter keydown + tick → borrow_events 含 KeyDown@焦点。
+    /// key 事件 round-trip——click-to-focus btn + Enter keydown + tick → borrow_events 含 KeyDown@焦点。
     #[cfg(feature = "parse")]
     #[test]
     fn key_event_round_trip() {
@@ -1092,7 +1088,7 @@ mod abi_tests {
         loomgui_stage_free(h);
     }
 
-    /// v1d.2：Tab 导航 round-trip——两可聚焦 btn + Tab → borrow_events 含 FocusIn（无 KeyDown）。
+    /// Tab 导航 round-trip——两可聚焦 btn + Tab → borrow_events 含 FocusIn（无 KeyDown）。
     #[cfg(feature = "parse")]
     #[test]
     fn tab_navigation_round_trip() {
@@ -1116,7 +1112,7 @@ mod abi_tests {
         loomgui_stage_free(h);
     }
 
-    /// v1d.2：request_focus + focused_node round-trip。验 R3 修正：request_focus 记 pending，
+    /// request_focus + focused_node round-trip。request_focus 记 pending，
     /// 未 tick 时 focused_node 仍 sentinel；tick 后消费生效。
     #[cfg(feature = "parse")]
     #[test]
@@ -1136,7 +1132,7 @@ mod abi_tests {
         loomgui_stage_free(h);
     }
 
-    /// v1d.3：dump_scene FFI round-trip——load_html → tick → dump_scene 返 JSON 数组（首字节 `[`）。
+    /// dump_scene FFI round-trip——load_html → tick → dump_scene 返 JSON 数组（首字节 `[`）。
     #[cfg(feature = "parse")]
     #[test]
     fn dump_scene_returns_json_array() {
@@ -1163,7 +1159,7 @@ mod abi_tests {
         loomgui_stage_free(h);
     }
 
-    /// v1d.5-T8：set_wheel_input round-trip —— 推 WheelEvent 入 Stage，验 pending_wheel 累积。
+    /// set_wheel_input round-trip —— 推 WheelEvent 入 Stage，验 pending_wheel 累积。
     /// 复用 Stage 类型直接构造（不经过 FFI pointer 层——abi_tests 测 public API 契约）。
     #[test]
     fn set_wheel_input_round_trip() {
@@ -1177,7 +1173,7 @@ mod abi_tests {
         assert_eq!(stage.pending_wheel.len(), 1);
     }
 
-    /// v1d.5-T11 helper：构造带 overflow:scroll 容器的 Stage（无子；手动填 layout_rect + scroll state）。
+    /// helper：构造带 overflow:scroll 容器的 Stage（无子；手动填 layout_rect + scroll state）。
     fn build_scroll_stage() -> Stage {
         let fp = format!(
             "{}/../loomgui_core/tests/fixtures/DejaVuSans.ttf",
@@ -1244,7 +1240,7 @@ mod abi_tests {
         stage.set_scroll_pos(NodeId(99), 0.0, 50.0, false);
     }
 
-    /// v1d.5-T11：loomgui_stage_set_scroll_pos FFI round-trip。
+    /// loomgui_stage_set_scroll_pos FFI round-trip。
     #[cfg(feature = "parse")]
     #[test]
     fn ffi_set_scroll_pos_round_trip() {
@@ -1269,7 +1265,7 @@ mod abi_tests {
         loomgui_stage_free(h);
     }
 
-    /// v1d.5-T8：WheelEvent ABI 尺寸 16B（4×f32 紧凑，C# 端同布局）。
+    /// WheelEvent ABI 尺寸 16B（4×f32 紧凑，C# 端同布局）。
     /// compile-time 断言已在 scroll.rs:27-29 锁住；本测为 runtime 可见的检查。
     #[test]
     fn wheel_event_is_16_bytes() {

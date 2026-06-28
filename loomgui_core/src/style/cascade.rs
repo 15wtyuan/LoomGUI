@@ -44,7 +44,7 @@ pub fn resolve_styles(tree: &ElementTree, sheet: &StyleSheet) -> Vec<ResolvedSty
             }
         }
         // inline style（specificity 最高，> id > class）：sheet rules 之后 apply，最后胜出。
-        // v1d.5+ 补 v0 缺口——色块 style="background-color:..." / §2 flx style="flex-direction:..." 等。
+        // 色块 style="background-color:..." / flex 容器 style="flex-direction:..." 等靠此生效。
         if let Some(style_str) = el.attrs.get("style") {
             for decl in parse_inline_style(style_str) {
                 apply_decl(&mut style, &decl.prop, &decl.value);
@@ -53,7 +53,7 @@ pub fn resolve_styles(tree: &ElementTree, sheet: &StyleSheet) -> Vec<ResolvedSty
         out[id.0] = style;
         // 借用检查：resolve_rec 同时要 parent=&ResolvedStyle 和 &mut out，
         // 两者在 out 上冲突。把 parent 克隆出来脱离 out 的借用即可。
-        // （仅克隆一个 ResolvedStyle/子节点，font_family 是唯一堆分配，v0 可接受。）
+        // （仅克隆一个 ResolvedStyle/子节点，font_family 是唯一堆分配，开销可接受。）
         let owned_style = out[id.0].clone();
         for child in &el.children {
             resolve_rec(tree, sheet, *child, Some(&owned_style), out);
@@ -79,7 +79,7 @@ mod tests {
 
     #[test]
     fn inheritance_propagates_color() {
-        // 注意：v0 style 属性未在 dom 层解析。用 <style> 块测继承。
+        // 用 <style> 块测继承（class 规则驱动）。
         let html2 = r#"<div class="root"><span class="child">hi</span></div>"#;
         let css = r#".root { color: #ff0000; font-size: 20px; } .child { width: 50px; }"#;
         let tree = parse_html(html2).unwrap();
@@ -109,7 +109,7 @@ mod tests {
 
     #[test]
     fn pseudo_class_rules_excluded_from_base_cascade() {
-        // 回归 v1d：伪类规则（:hover/:active/:focus）不该进 base_style——运行时 rematch 按状态动态应用。
+        // 伪类规则（:hover/:active/:focus）不该进 base_style——运行时 rematch 按状态动态应用。
         // compound_matches 须跳过含伪类的 compound，否则 .btn:focus 紫 / .btn:hover 蓝 / .btn:active 红
         // 污染 .btn base（specificity 同级 (0,2,0)，源序最后者胜 → base 变最后一条伪类色）。
         let html = r#"<div class="root"><button class="btn">OK</button></div>"#;
@@ -129,7 +129,7 @@ mod tests {
 
     #[test]
     fn inline_style_applies_background_color() {
-        // §1 色块：<div class="sw" style="background-color:#1a1d2e"> —— 颜色靠 inline
+        // 色块：<div class="sw" style="background-color:#1a1d2e"> —— 颜色靠 inline
         // （.sw class 只给 width/height；不解析 inline → bg 缺失 → 透明看不见）。
         let html = r#"<div class="root"><div class="sw" style="background-color:#1a1d2e"></div></div>"#;
         let css = r#".sw { width: 60px; height: 60px; }"#;

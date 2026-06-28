@@ -18,7 +18,7 @@ pub struct Rule {
     pub declarations: Vec<Declaration>,
 }
 
-/// cssparser 后端。QualifiedRuleParser 产 Rule；AtRuleParser 默认拒（v0 无 @ 规则）。
+/// cssparser 后端。QualifiedRuleParser 产 Rule；AtRuleParser 默认拒（无 @ 规则）。
 struct NestingParser;
 
 impl<'i> QualifiedRuleParser<'i> for NestingParser {
@@ -59,11 +59,11 @@ impl<'i> AtRuleParser<'i> for NestingParser {
     type Prelude = ();
     type AtRule = Rule;
     type Error = ();
-    // v0 无 @ 规则，全部走默认拒实现
+    // 无 @ 规则，全部走默认拒实现
 }
 
 /// DeclParser 同时 impl 三个 trait（RuleBodyItemParser 的 super-trait 要求）。
-/// QualifiedRuleParser/AtRuleParser 用默认拒实现——v0 声明块内不嵌套规则。
+/// QualifiedRuleParser/AtRuleParser 用默认拒实现——声明块内不嵌套规则。
 struct DeclParser;
 
 impl<'i> QualifiedRuleParser<'i> for DeclParser {
@@ -83,7 +83,7 @@ impl<'i> RuleBodyItemParser<'i, Declaration, ()> for DeclParser {
         true
     }
     fn parse_qualified(&self) -> bool {
-        false // 声明块内不嵌套规则（v0 无 nesting）
+        false // 声明块内不嵌套规则（无 nesting）
     }
 }
 
@@ -114,7 +114,22 @@ pub fn parse_css(css: &str) -> Result<StyleSheet, String> {
     let mut nesting = NestingParser;
     let sheet = StyleSheetParser::new(&mut parser, &mut nesting);
     for rule in sheet.flatten() {
-        rules.push(rule);
+        // CSS 分组选择器 `.op,.tr{...}` 展开成多条 Rule（每组逗号隔开的选择器各一条，
+        // 共享 declarations）。cssparser 把整段 prelude 当一条 selector_text，parse_selector
+        // 不认逗号会把 `.op,.tr` 当单 compound（class=["op,","tr"]）→ 永不匹配。
+        // 在此层展开最稳：parse_selector / match_element 无需感知逗号。
+        let declarations = rule.declarations;
+        for sel in rule
+            .selector_text
+            .split(',')
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+        {
+            rules.push(Rule {
+                selector_text: sel.to_string(),
+                declarations: declarations.clone(),
+            });
+        }
     }
     Ok(StyleSheet { rules })
 }
@@ -158,12 +173,42 @@ mod tests {
 
     #[test]
     fn parse_inline_style_parses_declarations() {
-        // §1 色块 style="background-color:#1a1d2e" 等 inline 属性解析。
+        // 色块 style="background-color:#1a1d2e" 等 inline 属性解析。
         let decls = parse_inline_style("background-color:#1a1d2e; flex-direction:row");
         assert_eq!(decls.len(), 2);
         assert_eq!(decls[0].prop, "background-color");
         assert_eq!(decls[0].value, "#1a1d2e");
         assert_eq!(decls[1].prop, "flex-direction");
         assert_eq!(decls[1].value, "row");
+    }
+
+    /// CSS 分组选择器 `.op,.tr{...}` 必须展开成两条独立 Rule（CSS 标准语义）。
+    /// 不展开的话 parse_selector 不认逗号 → `.op,.tr` 当单 compound，class 切成
+    /// ["op,","tr"] → 要求元素同时含两个 → 永不匹配 → 规则整条失效。
+    #[test]
+    fn comma_group_selector_expands_to_multiple_rules() {
+        let ss = parse_css(".op,.tr{width:80px;background-color:#5fb2c4}").unwrap();
+        assert_eq!(ss.rules.len(), 2, ".op,.tr 展开为 2 条 Rule");
+        let sels: Vec<&str> = ss.rules.iter().map(|r| r.selector_text.as_str()).collect();
+        assert!(sels.contains(&".op"), "含 .op");
+        assert!(sels.contains(&".tr"), "含 .tr");
+        // 两条共享同 declarations（分组选择器语义）
+        for r in &ss.rules {
+            assert_eq!(r.declarations.len(), 2, "每条 Rule 含完整 declarations");
+        }
+    }
+
+    /// 分组选择器第二条单独命中元素（端到端验证展开后两组各自独立匹配）。
+    #[test]
+    fn comma_group_second_selector_matches_element() {
+        use crate::parse::dom::parse_html;
+        let html = r#"<div class="root"><div class="tr"></div></div>"#;
+        let css = ".op,.tr{background-color:#5fb2c4}";
+        let tree = parse_html(html).unwrap();
+        let sheet = parse_css(css).unwrap();
+        let styles = crate::style::cascade::resolve_styles(&tree, &sheet);
+        let tr_id = tree.nodes[tree.roots[0].0].children[0];
+        let bg = styles[tr_id.0].background_color.expect(".tr 应有 bg");
+        assert_eq!(bg, [0x5f as f32 / 255.0, 0xb2 as f32 / 255.0, 0xc4 as f32 / 255.0, 1.0]);
     }
 }

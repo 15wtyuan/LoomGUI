@@ -1,4 +1,4 @@
-//! v1d.3：每帧 DFS 算每节点累计世界矩阵（spec §3.2）。
+//! 每帧 DFS 算每节点累计世界矩阵。
 //! pivot = box center（w/2,h/2）；local = T(rel) ∘ T(pivot) ∘ transform ∘ T(-pivot)；
 //! world = parent.world ∘ local。
 
@@ -23,7 +23,7 @@ fn rec(scene: &Scene, anim: &AnimTable, id: NodeId, parent_world: Affine2, world
         Some(p) => (lr.x - scene.nodes[p.0].layout_rect.x, lr.y - scene.nodes[p.0].layout_rect.y),
         None => (lr.x, lr.y),
     };
-    // v1d.4：transform 矩阵源 = anim.transform override（replace-override）unwrap css matrix。
+    // transform 矩阵源 = anim.transform override（replace-override）unwrap css matrix。
     let m = anim
         .get(id)
         .and_then(|a| a.transform)
@@ -36,9 +36,9 @@ fn rec(scene: &Scene, anim: &AnimTable, id: NodeId, parent_world: Affine2, world
             &transform::mul(&m, &transform::from_translate(-pivot.0, -pivot.1)),
         ),
     );
-    // v1d.5：父若是滚动容器，world 前乘 T(-父.scroll_pos)（offset 注入，spec §3）。
+    // 父若是滚动容器，world 前乘 T(-父.scroll_pos)（offset 注入）。
     // 容器自身 world 不含自己 scroll_pos（其 world 用它父的 offset）；后代每层累积。
-    // scroll_pos=(0,0) → T(0,0)=identity → no-op（零回归）。
+    // scroll_pos=(0,0) → T(0,0)=identity → no-op。
     let world = match node.parent.and_then(|p| scene.scroll.get(p)) {
         Some(st) => transform::mul(
             &parent_world,
@@ -68,7 +68,7 @@ mod tests {
         n
     }
 
-    // v1d.5：scroll 容器 helper——overflow_y=Scroll（仅样式标记，scroll 表项由 ensure 注入）。
+    // scroll 容器 helper——overflow_y=Scroll（仅样式标记，scroll 表项由 ensure 注入）。
     fn scroll_node(id: usize, parent: Option<usize>, rect: Rect) -> Node {
         let mut n = node(id, parent, rect);
         n.style.overflow_y = OverflowMode::Scroll;
@@ -160,7 +160,7 @@ mod tests {
         assert!(s.world_transforms[0].is_pure_translation());
     }
 
-    // v1d.5 T5：offset 注入——父 scroll_pos 影响 子 world，不影响容器自身。
+    // offset 注入——父 scroll_pos 影响 子 world，不影响容器自身。
     #[test]
     fn scroll_offset_applies_to_children_not_container() {
         // 容器 (0,0,100,100) overflow:scroll；子 (0,0,20,20)；scroll_pos=(0,30)
@@ -196,7 +196,7 @@ mod tests {
         assert_eq!(a.world_transforms, b.world_transforms, "scroll_pos=0 no-op：与无 scroll 表项等价");
     }
 
-    // I1 fix：嵌套 scroll 累积——3 层 scroll 容器，offset 逐层叠加。
+    // 嵌套 scroll 累积——3 层 scroll 容器，offset 逐层叠加。
     #[test]
     fn nested_scroll_offsets_accumulate() {
         // scrollA(0,10) ⊃ scrollB(0,20) ⊃ leaf（均 overflow:scroll）

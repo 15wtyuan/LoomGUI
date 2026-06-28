@@ -1,4 +1,4 @@
-//! 诊断 §1.3 img 尺寸：dump 所有 Image 节点的 CSS size / layout_rect / 纹理注册情况。
+//! 诊断：dump 所有 Image 节点的 CSS size / layout_rect / 纹理注册情况。
 //! 定位 ① width:50% 压扁（高没等比）② width:auto 不渲染（rect 0? 未注册?）。
 use loomgui_core::scene::node::NodeKind;
 use loomgui_core::stage::Stage;
