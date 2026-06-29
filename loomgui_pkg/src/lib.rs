@@ -236,10 +236,14 @@ mod tests {
 
     use std::fs;
     use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static TEST_DIR_SEQ: AtomicU64 = AtomicU64::new(0);
 
     /// 建临时 res_dir，写一张 300×4 红 PNG（宽度确保两图不能并排于 512 宽 atlas，便于测去重），返回 (res_dir, png_filename)。
     fn write_tmp_png() -> (PathBuf, String) {
-        let dir = std::env::temp_dir().join(format!("loomgui_pkg_test_{}", std::process::id()));
+        let seq = TEST_DIR_SEQ.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("loomgui_pkg_test_{}_{}", std::process::id(), seq));
         fs::create_dir_all(&dir).unwrap();
         let name = "red.png".to_string();
         let img = image::RgbaImage::from_fn(300, 4, |_, _| image::Rgba([255, 0, 0, 255]));

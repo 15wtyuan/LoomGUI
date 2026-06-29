@@ -26,7 +26,7 @@ pub fn node_hash(rn: &RenderNode) -> u64 {
     // payload 摘要。
     match &rn.payload {
         NodePayload::Unchanged => 0u64,      // 防御；调用方不应对 Unchanged 调
-        NodePayload::Mesh { texture, verts, colors, .. } => {
+        NodePayload::Mesh { texture, verts, colors, uvs, .. } => {
             texture.hash(&mut h);
             verts.len().hash(&mut h);
             // 首末顶点 verts[0](TL) + verts[2](BR) 坐标——
@@ -35,6 +35,10 @@ pub fn node_hash(rn: &RenderNode) -> u64 {
             if let Some(v0) = verts.first() { v0[0].to_le_bytes().hash(&mut h); v0[1].to_le_bytes().hash(&mut h); }
             if let Some(v2) = verts.get(2) { v2[0].to_le_bytes().hash(&mut h); v2[1].to_le_bytes().hash(&mut h); }
             if let Some(c0) = colors.first() { for &v in c0.iter() { v.to_le_bytes().hash(&mut h); } }
+            // UV 摘要：background-size 变（cover/contain/stretch 切换，同纹理）→ fit_uv 重算 UV
+            // 但 texture/verts/colors 不变 → 须捕 UV 变否则 stale Unchanged。首末 UV 同 verts 摘要模式。
+            if let Some(uv0) = uvs.first() { uv0[0].to_le_bytes().hash(&mut h); uv0[1].to_le_bytes().hash(&mut h); }
+            if let Some(uv2) = uvs.get(2) { uv2[0].to_le_bytes().hash(&mut h); uv2[1].to_le_bytes().hash(&mut h); }
             h.finish()
         }
         NodePayload::Text { layout, font_size, color, .. } => {
@@ -165,6 +169,23 @@ mod tests {
             verts[0] = [50.0, 50.0];
         }
         assert_ne!(node_hash(&a), node_hash(&b), "Mesh quad 位置变（verts[0] 坐标）→ hash 变");
+    }
+
+    // -----------------------------------------------------------------------
+    // UV 变（background-size 切换：cover/contain/stretch，同纹理）
+    // → fit_uv 重算 UV 但 texture/verts/colors 不变 → 须捕 UV 否则 stale Unchanged
+    // (:hover 切 background-size 不生效）。
+    // -----------------------------------------------------------------------
+    #[test]
+    fn mesh_uv_change_changes_hash() {
+        // background-size 变（同纹理）→ fit_uv 重算 UV，但 texture/verts/colors 不变。
+        // 须捕 UV 变否则 stale Unchanged（:hover 切 background-size 不生效）。
+        let a = mesh_rn(1, 1.0, [1.0;4]); // uvs 全 [0,0]（默认）
+        let mut b = mesh_rn(1, 1.0, [1.0;4]); // 同 texture/verts/colors
+        if let NodePayload::Mesh { uvs, .. } = &mut b.payload {
+            uvs[0] = [0.25, 0.75]; // 模拟 cover fit_uv 重算的 TL UV
+        }
+        assert_ne!(node_hash(&a), node_hash(&b), "UV 变（background-size 切换）→ hash 变");
     }
 
     // -----------------------------------------------------------------------
