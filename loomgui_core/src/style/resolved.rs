@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use taffy::style::LengthPercentage;
 use taffy::style::Style as TaffyStyle;
 use taffy::FlexDirection;
 
@@ -26,6 +27,24 @@ pub enum BackgroundSize {
     Contain = 2,  // 完整放入留白（scale=min，UV 外扩，子区外透明透出底色）
 }
 
+/// CSS border-radius 单角半径（v1.2）。
+/// (h, v) = (水平, 垂直) 半径，存 CSS 原始值（px/%），渲染期 resolve 成像素。
+/// `/` 省略时 v = h（正圆角）。
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct CornerRadius {
+    pub h: LengthPercentage,  // 水平半径
+    pub v: LengthPercentage,  // 垂直半径
+}
+impl Default for CornerRadius {
+    fn default() -> Self { Self { h: LengthPercentage::Length(0.0), v: LengthPercentage::Length(0.0) } }
+}
+
+/// CSS border-radius 四角半径（v1.2）。corners 序 [TL, TR, BR, BL]（CSS 1~4 值展开序）。
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+pub struct BorderRadius {
+    pub corners: [CornerRadius; 4],
+}
+
 /// CSS transform 解析产物。内部存 Affine2 矩阵（非分解字段）——这样单节点
 /// `scale(2,1) rotate(45deg)` 的复合剪切在解析期就保留，不因提取字段丢失。
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -49,6 +68,8 @@ pub struct ResolvedStyle {
     pub background_image: Option<String>,
     /// CSS background-size 模式。默认 Stretch。
     pub background_size: BackgroundSize,
+    /// CSS border-radius 四角半径（v1.2）。默认全 0（直角）。
+    pub border_radius: BorderRadius,
     pub border_color: Option<[f32; 4]>,
     pub border_width: f32,
     pub opacity: f32,
@@ -92,6 +113,7 @@ impl Default for ResolvedStyle {
             background_color: None,
             background_image: None,
             background_size: BackgroundSize::Stretch,
+            border_radius: BorderRadius::default(),
             border_color: None,
             border_width: 0.0,
             opacity: 1.0,
@@ -149,6 +171,14 @@ mod tests {
         s.order = 5;
         s.background_image = Some("icons/home.png".to_string());
         s.background_size = BackgroundSize::Cover;
+        s.border_radius = BorderRadius {
+            corners: [
+                CornerRadius { h: LengthPercentage::Length(12.0), v: LengthPercentage::Length(12.0) },
+                CornerRadius { h: LengthPercentage::Length(0.0), v: LengthPercentage::Length(0.0) },
+                CornerRadius { h: LengthPercentage::Percent(0.25), v: LengthPercentage::Percent(0.25) },
+                CornerRadius { h: LengthPercentage::Length(4.0), v: LengthPercentage::Length(2.0) },
+            ],
+        };
 
         let bytes = bincode::serialize(&s).expect("serialize");
         let back: ResolvedStyle = bincode::deserialize(&bytes).expect("deserialize");
@@ -173,6 +203,33 @@ mod tests {
         assert_eq!(back.background_size, BackgroundSize::Contain);
         assert_eq!(back.background_image.as_deref(), Some("a.png"));
         assert_eq!(back, s, "新字段 round-trip 全等");
+    }
+
+    #[test]
+    fn border_radius_default_is_zero() {
+        let s = ResolvedStyle::default();
+        // 默认四角全 Length(0)（直角，零回归）
+        for c in &s.border_radius.corners {
+            assert_eq!(c.h, LengthPercentage::Length(0.0), "默认水平半径 0");
+            assert_eq!(c.v, LengthPercentage::Length(0.0), "默认垂直半径 0");
+        }
+    }
+
+    #[test]
+    fn border_radius_bincode_roundtrip() {
+        let mut s = ResolvedStyle::default();
+        // 非默认：TL=(8px,8px) 正圆角，TR=(10px,5px) 椭圆角
+        s.border_radius = BorderRadius {
+            corners: [
+                CornerRadius { h: LengthPercentage::Length(8.0), v: LengthPercentage::Length(8.0) },
+                CornerRadius { h: LengthPercentage::Length(10.0), v: LengthPercentage::Length(5.0) },
+                CornerRadius { h: LengthPercentage::Percent(0.5), v: LengthPercentage::Percent(0.5) },
+                CornerRadius { h: LengthPercentage::Length(0.0), v: LengthPercentage::Length(0.0) },
+            ],
+        };
+        let bytes = bincode::serialize(&s).unwrap();
+        let back: ResolvedStyle = bincode::deserialize(&bytes).unwrap();
+        assert_eq!(back.border_radius, s.border_radius, "border_radius 经 bincode round-trip 应相等");
     }
 
     #[test]
