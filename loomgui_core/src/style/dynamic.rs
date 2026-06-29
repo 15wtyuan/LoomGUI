@@ -533,4 +533,22 @@ mod tests {
         );
         assert!(!changed, "background-size 视觉字段 → layout 不 dirty");
     }
+
+    #[test]
+    fn border_radius_change_is_visual_not_layout_dirty() {
+        // border-radius 是视觉字段（非 taffy_style/order）→ rematch 不 layout dirty
+        let mut s = btn_scene();
+        s.dynamic_rules
+            .rules
+            .push(rule(".btn:hover", "border-radius", "8px"));
+        s.nodes[1].hovered = true;
+        let changed = rematch_pseudo_classes(&mut s);
+        // hover → border-radius:8px 生效（四角 h=v=Length(8)）
+        let bc = &s.nodes[1].style.border_radius.corners;
+        for c in bc {
+            assert_eq!(c.h, taffy::style::LengthPercentage::Length(8.0), "hover → border-radius 水平 8px");
+            assert_eq!(c.v, taffy::style::LengthPercentage::Length(8.0), "hover → border-radius 垂直 8px");
+        }
+        assert!(!changed, "border-radius 视觉字段 → layout 不 dirty");
+    }
 }
