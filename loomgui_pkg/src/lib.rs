@@ -237,12 +237,12 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
 
-    /// 建临时 res_dir，写一张 4×4 红 PNG，返回 (res_dir, png_filename)。
+    /// 建临时 res_dir，写一张 300×4 红 PNG（宽度确保两图不能并排于 512 宽 atlas，便于测去重），返回 (res_dir, png_filename)。
     fn write_tmp_png() -> (PathBuf, String) {
         let dir = std::env::temp_dir().join(format!("loomgui_pkg_test_{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         let name = "red.png".to_string();
-        let img = image::RgbaImage::from_fn(4, 4, |_, _| image::Rgba([255, 0, 0, 255]));
+        let img = image::RgbaImage::from_fn(300, 4, |_, _| image::Rgba([255, 0, 0, 255]));
         img.save(dir.join(&name)).unwrap();
         (dir, name)
     }
