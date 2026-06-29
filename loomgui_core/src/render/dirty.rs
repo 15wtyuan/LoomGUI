@@ -29,6 +29,9 @@ pub fn node_hash(rn: &RenderNode) -> u64 {
         NodePayload::Mesh { texture, verts, colors, uvs, .. } => {
             texture.hash(&mut h);
             verts.len().hash(&mut h);
+            // colors[0] 在 verts/uvs 之前哈希——恢复 quad 路径原始流顺序
+            // （texture→len→colors→verts→uvs），保 quad 零回归 hash 不变量。
+            if let Some(c0) = colors.first() { for &v in c0.iter() { v.to_le_bytes().hash(&mut h); } }
             if verts.len() > 4 {
                 // rounded_rect mesh：center verts[0] 不随半径变，[2] 只反映 TL 角
                 // → 仅 BL/BR/TR 半径变时采样 [0]/[2] 漏掉 → 哈希全量顶点/UV。
@@ -50,7 +53,6 @@ pub fn node_hash(rn: &RenderNode) -> u64 {
                 if let Some(uv0) = uvs.first() { uv0[0].to_le_bytes().hash(&mut h); uv0[1].to_le_bytes().hash(&mut h); }
                 if let Some(uv2) = uvs.get(2) { uv2[0].to_le_bytes().hash(&mut h); uv2[1].to_le_bytes().hash(&mut h); }
             }
-            if let Some(c0) = colors.first() { for &v in c0.iter() { v.to_le_bytes().hash(&mut h); } }
             h.finish()
         }
         NodePayload::Text { layout, font_size, color, .. } => {
