@@ -119,14 +119,26 @@ pub fn assign_sort_keys(scene: &Scene, nodes: &mut [RenderNode]) -> Vec<ClipEntr
         clips: &mut Vec<ClipEntry>,
         parent_mask: MaskContext,
         accumulated: Option<Rect>,
+        scroll_offset: (f32, f32),
     ) {
         let node = &scene.nodes[id.0];
         // mask_context + clip 交集：本节点 clip_rect 非空 → 开新层级（计数器+1），
         // 算 own ∩ accumulated；否则继承父层级与 accumulated。
-        let (mask, child_accumulated) = if let Some(own) = node.clip_rect {
+        //
+        // clip rect 减祖先 scroll_offset：transform.rs 给子节点 world_matrix 注入
+        // T(-祖先.scroll_pos)，故节点 world 在 (layout - scroll_offset) 空间。clip rect
+        // 须同空间——否则 shader clipPos（world 含 scroll）与 _ClipBox（design 不含 scroll）
+        // 错位，scroll 时 CLIPPED 节点 clipPos 超界全裁。
+        let (mask, intersected_for_kids) = if let Some(own) = node.clip_rect {
+            let own_scrolled = Rect {
+                x: own.x - scroll_offset.0,
+                y: own.y - scroll_offset.1,
+                w: own.w,
+                h: own.h,
+            };
             let intersected = match accumulated {
-                None => own,
-                Some(a) => rect_intersect(a, own),
+                None => own_scrolled,
+                Some(a) => rect_intersect(a, own_scrolled),
             };
             let ctx = *counter + 1;
             clips.push(ClipEntry { context_id: ctx, rect: intersected });
@@ -140,14 +152,29 @@ pub fn assign_sort_keys(scene: &Scene, nodes: &mut [RenderNode]) -> Vec<ClipEntr
             rn.mask_context = mask;
             *counter += 1;
         }
+        // 子树 scroll_offset：本节点是 scroll 容器时子吃其 scroll_pos（transform.rs 同约定）。
+        // accumulated 须同步转到子空间（减 scroll_delta）——否则祖先 clip（父空间）与子 clip
+        // （子空间）交集错位，嵌套 scroll 下 clip rect 失真。
+        let (child_scroll_offset, scroll_delta) = if let Some(st) = scene.scroll.get(id) {
+            ((scroll_offset.0 + st.scroll_pos.0, scroll_offset.1 + st.scroll_pos.1),
+             (st.scroll_pos.0, st.scroll_pos.1))
+        } else {
+            (scroll_offset, (0.0, 0.0))
+        };
+        let child_accumulated = intersected_for_kids.map(|r| Rect {
+            x: r.x - scroll_delta.0,
+            y: r.y - scroll_delta.1,
+            w: r.w,
+            h: r.h,
+        });
         // clone children 避免与 nodes 的 &mut 冲突借（scene 与 nodes 是独立借用）。
         let kids = node.children.clone();
         for c in kids {
-            dfs(scene, nodes, c, counter, clips, mask, child_accumulated);
+            dfs(scene, nodes, c, counter, clips, mask, child_accumulated, child_scroll_offset);
         }
     }
     for root in &scene.roots {
-        dfs(scene, nodes, *root, &mut counter, &mut clips, MaskContext(0), None);
+        dfs(scene, nodes, *root, &mut counter, &mut clips, MaskContext(0), None, (0.0, 0.0));
     }
     clips
 }
@@ -329,6 +356,47 @@ mod tests {
         assert_eq!(rns[0].mask_context, MaskContext(1));
         assert_eq!(rns[1].mask_context, MaskContext(2));
         assert_eq!(rns[2].mask_context, MaskContext(2));
+    }
+
+    #[test]
+    fn clip_rect_in_scroll_container_is_scroll_adjusted() {
+        // scroll 容器（scroll_pos 非零）+ 子 overflow:hidden。
+        // 子的 clip rect 必须减祖先 scroll offset（= layout - scroll_pos），与子节点 world_matrix
+        // （transform.rs 注入 T(-scroll_pos)）同空间——否则 shader clipPos（world 含 scroll）与
+        // _ClipBox（design 不含 scroll）错位 → scroll 时 CLIPPED 节点 clipPos 超界全裁
+        // （showcase 3.6/3.7 bg-demo/br-demo 内容空根因）。
+        let mut scene = Scene {
+            roots: vec![NodeId(0)], nodes: vec![],
+            dynamic_rules: Default::default(), focused_node: None,
+            world_transforms: Vec::new(), anim: Default::default(),
+            scroll: Default::default(), text_layouts: Vec::new(),
+        };
+        // root(overflow:scroll, scroll_pos=(0,30)) > child(10,10,80,80 overflow:hidden)
+        let mut root = Node::default();
+        root.id = NodeId(0);
+        root.layout_rect = Rect { x: 0.0, y: 0.0, w: 200.0, h: 200.0 };
+        root.clip_rect = Some(Rect { x: 0.0, y: 0.0, w: 200.0, h: 200.0 });
+        root.children = vec![NodeId(1)];
+        scene.nodes.push(root);
+        let mut child = Node::default();
+        child.id = NodeId(1);
+        child.parent = Some(NodeId(0));
+        child.layout_rect = Rect { x: 10.0, y: 10.0, w: 80.0, h: 80.0 };
+        child.clip_rect = Some(Rect { x: 10.0, y: 10.0, w: 80.0, h: 80.0 });
+        scene.nodes.push(child);
+        scene.scroll.ensure(NodeId(0)).scroll_pos = (0.0, 30.0);
+
+        let mut rns: Vec<RenderNode> = (0..2).map(placeholder_rn).collect();
+        let clips = assign_sort_keys(&scene, &mut rns);
+
+        // root ctx(1)：容器自身 world 不含自己 scroll_pos（transform.rs 约定）→ clip rect 不减。
+        let root_ctx = clips.iter().find(|c| c.context_id == 1).expect("root clip ctx");
+        assert!((root_ctx.rect.y - 0.0).abs() < 1e-3, "root clip rect 不减自己 scroll_pos");
+        // child ctx(2)：clip rect = child layout - scroll_pos = (10, 10-30, 80, 80) = (10, -20, 80, 80)。
+        let child_ctx = clips.iter().find(|c| c.context_id == 2).expect("child clip ctx");
+        assert!((child_ctx.rect.x - 10.0).abs() < 1e-3, "child clip x 不变（scroll_x=0）");
+        assert!((child_ctx.rect.y - (-20.0)).abs() < 1e-3,
+            "child clip y 减 scroll offset：10-30=-20，得 {}（修复前=10 → shader clipPos 超界全裁）", child_ctx.rect.y);
     }
 
     // —— 嵌套 clip 交集（rect mask）——
