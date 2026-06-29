@@ -33,6 +33,7 @@
 /* §3 视觉样式板 */
 .op,.tr{width:80px;height:60px;background-color:#5fb2c4;color:#1a1d2e;font-size:16px;display:flex;align-items:center;justify-content:center;}
 .skip{color:#6c7080;font-size:14px;}
+.bg-demo{width:100px;height:80px;background-color:#5fb2c4;color:#1a1d2e;font-size:16px;display:flex;align-items:center;justify-content:center;}
 
 /* §2 布局练兵场 */
 .flx{flex-direction:row;background-color:#1a1d2e;border:1px solid #3a3f55;height:36px;padding:4px;gap:6px;align-items:center;}
