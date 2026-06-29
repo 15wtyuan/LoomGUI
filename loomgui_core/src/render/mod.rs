@@ -135,10 +135,34 @@ pub fn build_render_nodes(
                     },
                     None => (0u32, [0.0, 0.0], [1.0, 1.0]),  // 无图：UV 无意义
                 };
-                // v 翻转（同 Image 分支：design y-down 配 Unity y-up）
-                let (v, uvc, col, idx) = crate::render::mesh::quad(
-                    rect, color, [u_min[0], u_max[1]], [u_max[0], u_min[1]],
-                );
+                // border-radius resolve：CSS 原始值 → 像素（% 乘 rect 对应边）
+                let resolve = |lp: LengthPercentage, side: f32| -> f32 {
+                    match lp {
+                        LengthPercentage::Length(v) => v,
+                        LengthPercentage::Percent(p) => side * p,
+                    }
+                };
+                let (rw, rh) = (rect.w, rect.h);
+                let bc = &n.style.border_radius.corners;
+                let radii = [
+                    (resolve(bc[0].h, rw), resolve(bc[0].v, rh)),  // TL
+                    (resolve(bc[1].h, rw), resolve(bc[1].v, rh)),  // TR
+                    (resolve(bc[2].h, rw), resolve(bc[2].v, rh)),  // BR
+                    (resolve(bc[3].h, rw), resolve(bc[3].v, rh)),  // BL
+                ];
+                let all_zero = radii.iter().all(|&(rx, ry)| rx <= 0.0 || ry <= 0.0);
+                // v 翻转（同 Image 分支：design y-down 配 Unity y-up；
+                // 交换 uv v 传给 mesh 函数，quad 与 rounded_rect 同样处理）
+                let (v, uvc, col, idx) = if all_zero {
+                    crate::render::mesh::quad(
+                        rect, color, [u_min[0], u_max[1]], [u_max[0], u_min[1]],
+                    )
+                } else {
+                    crate::render::mesh::rounded_rect(
+                        rect, color, &radii,
+                        [u_min[0], u_max[1]], [u_max[0], u_min[1]],
+                    )
+                };
                 rn.payload = NodePayload::Mesh {
                     verts: v, uvs: uvc, colors: col, indices: idx, texture, program: 0,
                 };
@@ -281,9 +305,9 @@ mod tests {
     use super::*;
     use crate::asset::texture::{TexMeta, TextureRegistry};
     use crate::scene::node::*;
-    use crate::style::resolved::{BackgroundSize, ResolvedStyle, TextAlign};
+    use crate::style::resolved::{BackgroundSize, BorderRadius, CornerRadius, ResolvedStyle, TextAlign};
     use crate::text::layout::measure_text;
-    use taffy::style::Dimension;
+    use taffy::style::{Dimension, LengthPercentage};
 
     /// 测试字体：仓库内 DejaVuSans.ttf（跨平台一致），缺则跳过。
     fn test_font() -> Option<Font> {
@@ -1067,6 +1091,123 @@ mod tests {
         let (frame, _) = build_render_nodes(&scene, &font, &TextureRegistry::default(), &[]);
         match &frame.nodes[0].payload {
             NodePayload::Mesh { texture, .. } => assert_eq!(*texture, 0, "无图 Container texture=0"),
+            _ => panic!("expected Mesh"),
+        }
+    }
+
+    // ── border-radius Tests (T5) ────────────────────────────
+
+    #[test]
+    fn container_zero_radius_uses_quad() {
+        // 未设 border-radius（默认全 0）→ 走 quad（4 顶点）
+        let mut scene = Scene {
+            roots: vec![NodeId(0)], nodes: vec![],
+            dynamic_rules: Default::default(), focused_node: None,
+            world_transforms: Vec::new(), anim: Default::default(),
+            scroll: Default::default(), text_layouts: Vec::new(),
+        };
+        scene.nodes.push(container_node(0, None, Rect { x: 0.0, y: 0.0, w: 80.0, h: 80.0 }, Some([1.0, 0.0, 0.0, 1.0])));
+        let font = test_font().expect("need font");
+        crate::scene::transform::compute_world_transforms(&mut scene);
+        let (frame, _) = build_render_nodes(&scene, &font, &TextureRegistry::default(), &[]);
+        let rn = &frame.nodes[0];
+        match &rn.payload {
+            NodePayload::Mesh { verts, .. } => {
+                assert_eq!(verts.len(), 4, "radius=0 走 quad（4 顶点），得 {}", verts.len());
+            }
+            other => panic!("期望 Mesh，得 {:?}", other),
+        }
+    }
+
+    #[test]
+    fn container_radius_uses_rounded_rect() {
+        // border-radius:8px → 走 rounded_rect（顶点 >4）
+        let mut scene = Scene {
+            roots: vec![NodeId(0)], nodes: vec![],
+            dynamic_rules: Default::default(), focused_node: None,
+            world_transforms: Vec::new(), anim: Default::default(),
+            scroll: Default::default(), text_layouts: Vec::new(),
+        };
+        let mut n = container_node(0, None, Rect { x: 0.0, y: 0.0, w: 80.0, h: 80.0 }, Some([1.0, 0.0, 0.0, 1.0]));
+        n.style.border_radius = BorderRadius {
+            corners: [CornerRadius {
+                h: LengthPercentage::Length(8.0),
+                v: LengthPercentage::Length(8.0),
+            }; 4],
+        };
+        scene.nodes.push(n);
+        let font = test_font().expect("need font");
+        crate::scene::transform::compute_world_transforms(&mut scene);
+        let (frame, _) = build_render_nodes(&scene, &font, &TextureRegistry::default(), &[]);
+        let rn = &frame.nodes[0];
+        match &rn.payload {
+            NodePayload::Mesh { verts, .. } => {
+                assert!(verts.len() > 4, "radius>0 走 rounded_rect（顶点>4），得 {}", verts.len());
+            }
+            other => panic!("期望 Mesh，得 {:?}", other),
+        }
+    }
+
+    #[test]
+    fn container_radius_percent_resolved() {
+        // border-radius:50% × 80×80 rect → resolve 成 40 → rounded_rect（顶点>4）
+        // 使用 container_node 直接设 layout_rect，无需 solve。
+        let mut scene = Scene {
+            roots: vec![NodeId(0)], nodes: vec![],
+            dynamic_rules: Default::default(), focused_node: None,
+            world_transforms: Vec::new(), anim: Default::default(),
+            scroll: Default::default(), text_layouts: Vec::new(),
+        };
+        let mut n = container_node(0, None, Rect { x: 0.0, y: 0.0, w: 80.0, h: 80.0 }, Some([1.0, 0.0, 0.0, 1.0]));
+        n.style.border_radius = BorderRadius {
+            corners: [CornerRadius {
+                h: LengthPercentage::Percent(0.5),
+                v: LengthPercentage::Percent(0.5),
+            }; 4],
+        };
+        scene.nodes.push(n);
+        let font = test_font().expect("need font");
+        crate::scene::transform::compute_world_transforms(&mut scene);
+        let (frame, _) = build_render_nodes(&scene, &font, &TextureRegistry::default(), &[]);
+        let rn = &frame.nodes[0];
+        match &rn.payload {
+            NodePayload::Mesh { verts, .. } => {
+                assert!(verts.len() > 4, "% resolve 后 radius>0 → rounded_rect，得 {}", verts.len());
+            }
+            other => panic!("期望 Mesh，得 {:?}", other),
+        }
+    }
+
+    #[test]
+    fn container_bg_image_with_radius_uses_rounded_rect() {
+        // bg-image + border-radius 共存：texture 非零 AND 走 rounded_rect（verts>4）
+        let mut scene = Scene {
+            roots: vec![NodeId(0)], nodes: vec![],
+            dynamic_rules: Default::default(), focused_node: None,
+            world_transforms: Vec::new(), anim: Default::default(),
+            scroll: Default::default(), text_layouts: Vec::new(),
+        };
+        let mut n = container_node(0, None, Rect { x: 0.0, y: 0.0, w: 100.0, h: 100.0 }, Some([0.0, 1.0, 0.0, 1.0]));
+        n.style.background_image = Some("a.png".into());
+        n.style.background_size = BackgroundSize::Stretch;
+        n.style.border_radius = BorderRadius {
+            corners: [CornerRadius {
+                h: LengthPercentage::Length(12.0),
+                v: LengthPercentage::Length(12.0),
+            }; 4],
+        };
+        scene.nodes.push(n);
+
+        let font = test_font().expect("need font");
+        let mut tex = TextureRegistry::default();
+        tex.insert("a.png", TexMeta { tex_id: 2, uv_min: [0.0, 0.0], uv_max: [1.0, 1.0], width: 50, height: 50 });
+        crate::scene::transform::compute_world_transforms(&mut scene);
+        let (frame, _) = build_render_nodes(&scene, &font, &tex, &[]);
+        match &frame.nodes[0].payload {
+            NodePayload::Mesh { texture, verts, .. } => {
+                assert_eq!(*texture, 2, "bg-image+radius: texture 非零");
+                assert!(verts.len() > 4, "bg-image+radius: rounded_rect（顶点>4），得 {}", verts.len());
+            }
             _ => panic!("expected Mesh"),
         }
     }
