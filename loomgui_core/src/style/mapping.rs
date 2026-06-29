@@ -1,4 +1,4 @@
-use crate::style::resolved::{BackgroundSize, OverflowMode, ResolvedStyle, TextAlign};
+use crate::style::resolved::{BackgroundSize, BorderRadius, CornerRadius, OverflowMode, ResolvedStyle, TextAlign};
 use taffy::geometry::{Rect, Size};
 use taffy::style::{Dimension, LengthPercentage, LengthPercentageAuto};
 
@@ -69,6 +69,33 @@ pub fn parse_four(s: &str) -> [f32; 4] {
         3 => [p(0), p(1), p(2), p(1)],
         _ => [p(0), p(1), p(2), p(3)],
     }
+}
+
+/// 解析 border-radius 1~4 值（每值 px 或 %）→ [LengthPercentage;4]（TL,TR,BR,BL）。
+/// 与 parse_four 同序，但保留 %。任一值非法（auto/inherit/initial/非 px-% 数字）→ None
+/// （CSS：整条声明无效）。
+fn parse_radius_group(s: &str) -> Option<[LengthPercentage; 4]> {
+    let parts: Vec<&str> = s.split_whitespace().collect();
+    let p = |i: usize| -> Option<LengthPercentage> {
+        let tok = parts.get(i)?.trim();
+        if tok == "auto" || tok == "inherit" || tok == "initial" {
+            return None;
+        }
+        // parse_lp 对垃圾（如 "abc"）静默返回 Length(0)，需额外校验：
+        // 合法 token = 裸数字 / 数字px / 数字%
+        let num_part = tok.trim_end_matches("px").trim_end_matches('%');
+        if num_part.trim().parse::<f32>().is_err() {
+            return None;
+        }
+        Some(parse_lp(tok))
+    };
+    let v0 = p(0)?;
+    Some(match parts.len() {
+        1 => [v0, v0, v0, v0],
+        2 => [v0, p(1)?, v0, p(1)?],
+        3 => [v0, p(1)?, p(2)?, p(1)?],
+        _ => [v0, p(1)?, p(2)?, p(3)?],
+    })
 }
 
 pub fn parse_color(s: &str) -> Option<[f32; 4]> {
@@ -238,6 +265,30 @@ pub fn apply_decl(style: &mut ResolvedStyle, prop: &str, value: &str) -> bool {
             };
             // 同时填视觉 border_width（取 top 作为单值，渲染描边用）
             style.border_width = t;
+            true
+        }
+        "border-radius" => {
+            // 语法：<len>{1,4} [ / <len>{1,4} ]?  —— / 前水平半径，/ 后垂直半径（省略=同水平）
+            let (h_group, v_group) = match value.split_once('/') {
+                Some((h, v)) => (h, v),
+                None => (value, value),  // 无 / → 垂直 = 水平（正圆角）
+            };
+            let h = match parse_radius_group(h_group) {
+                Some(g) => g,
+                None => return false,
+            };
+            let v = match parse_radius_group(v_group) {
+                Some(g) => g,
+                None => return false,
+            };
+            style.border_radius = BorderRadius {
+                corners: [
+                    CornerRadius { h: h[0], v: v[0] },  // TL
+                    CornerRadius { h: h[1], v: v[1] },  // TR
+                    CornerRadius { h: h[2], v: v[2] },  // BR
+                    CornerRadius { h: h[3], v: v[3] },  // BL
+                ],
+            };
             true
         }
         "gap" => {
@@ -444,6 +495,7 @@ fn parse_align(v: &str) -> taffy::AlignItems {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use taffy::style::LengthPercentage;
     #[test]
     fn parse_length_px_pct_auto() {
         assert!(matches!(parse_lp("100px"), LengthPercentage::Length(100.0)));
@@ -474,7 +526,7 @@ mod tests {
         assert!(apply_decl(&mut s, "width", "100px"));
         assert!(apply_decl(&mut s, "background-color", "#00ff00"));
         assert!(s.background_color == Some([0.0, 1.0, 0.0, 1.0]));
-        assert!(!apply_decl(&mut s, "border-radius", "4px")); // 装饰属性忽略
+        assert!(apply_decl(&mut s, "border-radius", "4px")); // v1.2 起解析（非装饰忽略）
     }
     #[test]
     fn order_is_stored() {
@@ -661,5 +713,78 @@ mod tests {
             assert!(!apply_decl(&mut s, "background-size", val), "{} 围栏外 → false", val);
             assert_eq!(s.background_size, BackgroundSize::Stretch, "{} 不改默认", val);
         }
+    }
+
+    #[test]
+    fn parse_radius_group_one_value() {
+        let g = parse_radius_group("8px").unwrap();
+        assert_eq!(g, [parse_lp("8px"); 4]);
+    }
+
+    #[test]
+    fn parse_radius_group_two_values() {
+        let g = parse_radius_group("4px 12px").unwrap();
+        // [v0, v1, v0, v1]（TL/BR=v0, TR/BL=v1）
+        assert_eq!(g, [parse_lp("4px"), parse_lp("12px"), parse_lp("4px"), parse_lp("12px")]);
+    }
+
+    #[test]
+    fn parse_radius_group_percent() {
+        let g = parse_radius_group("50%").unwrap();
+        assert_eq!(g, [parse_lp("50%"); 4]);
+    }
+
+    #[test]
+    fn parse_radius_group_auto_rejected() {
+        // auto/inherit/initial → None（CSS 无效，不落 Length(0)）
+        assert!(parse_radius_group("auto").is_none());
+        assert!(parse_radius_group("inherit").is_none());
+        assert!(parse_radius_group("8px auto").is_none());  // 混入 auto → 整组 None
+    }
+
+    #[test]
+    fn parse_radius_group_garbage_rejected() {
+        assert!(parse_radius_group("4px abc").is_none());
+        assert!(parse_radius_group("").is_none());
+    }
+
+    #[test]
+    fn apply_border_radius_single() {
+        let mut s = ResolvedStyle::default();
+        assert!(apply_decl(&mut s, "border-radius", "8px"));
+        for c in &s.border_radius.corners {
+            assert_eq!(c.h, parse_lp("8px"));
+            assert_eq!(c.v, parse_lp("8px"));  // 无 / → v = h
+        }
+    }
+
+    #[test]
+    fn apply_border_radius_ellipse_syntax() {
+        let mut s = ResolvedStyle::default();
+        assert!(apply_decl(&mut s, "border-radius", "10px / 5px"));
+        for c in &s.border_radius.corners {
+            assert_eq!(c.h, parse_lp("10px"), "水平半径 10");
+            assert_eq!(c.v, parse_lp("5px"), "垂直半径 5");
+        }
+    }
+
+    #[test]
+    fn apply_border_radius_percent() {
+        let mut s = ResolvedStyle::default();
+        assert!(apply_decl(&mut s, "border-radius", "50%"));
+        for c in &s.border_radius.corners {
+            assert_eq!(c.h, LengthPercentage::Percent(0.5));
+            assert_eq!(c.v, LengthPercentage::Percent(0.5));
+        }
+    }
+
+    #[test]
+    fn apply_border_radius_invalid_returns_false() {
+        let mut s = ResolvedStyle::default();
+        assert!(!apply_decl(&mut s, "border-radius", "auto"));
+        assert!(!apply_decl(&mut s, "border-radius", "8px / abc"));
+        assert!(!apply_decl(&mut s, "border-radius", "8px /"));
+        // 失败时不应改默认
+        assert_eq!(s.border_radius, BorderRadius::default());
     }
 }
