@@ -50,6 +50,14 @@ fn pack_inner(
             }
         }
     }
+    // 1b. 收集 CSS background-image url（同 srcs/seen 去重，img+bg 同 url 只入一次）。
+    for n in &scene.nodes {
+        if let Some(url) = &n.style.background_image {
+            if seen.insert(url.as_str()) {
+                srcs.push(url.clone());
+            }
+        }
+    }
 
     // 2. 无图 → 空 atlas。
     if srcs.is_empty() {
@@ -224,5 +232,50 @@ mod tests {
         assert_eq!(aw, 512, "空 → 默认宽");
         assert_eq!(ah, 0);
         assert!(placed.is_empty());
+    }
+
+    use std::fs;
+    use std::path::PathBuf;
+
+    /// 建临时 res_dir，写一张 4×4 红 PNG，返回 (res_dir, png_filename)。
+    fn write_tmp_png() -> (PathBuf, String) {
+        let dir = std::env::temp_dir().join(format!("loomgui_pkg_test_{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let name = "red.png".to_string();
+        let img = image::RgbaImage::from_fn(4, 4, |_, _| image::Rgba([255, 0, 0, 255]));
+        img.save(dir.join(&name)).unwrap();
+        (dir, name)
+    }
+
+    #[test]
+    fn pack_collects_background_image_url_into_atlas() {
+        // 纯 background-image（无 img）→ atlas 含该 src
+        let (dir, name) = write_tmp_png();
+        let html = format!(
+            r#"<div style="background-image:url({})"></div>"#, name
+        );
+        let css = "";
+        let packed = pack_inner(&html, css, (100.0, 100.0), &dir, "test.atlas.png").unwrap();
+        assert!(!packed.atlas_png.is_empty(), "纯 bg-image → atlas 非空");
+        assert_eq!(packed.atlas_filename, "test.atlas.png");
+        // 清理
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pack_dedupes_img_and_bg_same_url() {
+        // img + background-image 同 url → atlas 只入一次（去重）
+        let (dir, name) = write_tmp_png();
+        let html = format!(
+            r#"<div style="background-image:url({})"><img src="{}"></div>"#, name, name
+        );
+        let css = "";
+        let packed = pack_inner(&html, css, (100.0, 100.0), &dir, "test.atlas.png").unwrap();
+        // atlas 非空（含该图）；去重后只有一张 4×4
+        assert!(!packed.atlas_png.is_empty());
+        // 验证 atlas 尺寸 = 单张 4×4（shelf_pack：atlas_w=max(512,4)=512, h=4）
+        let atlas_img = image::load_from_memory(&packed.atlas_png).unwrap();
+        assert_eq!(atlas_img.height(), 4, "单图去重 → atlas 高=4");
+        let _ = fs::remove_dir_all(&dir);
     }
 }
