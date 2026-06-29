@@ -15,6 +15,17 @@ pub enum OverflowMode {
     Auto = 3,
 }
 
+/// CSS background-size 三档（v1 围栏子集）。
+/// `#[repr(u8)]` 保证序列化稳定；`Default = Stretch`（100% 语义，未设时拉伸填满，非 CSS auto）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[repr(u8)]
+pub enum BackgroundSize {
+    #[default]
+    Stretch = 0,  // 100% / 未设：UV 0..1 拉伸填满
+    Cover = 1,    // 铺满裁剪（scale=max，UV 内收取子区中央）
+    Contain = 2,  // 完整放入留白（scale=min，UV 外扩，子区外透明透出底色）
+}
+
 /// CSS transform 解析产物。内部存 Affine2 矩阵（非分解字段）——这样单节点
 /// `scale(2,1) rotate(45deg)` 的复合剪切在解析期就保留，不因提取字段丢失。
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -34,6 +45,10 @@ pub struct ResolvedStyle {
     pub taffy_style: TaffyStyle,
     /// 视觉字段（不进 taffy，渲染层消费）
     pub background_color: Option<[f32; 4]>, // rgba 0..1
+    /// CSS background-image 的 url 路径（已去 url() 包裹 + 引号），None=无背景图。
+    pub background_image: Option<String>,
+    /// CSS background-size 模式。默认 Stretch。
+    pub background_size: BackgroundSize,
     pub border_color: Option<[f32; 4]>,
     pub border_width: f32,
     pub opacity: f32,
@@ -75,6 +90,8 @@ impl Default for ResolvedStyle {
         Self {
             taffy_style,
             background_color: None,
+            background_image: None,
+            background_size: BackgroundSize::Stretch,
             border_color: None,
             border_width: 0.0,
             opacity: 1.0,
@@ -130,11 +147,32 @@ mod tests {
         s.letter_spacing = 2.0;
         s.white_space_nowrap = true;
         s.order = 5;
+        s.background_image = Some("icons/home.png".to_string());
+        s.background_size = BackgroundSize::Cover;
 
         let bytes = bincode::serialize(&s).expect("serialize");
         let back: ResolvedStyle = bincode::deserialize(&bytes).expect("deserialize");
 
         assert_eq!(back, s, "全字段经 bincode round-trip 应相等");
+    }
+
+    #[test]
+    fn background_image_size_default() {
+        let s = ResolvedStyle::default();
+        assert_eq!(s.background_image, None, "默认无背景图");
+        assert_eq!(s.background_size, BackgroundSize::Stretch, "默认 Stretch（100% 语义）");
+    }
+
+    #[test]
+    fn background_size_bincode_roundtrip() {
+        let mut s = ResolvedStyle::default();
+        s.background_size = BackgroundSize::Contain;
+        s.background_image = Some("a.png".into());
+        let bytes = bincode::serialize(&s).unwrap();
+        let back: ResolvedStyle = bincode::deserialize(&bytes).unwrap();
+        assert_eq!(back.background_size, BackgroundSize::Contain);
+        assert_eq!(back.background_image.as_deref(), Some("a.png"));
+        assert_eq!(back, s, "新字段 round-trip 全等");
     }
 
     #[test]
