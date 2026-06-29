@@ -294,6 +294,48 @@ mod tests {
         }
     }
 
+    /// 构造任意 mesh payload 节点（变顶点）——border-radius 圆角 mesh round-trip 测试用。
+    fn mesh_node_raw(verts: Vec<[f32; 2]>, indices: Vec<u32>, tx: f32, ty: f32) -> RenderNode {
+        let n = verts.len();
+        RenderNode {
+            node_id: 0, parent_id: None, visible: true, alpha: 1.0,
+            grayed: false, color_tint: [1.0; 4],
+            world_matrix: transform::from_translate(tx, ty),
+            blend: BlendMode::Normal, mask_context: MaskContext(0), sort_key: 0,
+            payload: NodePayload::Mesh {
+                verts,
+                uvs: vec![[0.0, 0.0]; n],
+                colors: vec![[1.0; 4]; n],
+                indices,
+                texture: 0,
+                program: 0,
+            },
+        }
+    }
+
+    #[test]
+    fn rounded_rect_mesh_round_trips_n_verts() {
+        // border-radius 产的 25 顶点圆角 mesh 经 build_blob 序列化 + TestView 反序列化：
+        // vert_count / idx_count / 顶点坐标 re-base 全保真（验证变顶点 FFI 链）。
+        use loomgui_core::scene::node::Rect;
+        let rect = Rect { x: 10.0, y: 20.0, w: 80.0, h: 80.0 };
+        let (verts, _uvs, _colors, indices) = loomgui_core::render::mesh::rounded_rect(
+            &rect, [1.0; 4], &[(8.0, 8.0); 4], [0.0, 0.0], [1.0, 1.0]);
+        assert_eq!(verts.len(), 25, "r=8 80×80 → 25 顶点");
+        let ic = indices.len();
+        let node = mesh_node_raw(verts, indices, 10.0, 20.0);
+        let blob = build_blob(&frame(&[node]));
+        let view = TestView::parse(&blob);
+        assert_eq!(view.payload_kind(0), 1, "Mesh kind=1");
+        let (vc, ic2) = view.mesh_vert_count(0);
+        assert_eq!(vc, 25, "vert_count round-trip 25");
+        assert_eq!(ic2 as usize, ic, "idx_count round-trip");
+        // 中心顶点 v[0] = rect 中心 (50,60)，re-base 减 (tx=10,ty=20) → (40,40)。
+        let (cx, cy) = view.mesh_vert(0, 0);
+        assert!((cx - 40.0).abs() < 1e-4 && (cy - 40.0).abs() < 1e-4,
+            "中心顶点 re-base (40,40)，得 ({},{})", cx, cy);
+    }
+
     #[test]
     fn build_blob_has_magic_and_count() {
         let blob = build_blob(&frame(&[mesh_node(0, None, 10.0, 20.0, 5.0, 5.0)]));
