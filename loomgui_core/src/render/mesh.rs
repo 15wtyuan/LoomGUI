@@ -66,8 +66,7 @@ pub fn rounded_rect(
         .min(w / (tl.0 + tr.0).max(1e-6))
         .min(w / (bl.0 + br.0).max(1e-6))
         .min(h / (tl.1 + bl.1).max(1e-6))
-        .min(h / (tr.1 + br.1).max(1e-6))
-        .min(1.0);
+        .min(h / (tr.1 + br.1).max(1e-6));
     let scale_r = |r: (f32, f32)| -> (f32, f32) {
         ((r.0 * scale).max(0.0), (r.1 * scale).max(0.0))
     };
@@ -92,19 +91,19 @@ pub fn rounded_rect(
 
     // 改进 2：角序 TL→TR→BR→BL（CSS 视觉序）。
     // 起始角 TL=π, TR=-π/2, BR=0, BL=π/2（逆时针 design y-down）。圆心 = 角顶点内缩 (rx,ry)。
-    let corners: [(f32, f32, [f32; 2], f32); 4] = [
-        (tl.0, tl.1, [rect.x + tl.0,         rect.y + tl.1],         std::f32::consts::PI),
-        (tr.0, tr.1, [rect.x + w - tr.0,     rect.y + tr.1],         -std::f32::consts::FRAC_PI_2),
-        (br.0, br.1, [rect.x + w - br.0,     rect.y + h - br.1],     0.0),
-        (bl.0, bl.1, [rect.x + bl.0,         rect.y + h - bl.1],     std::f32::consts::FRAC_PI_2),
+    // 每角附矩形顶点 corner：直角分支（rx<=0||ry<=0）直接落矩形角，不靠圆心+方向
+    // （否则 rx=0 ry>0 时 py=圆心.y+sin·ry 偏离角顶点，角附近镂空）。
+    let corners: [(f32, f32, [f32; 2], f32, [f32; 2]); 4] = [
+        (tl.0, tl.1, [rect.x + tl.0,         rect.y + tl.1],         std::f32::consts::PI,            [rect.x,     rect.y]),
+        (tr.0, tr.1, [rect.x + w - tr.0,     rect.y + tr.1],         -std::f32::consts::FRAC_PI_2,    [rect.x + w, rect.y]),
+        (br.0, br.1, [rect.x + w - br.0,     rect.y + h - br.1],     0.0,                             [rect.x + w, rect.y + h]),
+        (bl.0, bl.1, [rect.x + bl.0,         rect.y + h - bl.1],     std::f32::consts::FRAC_PI_2,     [rect.x,     rect.y + h]),
     ];
-    for (rx, ry, center, start) in corners {
+    for (rx, ry, center, start, corner) in corners {
         if rx <= 0.0 || ry <= 0.0 {
-            // 直角：单顶点 = 角顶点（照 fgui radius==0 分支）。
-            let px = center[0] + start.cos() * rx;
-            let py = center[1] + start.sin() * ry;
-            verts.push([px, py]);
-            uvs.push([lerp(umin, umax, (px - rect.x) / w), lerp(vmin, vmax, (py - rect.y) / h)]);
+            // 直角：单顶点 = 该角矩形顶点（ry>0 时圆心+方向会偏移，故直接用 corner）。
+            verts.push(corner);
+            uvs.push([lerp(umin, umax, (corner[0] - rect.x) / w), lerp(vmin, vmax, (corner[1] - rect.y) / h)]);
             colors.push(color);
             continue;
         }
@@ -277,5 +276,21 @@ mod tests {
         );
         assert_eq!(v.len(), 4, "退化走 quad");
         assert_eq!(idx.len(), 6);
+    }
+
+    #[test]
+    fn rounded_rect_zero_h_radius_corner_at_rect_vertex() {
+        // 混合椭圆角：TL/BR 水平半径 0（rx=0, ry=8）→ 直角，TR/BL 真弧（8,8）。
+        // 直角分支须落在矩形顶点（TL=[0,0] / BR=[80,80]），
+        // 而非圆心+方向算出的 [0,8]/[80,72]（ry>0 让 py 偏移，原 bug）。
+        let (v, _, _, _) = rounded_rect(
+            &Rect { x: 0.0, y: 0.0, w: 80.0, h: 80.0 },
+            [1.0; 4],
+            &[(0.0, 8.0), (8.0, 8.0), (0.0, 8.0), (8.0, 8.0)],
+            [0.0, 0.0], [1.0, 1.0],
+        );
+        let has = |x: f32, y: f32| v.iter().any(|p| (p[0] - x).abs() < 1e-4 && (p[1] - y).abs() < 1e-4);
+        assert!(has(0.0, 0.0), "TL 直角顶点须落矩形角 [0,0]，verts={:?}", v);
+        assert!(has(80.0, 80.0), "BR 直角顶点须落矩形角 [80,80]，verts={:?}", v);
     }
 }
