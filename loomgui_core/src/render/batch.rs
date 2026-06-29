@@ -153,20 +153,15 @@ pub fn assign_sort_keys(scene: &Scene, nodes: &mut [RenderNode]) -> Vec<ClipEntr
             *counter += 1;
         }
         // 子树 scroll_offset：本节点是 scroll 容器时子吃其 scroll_pos（transform.rs 同约定）。
-        // accumulated 须同步转到子空间（减 scroll_delta）——否则祖先 clip（父空间）与子 clip
-        // （子空间）交集错位，嵌套 scroll 下 clip rect 失真。
-        let (child_scroll_offset, scroll_delta) = if let Some(st) = scene.scroll.get(id) {
-            ((scroll_offset.0 + st.scroll_pos.0, scroll_offset.1 + st.scroll_pos.1),
-             (st.scroll_pos.0, st.scroll_pos.1))
+        // accumulated 不减 scroll——祖先 clip（如 scroll 容器 viewport）在 world 固定（容器自身
+        // world 不含自己 scroll_pos），own 在 dfs 入口减 scroll_offset 转 world 空间后与之求交，
+        // 即得 world 可见区。传子保持 intersected（已是 world 空间可见区）。
+        let child_scroll_offset = if let Some(st) = scene.scroll.get(id) {
+            (scroll_offset.0 + st.scroll_pos.0, scroll_offset.1 + st.scroll_pos.1)
         } else {
-            (scroll_offset, (0.0, 0.0))
+            scroll_offset
         };
-        let child_accumulated = intersected_for_kids.map(|r| Rect {
-            x: r.x - scroll_delta.0,
-            y: r.y - scroll_delta.1,
-            w: r.w,
-            h: r.h,
-        });
+        let child_accumulated = intersected_for_kids;
         // clone children 避免与 nodes 的 &mut 冲突借（scene 与 nodes 是独立借用）。
         let kids = node.children.clone();
         for c in kids {
@@ -392,11 +387,15 @@ mod tests {
         // root ctx(1)：容器自身 world 不含自己 scroll_pos（transform.rs 约定）→ clip rect 不减。
         let root_ctx = clips.iter().find(|c| c.context_id == 1).expect("root clip ctx");
         assert!((root_ctx.rect.y - 0.0).abs() < 1e-3, "root clip rect 不减自己 scroll_pos");
-        // child ctx(2)：clip rect = child layout - scroll_pos = (10, 10-30, 80, 80) = (10, -20, 80, 80)。
+        // child ctx(2)：child world rect = (10,10-30,80,80) = (10,-20,80,80)（滚出 root viewport
+        // 顶部）。可见区 = root viewport(0,0,200,200) ∩ child world(10,-20,80,80) = (10,0,80,60)。
+        // clip rect 存 world 可见区（accumulated=viewport 不减 scroll；own 减 scroll_offset 转 world）。
         let child_ctx = clips.iter().find(|c| c.context_id == 2).expect("child clip ctx");
-        assert!((child_ctx.rect.x - 10.0).abs() < 1e-3, "child clip x 不变（scroll_x=0）");
-        assert!((child_ctx.rect.y - (-20.0)).abs() < 1e-3,
-            "child clip y 减 scroll offset：10-30=-20，得 {}（修复前=10 → shader clipPos 超界全裁）", child_ctx.rect.y);
+        assert!((child_ctx.rect.x - 10.0).abs() < 1e-3, "child clip x=10");
+        assert!((child_ctx.rect.y - 0.0).abs() < 1e-3,
+            "child clip y=0（world 可见区顶，被 root viewport 裁），得 {}", child_ctx.rect.y);
+        assert!((child_ctx.rect.h - 60.0).abs() < 1e-3,
+            "child clip h=60（80−滚出的 20），得 {}", child_ctx.rect.h);
     }
 
     // —— 嵌套 clip 交集（rect mask）——
