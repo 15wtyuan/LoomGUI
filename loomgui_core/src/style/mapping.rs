@@ -1,4 +1,4 @@
-use crate::style::resolved::{OverflowMode, ResolvedStyle, TextAlign};
+use crate::style::resolved::{BackgroundSize, OverflowMode, ResolvedStyle, TextAlign};
 use taffy::geometry::{Rect, Size};
 use taffy::style::{Dimension, LengthPercentage, LengthPercentageAuto};
 
@@ -82,6 +82,26 @@ pub fn parse_color(s: &str) -> Option<[f32; 4]> {
     } else {
         None
     }
+}
+
+/// 解析 CSS `background-image: url(...)` 值，提取括号内路径（去可选引号 + 首尾空格）。
+/// 支持 `url(x)` / `url("x")` / `url('x')` / `url( x )`。非 url() 格式或空 → None。
+pub fn parse_url(value: &str) -> Option<String> {
+    let v = value.trim();
+    let inner = v.strip_prefix("url(")?.strip_suffix(")")?;
+    let inner = inner.trim();
+    let len = inner.len();
+    if len == 0 { return None; }
+    // 去首尾配对引号
+    let path = if len >= 2 && (inner.starts_with('"') && inner.ends_with('"'))
+        || (inner.starts_with('\'') && inner.ends_with('\''))
+    {
+        &inner[1..len - 1]
+    } else {
+        inner
+    };
+    let path = path.trim();
+    if path.is_empty() { None } else { Some(path.to_string()) }
 }
 
 use crate::style::resolved::LocalTransform;
@@ -276,6 +296,19 @@ pub fn apply_decl(style: &mut ResolvedStyle, prop: &str, value: &str) -> bool {
         }
         "background-color" => {
             style.background_color = parse_color(value);
+            true
+        }
+        "background-image" => {
+            style.background_image = parse_url(value);
+            style.background_image.is_some()
+        }
+        "background-size" => {
+            style.background_size = match value.trim() {
+                "cover" => BackgroundSize::Cover,
+                "contain" => BackgroundSize::Contain,
+                "100%" => BackgroundSize::Stretch,
+                _ => return false,  // 围栏外值（auto/px/两值）静默忽略
+            };
             true
         }
         "border-color" => {
@@ -577,5 +610,52 @@ mod tests {
         let applied = super::apply_decl(&mut s, "transform", "rotate(45deg)");
         assert!(applied, "transform 被识别");
         assert!(!s.transform.matrix.is_pure_translation(), "rotate 写进 style.transform");
+    }
+
+    #[test]
+    fn parse_url_extracts_path() {
+        use super::parse_url;
+        assert_eq!(parse_url("url(icons/home.png)"), Some("icons/home.png".into()));
+        assert_eq!(parse_url("url(\"icons/home.png\")"), Some("icons/home.png".into()));
+        assert_eq!(parse_url("url('icons/home.png')"), Some("icons/home.png".into()));
+        assert_eq!(parse_url("url( icons/home.png )"), Some("icons/home.png".into()), "容忍空格");
+        assert_eq!(parse_url("icons/home.png"), None, "非 url() 格式 → None");
+        assert_eq!(parse_url("url()"), None, "空 url → None");
+        assert_eq!(parse_url(""), None);
+    }
+
+    #[test]
+    fn apply_background_image_sets_field() {
+        use crate::style::resolved::BackgroundSize;
+        let mut s = ResolvedStyle::default();
+        assert!(apply_decl(&mut s, "background-image", "url(icons/home.png)"));
+        assert_eq!(s.background_image.as_deref(), Some("icons/home.png"));
+        // 无图时默认 Stretch 不变
+        assert_eq!(s.background_size, BackgroundSize::Stretch);
+    }
+
+    #[test]
+    fn apply_background_size_three_modes() {
+        use crate::style::resolved::BackgroundSize;
+        for (val, mode) in [
+            ("cover", BackgroundSize::Cover),
+            ("contain", BackgroundSize::Contain),
+            ("100%", BackgroundSize::Stretch),
+        ] {
+            let mut s = ResolvedStyle::default();
+            assert!(apply_decl(&mut s, "background-size", val), "background-size:{} 被识别", val);
+            assert_eq!(s.background_size, mode, "background-size:{} → {:?}", val, mode);
+        }
+    }
+
+    #[test]
+    fn apply_background_size_invalid_ignored() {
+        // 围栏外值（auto/px/两值）→ 返回 false，不改默认 Stretch
+        use crate::style::resolved::BackgroundSize;
+        for val in ["auto", "50px", "100% 50%", "cover contain"] {
+            let mut s = ResolvedStyle::default();
+            assert!(!apply_decl(&mut s, "background-size", val), "{} 围栏外 → false", val);
+            assert_eq!(s.background_size, BackgroundSize::Stretch, "{} 不改默认", val);
+        }
     }
 }
