@@ -86,7 +86,7 @@
 - Chrome 预览仅布局结构 + polyfill 后的自定义属性可信；文本换行细节/像素级以 LoomGUI 渲染为准（v1 容忍）。
 
 **Chrome 预览可信清单（防 AI 被预览骗）**：polyfill 只管视觉/状态自定义属性，管不了 LoomGUI 与浏览器的**布局语义分歧**。AI 须分清——
-- **可信**（Chrome ≈ LoomGUI）：flex 轴/方向、显式 `display:flex`、**`gap` 间距**、颜色、opacity、border、图片、px 尺寸。
+- **可信**（Chrome ≈ LoomGUI）：flex 轴/方向、显式 `display:flex`、**`gap` 间距**、颜色、opacity、border、图片、px 尺寸、**`background-image`/`background-size`（标准 CSS，Chrome 原生渲染）**。
 - **不可信**（Chrome ≠ LoomGUI，别按预览调）：
   - **裸 div 混排**：Chrome 行内流 vs LoomGUI 堆叠——但验证器会挡，AI 拿不到预览，须改用 `<l-rich>`。
   - **margin 控间距**：Chrome（block flow）折叠 margin、LoomGUI（flex）求和不折叠。**子项间距用 `gap`**，别用 margin（gap 两边一致）。
@@ -94,6 +94,8 @@
 - **口径**：不可信项"信围栏规则，别信预览"。
 
 **边界**：polyfill 搞定视觉表现（九宫格效果、状态样式），搞不定 LoomGUI 布局测量细节——但 v1 围栏内的自定义属性都是视觉/状态层（不涉布局尺寸），polyfill 够用。布局语义分歧（margin/换行）是围栏规则约束的，非 polyfill 职责。
+
+**v1 background-size 默认 Stretch**（`100%` 拉伸填满），非 CSS `auto`（图原始大小）。AI 写 `background-image` 不带 `background-size` 时按拉伸填满预期；`cover`/`contain`/`100%` 三档为 v1 围栏子集，砍 `position`/`repeat`/`auto`。
 
 **v2+ 替换**：编辑器（Claude Design 式 Web 应用）用 WASM 跑 LoomGUI 核心渲染，零偏差所见即所得，淘汰本临时方案。
 
