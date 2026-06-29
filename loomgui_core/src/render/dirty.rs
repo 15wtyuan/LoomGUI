@@ -29,16 +29,28 @@ pub fn node_hash(rn: &RenderNode) -> u64 {
         NodePayload::Mesh { texture, verts, colors, uvs, .. } => {
             texture.hash(&mut h);
             verts.len().hash(&mut h);
-            // 首末顶点 verts[0](TL) + verts[2](BR) 坐标——
-            // quad 尺寸/位置变时 verts.len 仍 4、colors/world 不变，需捕坐标变（hover 改 width 不生效）。
-            // O(1) 捕获尺寸+位置；f32 走 to_le_bytes 与既有风格一致。
-            if let Some(v0) = verts.first() { v0[0].to_le_bytes().hash(&mut h); v0[1].to_le_bytes().hash(&mut h); }
-            if let Some(v2) = verts.get(2) { v2[0].to_le_bytes().hash(&mut h); v2[1].to_le_bytes().hash(&mut h); }
+            if verts.len() > 4 {
+                // rounded_rect mesh：center verts[0] 不随半径变，[2] 只反映 TL 角
+                // → 仅 BL/BR/TR 半径变时采样 [0]/[2] 漏掉 → 哈希全量顶点/UV。
+                for v in verts.iter() {
+                    v[0].to_le_bytes().hash(&mut h);
+                    v[1].to_le_bytes().hash(&mut h);
+                }
+                for uv in uvs.iter() {
+                    uv[0].to_le_bytes().hash(&mut h);
+                    uv[1].to_le_bytes().hash(&mut h);
+                }
+            } else {
+                // quad (4 verts): O(1) 采样首末顶点 verts[0](TL) + verts[2](BR)
+                // quad 尺寸/位置变时 verts.len 仍 4、colors/world 不变，需捕坐标变。
+                if let Some(v0) = verts.first() { v0[0].to_le_bytes().hash(&mut h); v0[1].to_le_bytes().hash(&mut h); }
+                if let Some(v2) = verts.get(2) { v2[0].to_le_bytes().hash(&mut h); v2[1].to_le_bytes().hash(&mut h); }
+                // UV 摘要：background-size 变（cover/contain/stretch 切换，同纹理）→ fit_uv 重算 UV
+                // 但 texture/verts/colors 不变 → 须捕 UV 变否则 stale Unchanged。
+                if let Some(uv0) = uvs.first() { uv0[0].to_le_bytes().hash(&mut h); uv0[1].to_le_bytes().hash(&mut h); }
+                if let Some(uv2) = uvs.get(2) { uv2[0].to_le_bytes().hash(&mut h); uv2[1].to_le_bytes().hash(&mut h); }
+            }
             if let Some(c0) = colors.first() { for &v in c0.iter() { v.to_le_bytes().hash(&mut h); } }
-            // UV 摘要：background-size 变（cover/contain/stretch 切换，同纹理）→ fit_uv 重算 UV
-            // 但 texture/verts/colors 不变 → 须捕 UV 变否则 stale Unchanged。首末 UV 同 verts 摘要模式。
-            if let Some(uv0) = uvs.first() { uv0[0].to_le_bytes().hash(&mut h); uv0[1].to_le_bytes().hash(&mut h); }
-            if let Some(uv2) = uvs.get(2) { uv2[0].to_le_bytes().hash(&mut h); uv2[1].to_le_bytes().hash(&mut h); }
             h.finish()
         }
         NodePayload::Text { layout, font_size, color, .. } => {
@@ -72,7 +84,9 @@ pub fn node_hash(rn: &RenderNode) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::render::mesh::rounded_rect;
     use crate::render::node::{BlendMode, MaskContext, NodePayload, RenderNode};
+    use crate::scene::node::Rect;
     use crate::text::layout::{Glyph, GlyphRun, Line, TextLayout};
     use crate::transform::IDENTITY;
 
@@ -294,5 +308,40 @@ mod tests {
             layout.lines[0].runs[0].glyphs[0].y = 6.0;
         }
         assert_ne!(node_hash(&a), node_hash(&b), "首字 pen_y 变（布局变）→ hash 变");
+    }
+
+    // -----------------------------------------------------------------------
+    // rounded_rect radius 变 → hash 变（I1 回归测试）
+    // rounded_rect 中心 verts[0] 不随半径移动，采样 [0]/[2] 会漏掉 BL/BR/TR 角半径变。
+    // -----------------------------------------------------------------------
+
+    fn rounded_rect_rn(radii: &[(f32, f32); 4]) -> RenderNode {
+        let rect = Rect { x: 0.0, y: 0.0, w: 80.0, h: 80.0 };
+        let (verts, uvs, colors, indices) = rounded_rect(&rect, [1.0; 4], radii, [0.0, 0.0], [1.0, 1.0]);
+        RenderNode {
+            node_id: 0, parent_id: None, visible: true, alpha: 1.0,
+            grayed: false, color_tint: [1.0; 4],
+            world_matrix: IDENTITY, blend: BlendMode::Normal,
+            mask_context: MaskContext(0), sort_key: 0,
+            payload: NodePayload::Mesh {
+                verts, uvs, colors, indices,
+                texture: 1, program: 0,
+            },
+        }
+    }
+
+    #[test]
+    fn radius_0_to_8_hash_changes() {
+        let a = rounded_rect_rn(&[(0.0, 0.0); 4]); // radius 0 → quad fallback (4 verts)
+        let b = rounded_rect_rn(&[(8.0, 8.0); 4]); // radius 8 → rounded_rect (~25 verts)
+        assert_ne!(node_hash(&a), node_hash(&b), "r=0 → r=8 hash 变");
+    }
+
+    #[test]
+    fn bl_radius_4_to_5_hash_changes() {
+        // 仅 BL 角半径 4→5，同 rect/color/uv/texture，同 verts.len（分段数不变）。
+        let a = rounded_rect_rn(&[(0.0, 0.0), (0.0, 0.0), (0.0, 0.0), (4.0, 4.0)]);
+        let b = rounded_rect_rn(&[(0.0, 0.0), (0.0, 0.0), (0.0, 0.0), (5.0, 5.0)]);
+        assert_ne!(node_hash(&a), node_hash(&b), "仅 BL r=4→5 hash 变");
     }
 }

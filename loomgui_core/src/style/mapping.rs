@@ -739,6 +739,7 @@ mod tests {
         // auto/inherit/initial → None（CSS 无效，不落 Length(0)）
         assert!(parse_radius_group("auto").is_none());
         assert!(parse_radius_group("inherit").is_none());
+        assert!(parse_radius_group("initial").is_none());
         assert!(parse_radius_group("8px auto").is_none());  // 混入 auto → 整组 None
     }
 

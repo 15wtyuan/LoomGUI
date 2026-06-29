@@ -68,13 +68,13 @@ pub fn rounded_rect(
         .min(h / (tl.1 + bl.1).max(1e-6))
         .min(h / (tr.1 + br.1).max(1e-6))
         .min(1.0);
-    let clamp_r = |r: (f32, f32)| -> (f32, f32) {
+    let scale_r = |r: (f32, f32)| -> (f32, f32) {
         ((r.0 * scale).max(0.0), (r.1 * scale).max(0.0))
     };
-    let tl = clamp_r(tl);
-    let tr = clamp_r(tr);
-    let br = clamp_r(br);
-    let bl = clamp_r(bl);
+    let tl = scale_r(tl);
+    let tr = scale_r(tr);
+    let br = scale_r(br);
+    let bl = scale_r(bl);
 
     let lerp = |a: f32, b: f32, t: f32| a + (b - a) * t;
     let (umin, vmin) = (uv_min[0], uv_min[1]);
