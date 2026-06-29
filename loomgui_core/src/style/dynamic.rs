@@ -499,4 +499,38 @@ mod tests {
             "parent:focus → child 变蓝"
         );
     }
+
+    #[test]
+    fn background_image_change_is_visual_not_layout_dirty() {
+        // background-image 是视觉字段（非 taffy_style/order）→ rematch 不 layout dirty
+        let mut s = btn_scene();
+        s.dynamic_rules
+            .rules
+            .push(rule(".btn:hover", "background-image", "url(icons/home.png)"));
+        s.nodes[1].hovered = true;
+        let changed = rematch_pseudo_classes(&mut s);
+        assert_eq!(
+            s.nodes[1].style.background_image.as_deref(),
+            Some("icons/home.png"),
+            "hover → background-image 生效"
+        );
+        assert!(!changed, "background-image 视觉字段 → layout 不 dirty");
+    }
+
+    #[test]
+    fn background_size_change_is_visual_not_layout_dirty() {
+        // background-size 是视觉字段 → rematch 不 layout dirty
+        let mut s = btn_scene();
+        s.dynamic_rules
+            .rules
+            .push(rule(".btn:hover", "background-size", "cover"));
+        s.nodes[1].hovered = true;
+        let changed = rematch_pseudo_classes(&mut s);
+        assert_eq!(
+            s.nodes[1].style.background_size,
+            crate::style::resolved::BackgroundSize::Cover,
+            "hover → background-size:cover 生效"
+        );
+        assert!(!changed, "background-size 视觉字段 → layout 不 dirty");
+    }
 }
