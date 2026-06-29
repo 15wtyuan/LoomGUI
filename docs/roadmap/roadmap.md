@@ -15,18 +15,19 @@
 
 ## 1. v1.x — 上线功能必备 + AI 可预测性
 
-8 项（优先级待 brainstorm 排）：
+**排期已定（2026-06-29）**：5 批串行（本机唯一编码机），富文本拆 3a/3b 共 9 项。首要判据 = AI 可预测性 → 批 1-2 先填"静默忽略"视觉 gap（低风险快赢），批 3-5 上线控件按草稿成熟度排序。
 
-| # | 项 | why | 机制草稿 |
-|---|---|---|---|
-| 1 | **虚拟化列表 `<l-list>`** | 背包/排行榜/邮件必备。v1 手搓 div+scroll 无 slot 复用 | v1x-deferred §1（slot 复用模型） |
-| 2 | **Controller / Gear / Transition** | 标签页/弹窗/过场/状态切换必备 | v1x-deferred §4（状态机+联动+时间轴） |
-| 3 | **富文本 `<l-rich>` + TextInput/IME** | 聊天/物品描述/登录/搜索必备 | — |
-| 4 | **九宫格 `-l-slice` + 实性能 profiling** | UI 皮肤缩放不变形 + draw call/GC/内存实机达标 | — |
-| 5 | **border-radius（圆角矩形 mesh）** | AI 必写 CSS，补 v1 gap（围栏外静默忽略违背可预测性） | — |
-| 6 | **background-image** | AI 必写 `background-image:url`，补 v1 gap（坑 57）。按钮/面板 PNG 皮肤 | — |
-| 7 | **soft clip（羽化）** | 配合虚拟化列表边缘渐隐体验 | v1x-deferred §2 |
-| 8 | **ColorFilter（4x5 颜色矩阵）** | 色调统一 + disabled 灰化升级（替代 v1 简化 color_tint grayed） | — |
+| 批 | 序 | 项 | why | 草稿 | 量 |
+|---|---|---|---|---|---|
+| 1 | 1 | **background-image** | AI 必写 `background-image:url`；**围栏内已声明却零解析**（坑 57 / mapping.rs 仅 background-color），静默忽略 = 契约违背 | 低·机制清晰（复用 Image quad） | 小 |
+| 1 | 2 | **border-radius（圆角 mesh）** | AI 必写 CSS；围栏外静默丢弃（mapping.rs:443 装饰忽略），无反馈违背可预测性 | 低·mesh 方案待定 | 中 |
+| 2 | 3 | **ColorFilter（4×5 颜色矩阵）** | 色调统一 + disabled 灰化升级（替代 v1 简化 color_tint grayed） | 低·DrawState 扩展列了 | 中 |
+| 2 | 4 | **九宫格 `-l-slice` + 实性能 profiling** | UI 皮肤缩放不变形（配合 bg-image 按钮/面板皮肤）+ draw call/GC/内存实机达标 | 低·polyfill 提及 | 中 |
+| 3 | 5 | **虚拟化列表 `<l-list>`** | 背包/排行榜/邮件必备。v1 手搓 div+scroll 无 slot 复用 | **高·v1x-deferred §1（slot 复用+防花屏不变量）** | 大 |
+| 3 | 6 | **soft clip（羽化）** | 配合虚拟化列表边缘渐隐体验 | 低·v1x-deferred §2 | 中 |
+| 4 | 7 | **Controller / Gear / Transition** | 标签页/弹窗/过场/状态切换必备 | **高·v1x-deferred §4（三件套+gear_locked 同步同栈帧守卫）** | 大 |
+| 5 | 8 | **富文本 `<l-rich>`（inline layout）** | 聊天/物品描述必备。多样式/图文混排，复用 v1 文本测量 | 中·v1x-deferred §5（cluster/font_id 字段） | 大 |
+| 5 | 9 | **TextInput / IME（光标/选区/composing）** | 登录/搜索必备。IME 最重，可能需 rustybuzz shaping | 中·IME 草稿最缺 | 最大 |
 
 ---
 
@@ -95,7 +96,8 @@
 
 ---
 
-## 7. 下一步（compact 后选）
+## 7. 下一步
 
-1. **brainstorm v1.x 8 项优先级**（依赖关系 + 上线价值排序，定谁先做）。
-2. **brainstorm v other 第一版拆解**（design-system / linter / skill / 打包桥 谁先）。
+1. **v1.x 排期已定**（§1，2026-06-29）：批 1 background-image → border-radius 起步。
+2. **brainstorm 批 1 第 1 项 background-image**（设计 → plan → SDD）。
+3. （并行可选）brainstorm v other 第一版拆解（design-system / linter / skill / 打包桥 谁先）—— 独立 workstream，不阻塞 v1.x。
