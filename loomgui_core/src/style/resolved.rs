@@ -45,7 +45,7 @@ pub struct ResolvedStyle {
     pub taffy_style: TaffyStyle,
     /// 视觉字段（不进 taffy，渲染层消费）
     pub background_color: Option<[f32; 4]>, // rgba 0..1
-    /// CSS background-image 的 url 路径（已去 url() 包裹 + 引号），None=无背景图。
+    /// CSS background-image url 路径（已去 url() 包裹 + 引号），None = 无背景图。
     pub background_image: Option<String>,
     /// CSS background-size 模式。默认 Stretch。
     pub background_size: BackgroundSize,

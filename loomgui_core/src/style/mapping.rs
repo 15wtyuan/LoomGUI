@@ -93,8 +93,9 @@ pub fn parse_url(value: &str) -> Option<String> {
     let len = inner.len();
     if len == 0 { return None; }
     // 去首尾配对引号
-    let path = if len >= 2 && (inner.starts_with('"') && inner.ends_with('"'))
-        || (inner.starts_with('\'') && inner.ends_with('\''))
+    let path = if len >= 2
+        && ((inner.starts_with('"') && inner.ends_with('"'))
+            || (inner.starts_with('\'') && inner.ends_with('\'')))
     {
         &inner[1..len - 1]
     } else {
@@ -622,6 +623,9 @@ mod tests {
         assert_eq!(parse_url("icons/home.png"), None, "非 url() 格式 → None");
         assert_eq!(parse_url("url()"), None, "空 url → None");
         assert_eq!(parse_url(""), None);
+        // 自闭合引号回归测试：len < 2 被 len >= 2 guard 拦住，不应 panic
+        assert_eq!(parse_url("url(')"), Some("'".to_string()), "自闭合单引号不 panic");
+        assert_eq!(parse_url("url(\")"), Some("\"".to_string()), "自闭合双引号不 panic");
     }
 
     #[test]
