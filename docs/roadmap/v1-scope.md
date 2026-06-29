@@ -55,8 +55,8 @@
 砍：`position:absolute`、`align-content`（换行行分布不可配，围栏文档须告知）、`position:sticky/fixed`（v1.x）。
 > `row-gap`/`column-gap` 是 `gap` 的 longhand，映射同 taffy 字段，支持它们以对齐 AI 先验（AI 常写 longhand）。
 
-**CSS 视觉**：`background-color`、`background-image`(url)、`background-size`(cover/contain/100%)、`border`(color/width/solid)、`opacity`、`overflow:visible/hidden/scroll/auto` + `overflow-x/overflow-y` longhand（v1d.5）、`color/font-size/font-family/font-weight/font-style`、`text-align`、`line-height`、`letter-spacing`、`white-space:nowrap`、`transform`(translate/rotate/scale；v1d.3)。
-砍：`filter`、`clip-path`、`border-radius`、九宫格 `-l-slice`、`background-position`、`transform-origin`(自定义；固定 center)、`skew()`/`matrix()`(剪切由 scale∘rotate 复合支持)（v1.x）。
+**CSS 视觉**：`background-color`、`background-image`(url)、`background-size`(cover/contain/100%)、`border-radius`(1~4 值 + h/v 椭圆角 + px/%)、`border`(color/width/solid)、`opacity`、`overflow:visible/hidden/scroll/auto` + `overflow-x/overflow-y` longhand（v1d.5）、`color/font-size/font-family/font-weight/font-style`、`text-align`、`line-height`、`letter-spacing`、`white-space:nowrap`、`transform`(translate/rotate/scale；v1d.3)。
+砍：`filter`、`clip-path`、九宫格 `-l-slice`、`background-position`、`transform-origin`(自定义；固定 center)、`skew()`/`matrix()`(剪切由 scale∘rotate 复合支持)（v1.x）。
 
 **交互/状态**：`pointer-events:auto/none`、`:hover/:active/:disabled`。
 砍：`cursor`、`:focus`、Controller/Gear/`[data-page]`、`:nth-child`、属性选择器（v1.x）。
