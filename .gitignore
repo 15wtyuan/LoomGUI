@@ -63,3 +63,11 @@ desktop.ini
 .claude/cache/
 .claude/state/
 .claude/projects/
+
+# ===== open-design 调研 =====
+# open-design 源码（只读调研参考，不入库）
+/temp/
+
+# editor init 注入生成物（samples/ 自测注入）
+samples/CLAUDE.md
+samples/.claude/
