@@ -37,6 +37,7 @@ pub enum NodePayload {
         indices: Vec<u32>,
         texture: u32,
         program: u32,
+        color_matrix: [f32; 20],   // v1.3 ColorFilter 矩阵；program≠3 全零
     },
     Text {
         layout: crate::text::layout::TextLayout,
@@ -92,6 +93,7 @@ mod serde_smoke_tests {
                 indices: vec![0, 1, 2, 0, 2, 3],
                 texture: 7,
                 program: 0,
+                color_matrix: [0.0; 20],
             },
         };
         let s = serde_json::to_string(&rn).expect("RenderNode must serialize");

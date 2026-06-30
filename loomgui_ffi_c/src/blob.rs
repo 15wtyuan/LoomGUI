@@ -10,14 +10,14 @@ use loomgui_core::text::layout::{Glyph, GlyphRun, Line, TextLayout};
 
 /// magic = "LOOM" little-endian。
 const MAGIC: u32 = 0x4D4F4F4C;
-const VERSION: u32 = 5;
+const VERSION: u32 = 6;
 
 /// 入口：FrameData（nodes + clip 表）→ blob 字节。
 pub fn build_blob(frame: &FrameData) -> Vec<u8> {
     let nodes = &frame.nodes;
     let clips = &frame.clips;
     let n = nodes.len();
-    // 列名 + 每元素字节数。v5：加 program 列（u8，第 19 列）——坑 79 bg-image 合成。
+    // 列名 + 每元素字节数。v6：加 color_matrix 列（[f32;20]，80B，第 20 列）——v1.3 ColorFilter。
     let columns: &[(&str, usize)] = &[
         ("node_id", 4), ("parent_id", 4), ("visible", 1), ("alpha", 4),
         ("sort_key", 4), ("mask_context", 4),
@@ -26,6 +26,7 @@ pub fn build_blob(frame: &FrameData) -> Vec<u8> {
         ("text_off", 4), ("text_len", 4),
         ("tex_id", 4),
         ("program", 1),
+        ("color_matrix", 80),   // [f32;20] × 4 字节，第 20 列
     ];
     let num_col_offsets = columns.len();          // 19
     let header_len = 3 * 4                          // magic, version, node_count
@@ -57,6 +58,7 @@ pub fn build_blob(frame: &FrameData) -> Vec<u8> {
     let mut col_text_len = Vec::<u8>::new();
     let mut col_tex_id = Vec::<u8>::new();
     let mut col_program = Vec::<u8>::new();
+    let mut col_color_matrix = Vec::<u8>::new();
 
     for rn in nodes {
         col_node_id.extend_from_slice(&rn.node_id.to_le_bytes());
@@ -76,10 +78,11 @@ pub fn build_blob(frame: &FrameData) -> Vec<u8> {
         // 其余节点占位 0（match 各 arm 内 push 进 col_text_off/len）。
 
         match &rn.payload {
-            NodePayload::Mesh { verts, uvs, colors, indices, texture, program } => {
+            NodePayload::Mesh { verts, uvs, colors, indices, texture, program, color_matrix } => {
                 col_kind.push(1);
                 col_tex_id.extend_from_slice(&(*texture).to_le_bytes()); // 写真 tex_id
                 col_program.push(*program as u8);   // v5：program 列（0=img/无图，2=Container+bg-image）
+                for &v in color_matrix.iter() { col_color_matrix.extend_from_slice(&v.to_le_bytes()); }
                 // v4：re-base 顶点两路径。纯平移 → 减 (tx,ty) 得本地；
                 // 非纯平移 → 顶点已 box 本地 → 不减。
                 let pure = transform::is_pure_translation(&rn.world_matrix);
@@ -127,6 +130,8 @@ pub fn build_blob(frame: &FrameData) -> Vec<u8> {
                 // pen_y = line.y + line.baseline（绝对，同行同值）。
                 col_kind.push(2);
                 col_program.push(*program as u8);   // v5：Text program=1（ALPHA_MASK）
+                // Text：color_matrix 占位 20 个 0.0
+                for _ in 0..20 { col_color_matrix.extend_from_slice(&0f32.to_le_bytes()); }
                 col_tex_id.extend_from_slice(&0u32.to_le_bytes()); // Text 无贴图（font material 路径）
                 col_mesh_off.extend_from_slice(&0u32.to_le_bytes());
                 col_mesh_len.extend_from_slice(&0u32.to_le_bytes());
@@ -160,6 +165,8 @@ pub fn build_blob(frame: &FrameData) -> Vec<u8> {
                 col_kind.push(0);
                 col_tex_id.extend_from_slice(&0u32.to_le_bytes());
                 col_program.push(0);   // v5：Unchanged 占位 0
+                // Unchanged：color_matrix 占位 20 个 0.0
+                for _ in 0..20 { col_color_matrix.extend_from_slice(&0f32.to_le_bytes()); }
                 col_mesh_off.extend_from_slice(&0u32.to_le_bytes());
                 col_mesh_len.extend_from_slice(&0u32.to_le_bytes());
                 col_text_off.extend_from_slice(&0u32.to_le_bytes());
@@ -177,6 +184,7 @@ pub fn build_blob(frame: &FrameData) -> Vec<u8> {
         ("text_off",&col_text_off),("text_len",&col_text_len),
         ("tex_id",&col_tex_id),
         ("program",&col_program),
+        ("color_matrix",&col_color_matrix),
     ];
 
     // 算各列 offset。
@@ -258,6 +266,7 @@ mod tests {
                 indices: vec![0, 1, 2, 0, 2, 3],
                 texture: 0,
                 program: 0,
+                color_matrix: [0.0; 20],
             },
         }
     }
@@ -322,6 +331,7 @@ mod tests {
                 indices: vec![0, 1, 2, 0, 2, 3],
                 texture: 0,
                 program: 0,
+                color_matrix: [0.0; 20],
             },
         }
     }
@@ -341,6 +351,7 @@ mod tests {
                 indices,
                 texture: 0,
                 program: 0,
+                color_matrix: [0.0; 20],
             },
         }
     }
@@ -374,7 +385,7 @@ mod tests {
         assert_eq!(&blob[0..4], &MAGIC.to_le_bytes());
         let v = u32::from_le_bytes(blob[4..8].try_into().unwrap());
         assert_eq!(v, VERSION);
-        assert_eq!(v, 5, "blob 版本应为 5（v5：加 program 列）");
+        assert_eq!(v, 6, "blob 版本应为 6（v6：加 color_matrix 列）");
         let n = u32::from_le_bytes(blob[8..12].try_into().unwrap());
         assert_eq!(n, 1);
     }
@@ -391,7 +402,7 @@ mod tests {
     }
 
     /// program 列（u8，第 19 列，v5）：Mesh program=2（Container+bg-image 合成）/ Unchanged program=0 占位。
-    /// round-trip。VERSION=5（加 program 列 bump）。坑 79。
+    /// round-trip。VERSION=6（加 color_matrix 列 bump）。坑 79。
     #[test]
     fn program_column_round_trips() {
         let blob = build_blob(&frame(&[
@@ -400,46 +411,46 @@ mod tests {
             mesh_node_with_program(2, 0),  // 无图 Container / Image
         ]));
         let view = TestView::parse(&blob);
-        assert_eq!(view.version(), 5, "VERSION=5（加 program 列 bump）");
+        assert_eq!(view.version(), 6, "VERSION=6（加 color_matrix 列 bump）");
         assert_eq!(view.program(0), 2, "Mesh program=2 round-trip");
         assert_eq!(view.program(1), 0, "Unchanged program=0 占位");
         assert_eq!(view.program(2), 0, "Mesh program=0 round-trip");
     }
 
-    /// §4.1 v5 header：19 col offset + mesh/text/clip 三 arena header。
+    /// §4.1 v6 header：20 col offset + mesh/text/clip 三 arena header。
     /// 无 Text 节点时 text_arena 空（len=0），无 clip 时 clip 表仅 4B clip_count=0。
     #[test]
     fn blob_v4_header_has_text_and_clip_arena_fields() {
         let blob = build_blob(&frame(&[mesh_node(0, None, 0.0, 0.0, 1.0, 1.0)]));
 
-        // magic + version==5。
+        // magic + version==6。
         assert_eq!(u32::from_le_bytes(blob[0..4].try_into().unwrap()), MAGIC);
-        assert_eq!(u32::from_le_bytes(blob[4..8].try_into().unwrap()), 5, "version=5");
+        assert_eq!(u32::from_le_bytes(blob[4..8].try_into().unwrap()), 6, "version=6");
 
-        // 19 col offset @ [12 .. 12+19*4)。每 col_offset 非零且单调递增。
-        let header_len = 12 + 19 * 4; // = 88
+        // 20 col offset @ [12 .. 12+20*4)。每 col_offset 非零且单调递增。
+        let header_len = 12 + 20 * 4; // = 92
         let mut prev = header_len;
-        for i in 0..19usize {
+        for i in 0..20usize {
             let o = 12 + i * 4;
             let off = u32::from_le_bytes(blob[o..o + 4].try_into().unwrap()) as usize;
             assert!(off >= prev, "col_offset[{}] 应 >= header_len({}), 实={}", i, prev, off);
             prev = off;
         }
 
-        // mesh_arena header @ [88..96)：off/len（mesh 节点有内容，len>0）。
-        let mesh_arena_off = u32::from_le_bytes(blob[88..92].try_into().unwrap()) as usize;
-        let mesh_arena_len = u32::from_le_bytes(blob[92..96].try_into().unwrap()) as usize;
+        // mesh_arena header @ [92..100)：off/len（mesh 节点有内容，len>0）。
+        let mesh_arena_off = u32::from_le_bytes(blob[92..96].try_into().unwrap()) as usize;
+        let mesh_arena_len = u32::from_le_bytes(blob[96..100].try_into().unwrap()) as usize;
         assert!(mesh_arena_len > 0, "单 mesh 节点：mesh_arena_len 应 > 0");
 
-        // text_arena header @ [96..104)：无 Text 节点时暂空（len=0）。
-        let text_arena_off = u32::from_le_bytes(blob[96..100].try_into().unwrap()) as usize;
-        let text_arena_len = u32::from_le_bytes(blob[100..104].try_into().unwrap());
+        // text_arena header @ [100..108)：无 Text 节点时暂空（len=0）。
+        let text_arena_off = u32::from_le_bytes(blob[100..104].try_into().unwrap()) as usize;
+        let text_arena_len = u32::from_le_bytes(blob[104..108].try_into().unwrap());
         assert_eq!(text_arena_len, 0, "无 Text 节点：text_arena 暂空");
         assert_eq!(text_arena_off, mesh_arena_off + mesh_arena_len, "text_arena 紧跟 mesh_arena");
 
-        // clip_table header @ [104..112)：无 clip 时仅 4B clip_count=0（clip_table_len=4）。
-        let clip_table_off = u32::from_le_bytes(blob[104..108].try_into().unwrap()) as usize;
-        let clip_table_len = u32::from_le_bytes(blob[108..112].try_into().unwrap());
+        // clip_table header @ [108..116)：无 clip 时仅 4B clip_count=0（clip_table_len=4）。
+        let clip_table_off = u32::from_le_bytes(blob[108..112].try_into().unwrap()) as usize;
+        let clip_table_len = u32::from_le_bytes(blob[112..116].try_into().unwrap());
         assert_eq!(clip_table_len, 4, "clip 表至少含 clip_count(u32)=0，故 len=4");
         assert_eq!(clip_table_off, text_arena_off + text_arena_len as usize, "clip_table 紧跟 text_arena");
         let clip_count = u32::from_le_bytes(blob[clip_table_off..clip_table_off + 4].try_into().unwrap());
@@ -447,7 +458,7 @@ mod tests {
         assert_eq!(clip_table_off + clip_table_len as usize, blob.len(), "clip_table 应是 blob 末段");
     }
 
-    /// TestView（C# FrameBlob 的 Rust 镜像）解析 v5 blob 时：19 列 + 三 arena 头读回正确，
+    /// TestView（C# FrameBlob 的 Rust 镜像）解析 v6 blob 时：20 列 + 三 arena 头读回正确，
     /// 且无 Text 节点的占位语义（text_off/text_len=0、text_arena_len=0、clip_count=0）成立。
     #[test]
     fn test_view_parses_v4_layout_and_t1_placeholders() {
@@ -457,7 +468,7 @@ mod tests {
         assert_eq!(view.text_len(0), 0, "text_len 占位 0");
         assert_eq!(view.text_arena_len(), 0, "text_arena 整段为空");
         assert_eq!(view.text_arena_off(), view.mesh_arena_off + u32::from_le_bytes(
-            blob[92..96].try_into().unwrap()) as usize, "text_arena 紧跟 mesh_arena");
+            blob[96..100].try_into().unwrap()) as usize, "text_arena 紧跟 mesh_arena");
         assert_eq!(view.clip_count(), 0, "clip_count=0");
     }
 
@@ -603,10 +614,10 @@ mod tests {
     // col_off 索引：0=node_id 1=parent_id 2=visible 3=alpha 4=sort_key
     //              5=mask_context 6=m_a 7=m_b 8=m_c 9=m_d 10=m_tx 11=m_ty
     //              12=payload_kind 13=mesh_off 14=mesh_len
-    //              15=text_off 16=text_len 17=tex_id 18=program (v5)
+    //              15=text_off 16=text_len 17=tex_id 18=program (v5) 19=color_matrix (v6)
     struct TestView<'a> {
         buf: &'a [u8],
-        col_off: [usize; 19],
+        col_off: [usize; 20],
         mesh_arena_off: usize,
         text_arena_off: usize,
         text_arena_len: u32,
@@ -616,9 +627,9 @@ mod tests {
     impl<'a> TestView<'a> {
         fn parse(buf: &'a [u8]) -> Self {
             assert_eq!(&buf[0..4], &MAGIC.to_le_bytes());
-            let mut col_off = [0usize; 19];
+            let mut col_off = [0usize; 20];
             let mut h = 12;
-            for i in 0..19 {
+            for i in 0..20 {
                 col_off[i] = u32::from_le_bytes(buf[h..h+4].try_into().unwrap()) as usize;
                 h += 4;
             }
@@ -678,6 +689,15 @@ mod tests {
         /// v5：第 19 列 program（u8）。0=img/无图 Container，1=Text，2=Container+bg-image。
         fn program(&self, i: usize) -> u8 {
             self.buf[self.col_off[18] + i]
+        }
+        /// v6：第 20 列 color_matrix（[f32;20]，col_off[19] + i*80）。program≠3 全零。
+        fn color_matrix(&self, i: usize) -> [f32; 20] {
+            let off = self.col_off[19] + i * 80;
+            let mut m = [0.0; 20];
+            for j in 0..20 {
+                m[j] = f32::from_le_bytes(self.buf[off + j*4..off + j*4 + 4].try_into().unwrap());
+            }
+            m
         }
         /// blob VERSION（u32 @ offset 4）。
         fn version(&self) -> u32 {
@@ -839,6 +859,7 @@ mod tests {
                 indices: vec![0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7],
                 texture: 1,
                 program: 0,
+                color_matrix: [0.0; 20],
             },
         };
         let frame = FrameData {
@@ -868,7 +889,7 @@ mod tests {
         }
     }
     /// blob v4 world_matrix round-trip——纯平移 + 剪切节点均写入 6 矩阵列，
-    /// VERSION=5（v5：加 program 列），blob len > 100。
+    /// VERSION=6（v6：加 color_matrix 列），blob len > 100。
     #[test]
     fn blob_v4_world_matrix_roundtrip() {
         let mk = |wm: transform::Affine2| RenderNode {
@@ -879,6 +900,7 @@ mod tests {
                 verts: vec![[0.0,0.0],[10.0,0.0],[10.0,10.0],[0.0,10.0]],
                 uvs: vec![[0.0,0.0];4], colors: vec![[1.0;4];4], indices: vec![0,1,2,0,2,3],
                 texture: 0, program: 0,
+                color_matrix: [0.0; 20],
             },
         };
         // 纯平移节点
@@ -886,15 +908,15 @@ mod tests {
         // 剪切节点
         let skew = mk(transform::from_scale(2.0,1.0).mul(transform::from_rotate(0.5)));
         let blob = build_blob(&FrameData { nodes: vec![pure, skew], clips: vec![] });
-        // version=5（v5：加 program 列）
-        assert_eq!(u32::from_le_bytes(blob[4..8].try_into().unwrap()), 5, "VERSION=5");
+        // version=6（v6：加 color_matrix 列）
+        assert_eq!(u32::from_le_bytes(blob[4..8].try_into().unwrap()), 6, "VERSION=6");
         // 字节数合理（2 节点 × 19 列 + mesh arena + header）
         assert!(blob.len() > 100);
     }
 
     /// Unchanged 节点经 build_blob → payload_kind==0 透传。
     /// C# 侧 MirrorPool.cs:71 `kind!=1&&!=2 continue` 跳过 kind=0；
-    /// 本机 Rust 侧 round-trip 验：Unchanged 节点占 1 节点位、payload_kind(0)==0、VERSION=5。
+    /// 本机 Rust 侧 round-trip 验：Unchanged 节点占 1 节点位、payload_kind(0)==0、VERSION=6。
     #[test]
     fn blob_unchanged_kind_is_zero() {
         let rn = RenderNode {
@@ -911,7 +933,41 @@ mod tests {
         assert_eq!(view.node_count(), 1, "Unchanged 仍占 1 节点位");
         assert_eq!(view.payload_kind(0), 0, "Unchanged payload_kind==0 透传");
         assert_eq!(view.program(0), 0, "Unchanged program=0 占位");
-        // VERSION=5（v5：加 program 列 bump）。
-        assert_eq!(u32::from_le_bytes(blob[4..8].try_into().unwrap()), 5, "VERSION=5");
+        // VERSION=6（v6：加 color_matrix 列 bump）。
+        assert_eq!(u32::from_le_bytes(blob[4..8].try_into().unwrap()), 6, "VERSION=6");
+    }
+
+    /// color_matrix 列（[f32;20]，第 20 列）：program=3 节点填矩阵，其余全零占位。VERSION=6。
+    #[test]
+    fn blob_color_matrix_column_round_trips() {
+        let matrix = [0.299, 0.587, 0.114, 0.0, 0.0,
+                      0.299, 0.587, 0.114, 0.0, 0.0,
+                      0.299, 0.587, 0.114, 0.0, 0.0,
+                      0.0,   0.0,   0.0,   1.0, 0.0];
+        let nodes = vec![
+            RenderNode {
+                node_id: 1,
+                parent_id: None, visible: true, alpha: 1.0,
+                grayed: false, color_tint: [1.0; 4],
+                world_matrix: [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+                mask_context: MaskContext(0), sort_key: 0,
+                blend: BlendMode::Normal,
+                payload: NodePayload::Mesh {
+                    verts: vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]],
+                    uvs: vec![[0.0, 0.0]; 4], colors: vec![[1.0; 4]; 4],
+                    indices: vec![0, 1, 2, 0, 2, 3], texture: 0,
+                    program: 3,   // ColorFilter
+                    color_matrix: matrix,
+                },
+            },
+        ];
+        let blob = build_blob(&FrameData { nodes, clips: vec![] });
+        let view = TestView::parse(&blob);
+        assert_eq!(view.version(), 6, "VERSION=6（加 color_matrix 列 bump）");
+        assert_eq!(view.program(0), 3, "program=3 round-trip");
+        let m = view.color_matrix(0);
+        for i in 0..20 {
+            assert!((m[i] - matrix[i]).abs() < 1e-5, "color_matrix[{}] round-trip", i);
+        }
     }
 }

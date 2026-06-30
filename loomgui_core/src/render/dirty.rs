@@ -102,6 +102,7 @@ mod tests {
                 verts: vec![[0.0,0.0];4], uvs: vec![[0.0,0.0];4],
                 colors: vec![color0;4], indices: vec![0,1,2,0,2,3],
                 texture: tex, program: 0,
+                color_matrix: [0.0; 20],
             },
         }
     }
@@ -328,6 +329,7 @@ mod tests {
             payload: NodePayload::Mesh {
                 verts, uvs, colors, indices,
                 texture: 1, program: 0,
+                color_matrix: [0.0; 20],
             },
         }
     }

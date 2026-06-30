@@ -519,6 +519,7 @@ mod tests {
                 indices: vec![0, 1, 2, 0, 2, 3],
                 texture: tex,
                 program: 0,
+                color_matrix: [0.0; 20],
             },
         }
     }

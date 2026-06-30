@@ -64,6 +64,7 @@ fn thumb_render_node(node_id: u32, rect: Rect, sort_key: u32) -> RenderNode {
             indices: idx,
             texture: 0,
             program: 0,
+            color_matrix: [0.0; 20],
         },
     }
 }
@@ -168,6 +169,7 @@ pub fn build_render_nodes(
                 let program = if texture != 0 { 2u32 } else { 0u32 };
                 rn.payload = NodePayload::Mesh {
                     verts: v, uvs: uvc, colors: col, indices: idx, texture, program,
+                    color_matrix: [0.0; 20],
                 };
             }
             NodeKind::Image { src } => {
@@ -181,7 +183,7 @@ pub fn build_render_nodes(
                     rect, [1.0, 1.0, 1.0, 1.0],
                     [uv_min[0], uv_max[1]], [uv_max[0], uv_min[1]],
                 );
-                rn.payload = NodePayload::Mesh { verts: v, uvs: uvc, colors: col, indices: idx, texture: tex_id, program: 0 };
+                rn.payload = NodePayload::Mesh { verts: v, uvs: uvc, colors: col, indices: idx, texture: tex_id, program: 0, color_matrix: [0.0; 20] };
             }
             NodeKind::Text { content } => {
                 let s = &n.style;

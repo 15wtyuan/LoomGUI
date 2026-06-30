@@ -99,6 +99,7 @@ fn merge_batch(nodes: &[RenderNode], batch: &[usize]) -> RenderNode {
                 _ => 0,
             },
             program: 0,
+            color_matrix: [0.0; 20],
         },
     }
 }
@@ -121,6 +122,7 @@ mod tests {
                 colors: vec![[1.0, 1.0, 1.0, 1.0]; 4],
                 indices: vec![0, 1, 2, 0, 2, 3],
                 texture: tex, program: 0,
+                color_matrix: [0.0; 20],
             },
         }
     }
