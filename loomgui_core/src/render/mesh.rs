@@ -139,7 +139,7 @@ pub fn rounded_rect(
 /// - slice = 源图像素切片量（已 resolve，% 已乘源图边）。
 /// - src_w/src_h = 源图像素尺寸（算 UV 切片比例）。
 /// - 四角不缩放、四边单轴拉伸、中心双轴拉伸。
-/// - clamp：rect 比源图小（contentW < srcW - sliceW）时四角重叠，max(0,...) 防越界（照搬 fgui）。
+/// - clamp：rect 比源图小时四角重叠；`slice.left.min(w*0.5)` 防左切片过半，`.max(grid_x[1])` 防右切片线越过左切片线（clamp 策略等效 fgui SliceFill 防四角越界，实现用 `min(w*0.5)` + `.max()`）。
 /// - UV 由 uv_min/uv_max 指定（atlas 子区），按切片像素比例切。v 翻转由调用点交换 uv v 处理。
 #[allow(clippy::type_complexity)]
 pub fn nine_slice(
@@ -186,7 +186,7 @@ pub fn nine_slice(
         }
     }
     let colors = vec![color; 16];
-    // TRIANGLES_9_GRID（照搬 fgui Image.cs:267）：9 quad，每 quad (a,b,c)+(b,d,c)
+    // TRIANGLES_9_GRID（照搬 fgui Image.cs:267）：9 quad，每 quad (BL,TL,TR)+(TR,BR,BL) = (a,b,c)+(c,d,a)
     let indices: Vec<u32> = vec![
         4,0,1, 1,5,4,    // 行 0 列 0/1
         5,1,2, 2,6,5,    // 行 0 列 1/2
@@ -408,7 +408,7 @@ mod tests {
             100.0, 100.0,
             [0.0, 0.0], [1.0, 1.0],
         );
-        // clamp 后 gridX = [0, max(0, 0+10), min(10, 10-10)=0, 10] → 不越界
+        // clamp 后 grid_x = [0, 0+10.min(5)=5, (0+10-10).max(5)=5, 10] → 左切片线==右切片线==5，中心段折叠
         // 关键：左切片线不超 rect 右边（gridX[1] <= gridX[2]）
         let xs: Vec<f32> = (0..4).map(|c| v[c][0]).collect();
         assert!(xs[1] <= xs[2] + 1e-3, "左切片线 <= 右切片线（clamp 防越界），xs={:?}", xs);
