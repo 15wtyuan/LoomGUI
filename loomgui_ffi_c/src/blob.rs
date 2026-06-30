@@ -315,20 +315,20 @@ mod tests {
 
     #[test]
     fn rounded_rect_mesh_round_trips_n_verts() {
-        // border-radius 产的 25 顶点圆角 mesh 经 build_blob 序列化 + TestView 反序列化：
+        // border-radius 产的 37 顶点圆角 mesh 经 build_blob 序列化 + TestView 反序列化：
         // vert_count / idx_count / 顶点坐标 re-base 全保真（验证变顶点 FFI 链）。
         use loomgui_core::scene::node::Rect;
         let rect = Rect { x: 10.0, y: 20.0, w: 80.0, h: 80.0 };
         let (verts, _uvs, _colors, indices) = loomgui_core::render::mesh::rounded_rect(
             &rect, [1.0; 4], &[(8.0, 8.0); 4], [0.0, 0.0], [1.0, 1.0]);
-        assert_eq!(verts.len(), 25, "r=8 80×80 → 25 顶点");
+        assert_eq!(verts.len(), 37, "r=8 80×80 → 37 顶点（/4 加密分段）");
         let ic = indices.len();
         let node = mesh_node_raw(verts, indices, 10.0, 20.0);
         let blob = build_blob(&frame(&[node]));
         let view = TestView::parse(&blob);
         assert_eq!(view.payload_kind(0), 1, "Mesh kind=1");
         let (vc, ic2) = view.mesh_vert_count(0);
-        assert_eq!(vc, 25, "vert_count round-trip 25");
+        assert_eq!(vc, 37, "vert_count round-trip 37");
         assert_eq!(ic2 as usize, ic, "idx_count round-trip");
         // 中心顶点 v[0] = rect 中心 (50,60)，re-base 减 (tx=10,ty=20) → (40,40)。
         let (cx, cy) = view.mesh_vert(0, 0);

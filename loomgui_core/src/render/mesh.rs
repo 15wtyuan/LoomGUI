@@ -107,8 +107,8 @@ pub fn rounded_rect(
             colors.push(color);
             continue;
         }
-        // 自适应分段（照搬 fgui：ceil(π·max(rx,ry)/8)+1，最小 2）
-        let sides = ((std::f32::consts::PI * rx.max(ry) / 8.0).ceil() as i32 + 1).max(2);
+        // 自适应分段：ceil(π·max(rx,ry)/4)+1，最小 2（每 ~4px 弧长一段，加密自 fgui /8 消圆角毛刺）
+        let sides = ((std::f32::consts::PI * rx.max(ry) / 4.0).ceil() as i32 + 1).max(2);
         let delta = std::f32::consts::FRAC_PI_2 / sides as f32;
         for j in 0..=sides {
             let a = if j == sides {
@@ -210,14 +210,14 @@ mod tests {
 
     #[test]
     fn rounded_rect_vertex_count_scales_with_radius() {
-        // r=8, 80×80：sides = ceil(π·8/8)+1 = 5 → 每角 6 顶点(0..=5) × 4 角 + 1 中心 = 25
+        // r=8, 80×80：sides = ceil(π·8/4)+1 = 8 → 每角 9 顶点(0..=8) × 4 角 + 1 中心 = 37
         let (v, _uvs, _col, _idx) = rounded_rect(
             &Rect { x: 0.0, y: 0.0, w: 80.0, h: 80.0 },
             [1.0; 4],
             &[(8.0, 8.0); 4],
             [0.0, 0.0], [1.0, 1.0],
         );
-        assert_eq!(v.len(), 25, "1 中心 + 4 角 × (5+1) 顶点");
+        assert_eq!(v.len(), 37, "1 中心 + 4 角 × (8+1) 顶点");
     }
 
     #[test]
