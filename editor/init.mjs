@@ -6,9 +6,9 @@
 import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import {
-  existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, copyFileSync, statSync,
+  existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, statSync,
 } from "node:fs";
-import { join, resolve, dirname, relative } from "node:path";
+import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -30,8 +30,6 @@ function ask(rl, q) { return rl.question(q); }
 
 // 增量合并规则文件：无则新建，有则替换标签段（保留用户原有内容）。
 function mergeRuleFile(targetPath, tmplContent) {
-  const block = `${BEGIN}\n${tmplContent.replace(/^<!-- loomgui-editor-begin -->\n?/, "").replace(/\n?<!-- loomgui-editor-end -->\s*$/, "")}\n${END}\n`;
-  // tmplContent 本身已含标签，直接用 tmplContent 作 block。
   const tagged = tmplContent.includes(BEGIN) ? tmplContent : `${BEGIN}\n${tmplContent}\n${END}\n`;
   if (!existsSync(targetPath)) {
     writeFileSync(targetPath, tagged, "utf8");
