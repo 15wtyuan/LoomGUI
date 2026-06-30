@@ -1,4 +1,5 @@
-use crate::style::resolved::{BackgroundSize, BorderRadius, CornerRadius, OverflowMode, ResolvedStyle, TextAlign};
+use crate::style::resolved::{BackgroundSize, BorderRadius, CornerRadius, OverflowMode, ResolvedStyle, SliceInsets, TextAlign};
+use crate::style::color_filter::{self, IDENTITY};
 use taffy::geometry::{Rect, Size};
 use taffy::style::{Dimension, LengthPercentage, LengthPercentageAuto};
 
@@ -69,6 +70,88 @@ pub fn parse_four(s: &str) -> [f32; 4] {
         3 => [p(0), p(1), p(2), p(1)],
         _ => [p(0), p(1), p(2), p(3)],
     }
+}
+
+/// 解析 CSS filter 函数链 → 4×5 矩阵（None=filter:none 或空）。
+/// 函数：grayscale/brightness/contrast/saturate/hue-rotate/invert/sepia。
+/// 多函数 = 矩阵相乘（左到右，CSS 顺序）。
+fn parse_filter(value: &str) -> Option<[f32; 20]> {
+    let v = value.trim();
+    if v == "none" || v.is_empty() {
+        return None;
+    }
+    let mut acc = IDENTITY;
+    let mut any = false;
+    for func in v.split_whitespace() {
+        // func 形如 "grayscale(1)" / "hue-rotate(90deg)"
+        let (name, arg) = match func.split_once('(') {
+            Some((n, rest)) => {
+                let arg = rest.trim_end_matches(')');
+                (n.trim(), arg.trim())
+            }
+            None => continue,  // 无括号函数（罕见）跳过
+        };
+        let m = match name {
+            "grayscale" => {
+                // grayscale(x): x∈[0,1]，x=1 完全灰化。sat = -x → saturate(1-x)
+                let x = parse_number(arg).unwrap_or(1.0);
+                color_filter::saturate(1.0 - x)
+            }
+            "brightness" => color_filter::brightness(parse_number(arg).unwrap_or(1.0)),
+            "contrast" => color_filter::contrast(parse_number(arg).unwrap_or(1.0)),
+            "saturate" => color_filter::saturate(parse_number(arg).unwrap_or(1.0)),
+            "hue-rotate" => {
+                // 90deg → 90.0
+                let deg = arg.trim_end_matches("deg").trim().parse::<f32>().unwrap_or(0.0);
+                color_filter::hue_rotate(deg)
+            }
+            "invert" => {
+                let x = parse_number(arg).unwrap_or(1.0);
+                if x >= 0.5 { color_filter::invert() } else { IDENTITY }
+            }
+            "sepia" => {
+                // v1.3 简化：sepia(1) = 棕褐 tint 预设（实现期补；先 fallback grayscale+Tint 近似）
+                // ponytail: sepia 完整 Tint 矩阵实现期补，先用 grayscale 占位（spec §9 风险）
+                color_filter::grayscale()
+            }
+            _ => continue,
+        };
+        acc = color_filter::concat(&acc, &m);
+        any = true;
+    }
+    if any { Some(acc) } else { None }
+}
+
+/// parse_number: 解析 "1" / "1.2" / "50%" → f32（% 暂存比例，渲染期 resolve）。
+fn parse_number(s: &str) -> Option<f32> {
+    let s = s.trim();
+    if let Some(p) = s.strip_suffix('%') {
+        p.trim().parse::<f32>().ok().map(|v| v / 100.0)
+    } else {
+        s.parse::<f32>().ok()
+    }
+}
+
+/// 解析 border-image-slice 4 值（CSS 4 值缩写同 margin）。
+/// px 存像素，% 存比例（渲染期 resolve 乘源图边）。
+fn parse_slice(value: &str) -> Option<SliceInsets> {
+    let nums: Vec<f32> = value.split_whitespace()
+        .map(|tok| {
+            if let Some(p) = tok.strip_suffix('%') {
+                p.parse::<f32>().ok().map(|v| v / 100.0)
+            } else {
+                tok.parse::<f32>().ok()
+            }
+        })
+        .collect::<Option<Vec<_>>>()?;
+    let (t, r, b, l) = match nums.len() {
+        1 => (nums[0], nums[0], nums[0], nums[0]),
+        2 => (nums[0], nums[1], nums[0], nums[1]),
+        3 => (nums[0], nums[1], nums[2], nums[1]),
+        4 => (nums[0], nums[1], nums[2], nums[3]),
+        _ => return None,
+    };
+    Some(SliceInsets { top: t, right: r, bottom: b, left: l })
 }
 
 /// 解析 border-radius 1~4 值（每值 px 或 %）→ [LengthPercentage;4]（TL,TR,BR,BL）。
@@ -345,6 +428,18 @@ pub fn apply_decl(style: &mut ResolvedStyle, prop: &str, value: &str) -> bool {
                 _ => taffy::Display::Flex,
             };
             true
+        }
+        "filter" => {
+            // CSS filter 函数链：grayscale(1) brightness(1.2) ... → 矩阵相乘
+            style.color_filter = parse_filter(value);
+            true
+        }
+        "border-image-slice" => {
+            // 4 值上右下左（CSS 4 值缩写同 margin）；px 存像素，% 存比例（渲染期 resolve 乘源图边）
+            match parse_slice(value) {
+                Some(ins) => { style.border_image_slice = Some(ins); true }
+                None => false,
+            }
         }
         "background-color" => {
             style.background_color = parse_color(value);
@@ -787,5 +882,55 @@ mod tests {
         assert!(!apply_decl(&mut s, "border-radius", "8px /"));
         // 失败时不应改默认
         assert_eq!(s.border_radius, BorderRadius::default());
+    }
+
+    #[test]
+    fn apply_decl_filter_grayscale_sets_matrix() {
+        let mut s = ResolvedStyle::default();
+        assert!(apply_decl(&mut s, "filter", "grayscale(1)"));
+        let m = s.color_filter.expect("filter 设了 color_filter");
+        // grayscale 行 0 = (LUMA_R, LUMA_G, LUMA_B, 0, 0)
+        assert!((m[0] - 0.299).abs() < 1e-4);
+        assert!((m[1] - 0.587).abs() < 1e-4);
+        assert!((m[2] - 0.114).abs() < 1e-4);
+    }
+
+    #[test]
+    fn apply_decl_filter_none_clears() {
+        let mut s = ResolvedStyle::default();
+        s.color_filter = Some(crate::style::color_filter::IDENTITY);
+        assert!(apply_decl(&mut s, "filter", "none"));
+        assert!(s.color_filter.is_none(), "filter:none 清除 color_filter");
+    }
+
+    #[test]
+    fn apply_decl_filter_multi_function_concat() {
+        // grayscale(1) brightness(1.2) → concat(grayscale, brightness)
+        let mut s = ResolvedStyle::default();
+        assert!(apply_decl(&mut s, "filter", "grayscale(1) brightness(1.2)"));
+        let m = s.color_filter.expect("multi filter");
+        // 应 = concat(grayscale, brightness(1.2))：grayscale 行 0 offset +0.2
+        assert!((m[4] - 0.2).abs() < 1e-4, "brightness offset 叠加到 grayscale");
+        assert!((m[0] - 0.299).abs() < 1e-4, "仍含 grayscale luma");
+    }
+
+    #[test]
+    fn apply_decl_border_image_slice_four_values() {
+        let mut s = ResolvedStyle::default();
+        assert!(apply_decl(&mut s, "border-image-slice", "10 20 30 40"));
+        let sl = s.border_image_slice.expect("slice 设了");
+        assert_eq!(sl.top, 10.0);
+        assert_eq!(sl.right, 20.0);
+        assert_eq!(sl.bottom, 30.0);
+        assert_eq!(sl.left, 40.0);
+    }
+
+    #[test]
+    fn apply_decl_border_image_slice_percent() {
+        // 25% → 暂存比例值（0.25），渲染期 resolve 乘源图边（同 border-radius % 语义）
+        let mut s = ResolvedStyle::default();
+        assert!(apply_decl(&mut s, "border-image-slice", "25%"));
+        let sl = s.border_image_slice.expect("slice 设了");
+        assert!((sl.top - 0.25).abs() < 1e-4, "25% 存 0.25，渲染期 resolve");
     }
 }
