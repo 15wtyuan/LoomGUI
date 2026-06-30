@@ -126,7 +126,8 @@ namespace LoomGUI
                     // 按 tex_id 从 texMap 绑真纹理；0/缺失 → fallback（白占位）。
                     uint tid = blob.TexId(i);
                     Texture tex = (tid != 0 && texMap.TryGetValue(tid, out var t)) ? (Texture)t : fallback;
-                    var mat = mm.Get(program: 0, tex, maskCtx, !pure);
+                    // program 来自 blob（v5 第 19 列）：0=img/无图 Container，2=Container+bg-image（CSS 合成，坑 79）。
+                    var mat = mm.Get((int)blob.Program(i), tex, maskCtx, !pure);
                     if (!pure)
                     {
                         // _ObjectMatrix 只 scale/rotate（translate 进 GO localPosition，renderer.bounds 自动 world）。

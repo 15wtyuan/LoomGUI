@@ -32,6 +32,7 @@ Shader "LoomGUI/Unlit"
             #pragma multi_compile _ CLIPPED
             #pragma multi_compile _ OBJECT_MATRIX
             #pragma multi_compile _ ALPHA_MASK
+            #pragma multi_compile _ BG_COMPOSITE
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
 
             struct Attr { float4 pos : POSITION; float4 color : COLOR; float2 uv : TEXCOORD0; };
@@ -83,6 +84,11 @@ Shader "LoomGUI/Unlit"
                 #if defined(ALPHA_MASK)
                 // text（program:1）：font atlas 是 alpha-mask（glyph 在 alpha，rgb 黑）→ rgb 用 vcol，alpha = vcol.a * tex.a。
                 half4 col = half4(vcol.rgb, vcol.a * tex.a);
+                #elif defined(BG_COMPOSITE)
+                // Container+bg-image（program:2，坑 79）：CSS background 合成。
+                // 图不透明区显图（tex.rgb），透明区显 bg-color（vcol.rgb）；整体 alpha 由 bg-color 决定。
+                // tex.rgb 与 vcol.rgb 均已 linear（tex sRGB 自动转，vcol 上方手动转），合成在 linear 空间正确。
+                half4 col = half4(tex.rgb * tex.a + vcol.rgb * (1.0 - tex.a), vcol.a);
                 #else
                 // image/mesh（program:0）：彩色 texture → tex.rgb × vcol。
                 half4 col = tex * vcol;
