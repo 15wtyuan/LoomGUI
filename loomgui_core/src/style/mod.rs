@@ -1,3 +1,4 @@
+pub mod color_filter;
 pub mod resolved;
 pub mod mapping;
 pub mod dynamic;
