@@ -133,9 +133,78 @@ pub fn rounded_rect(
     (verts, uvs, colors, indices)
 }
 
+/// 生成九宫格切片矩形的 verts/uvs/colors/indices（照搬 fgui Image.cs SliceFill）。
+///
+/// - 4×4 顶点（gridX/gridY 各 4 值 = 3 段切分）+ 9 quad（TRIANGLES_9_GRID 固定索引）。
+/// - slice = 源图像素切片量（已 resolve，% 已乘源图边）。
+/// - src_w/src_h = 源图像素尺寸（算 UV 切片比例）。
+/// - 四角不缩放、四边单轴拉伸、中心双轴拉伸。
+/// - clamp：rect 比源图小（contentW < srcW - sliceW）时四角重叠，max(0,...) 防越界（照搬 fgui）。
+/// - UV 由 uv_min/uv_max 指定（atlas 子区），按切片像素比例切。v 翻转由调用点交换 uv v 处理。
+#[allow(clippy::type_complexity)]
+pub fn nine_slice(
+    rect: &Rect,
+    color: [f32; 4],
+    slice: &crate::style::resolved::SliceInsets,
+    src_w: f32,
+    src_h: f32,
+    uv_min: [f32; 2],
+    uv_max: [f32; 2],
+) -> (Vec<[f32; 2]>, Vec<[f32; 2]>, Vec<[f32; 4]>, Vec<u32>) {
+    let (w, h) = (rect.w, rect.h);
+    if w <= 0.0 || h <= 0.0 {
+        return quad(rect, color, uv_min, uv_max);
+    }
+    // gridX/Y：rect 坐标 4 值（左、左+sliceL、右-sliceR、右），clamp 防四角越界
+    let grid_x = [
+        rect.x,
+        rect.x + slice.left.min(w * 0.5),
+        (rect.x + w - slice.right).max(rect.x + slice.left.min(w * 0.5)),
+        rect.x + w,
+    ];
+    let grid_y = [
+        rect.y,
+        rect.y + slice.top.min(h * 0.5),
+        (rect.y + h - slice.bottom).max(rect.y + slice.top.min(h * 0.5)),
+        rect.y + h,
+    ];
+    // UV 切片线：按 slice 像素 / src 尺寸 比例
+    let (umin, vmin) = (uv_min[0], uv_min[1]);
+    let (umax, vmax) = (uv_max[0], uv_max[1]);
+    let sx = (umax - umin) / src_w.max(1e-6);
+    let sy = (vmax - vmin) / src_h.max(1e-6);
+    let tex_x = [umin, umin + slice.left * sx, umin + (src_w - slice.right) * sx, umax];
+    let tex_y = [vmin, vmin + slice.top * sy, vmin + (src_h - slice.bottom) * sy, vmax];
+
+    let mut verts: Vec<[f32; 2]> = Vec::with_capacity(16);
+    let mut uvs: Vec<[f32; 2]> = Vec::with_capacity(16);
+    // 行主序 4×4：行 r (0..4) × 列 c (0..4)
+    for r in 0..4 {
+        for c in 0..4 {
+            verts.push([grid_x[c], grid_y[r]]);
+            uvs.push([tex_x[c], tex_y[r]]);
+        }
+    }
+    let colors = vec![color; 16];
+    // TRIANGLES_9_GRID（照搬 fgui Image.cs:267）：9 quad，每 quad (a,b,c)+(b,d,c)
+    let indices: Vec<u32> = vec![
+        4,0,1, 1,5,4,    // 行 0 列 0/1
+        5,1,2, 2,6,5,    // 行 0 列 1/2
+        6,2,3, 3,7,6,    // 行 0 列 2/3
+        8,4,5, 5,9,8,    // 行 1
+        9,5,6, 6,10,9,
+        10,6,7, 7,11,10,
+        12,8,9, 9,13,12, // 行 2
+        13,9,10, 10,14,13,
+        14,10,11, 11,15,14, // 行 3
+    ];
+    (verts, uvs, colors, indices)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::style::resolved::SliceInsets;
 
     #[test]
     fn quad_four_verts_two_tris() {
@@ -292,5 +361,71 @@ mod tests {
         let has = |x: f32, y: f32| v.iter().any(|p| (p[0] - x).abs() < 1e-4 && (p[1] - y).abs() < 1e-4);
         assert!(has(0.0, 0.0), "TL 直角顶点须落矩形角 [0,0]，verts={:?}", v);
         assert!(has(80.0, 80.0), "BR 直角顶点须落矩形角 [80,80]，verts={:?}", v);
+    }
+
+    #[test]
+    fn nine_slice_16_verts_9_quads() {
+        // 100×100 rect，slice 10 各边，源图 100×100 全图 uv 0..1
+        let (v, _uvs, _col, idx) = nine_slice(
+            &Rect { x: 0.0, y: 0.0, w: 100.0, h: 100.0 },
+            [1.0; 4],
+            &SliceInsets { top: 10.0, right: 10.0, bottom: 10.0, left: 10.0 },
+            100.0, 100.0,  // 源图尺寸
+            [0.0, 0.0], [1.0, 1.0],
+        );
+        assert_eq!(v.len(), 16, "4×4 顶点");
+        assert_eq!(idx.len(), 9 * 6, "9 quad × 6 索引 = 54");
+    }
+
+    #[test]
+    fn nine_slice_corner_verts_at_slice_lines() {
+        // rect 100×100，slice 10：gridX = [0, 10, 90, 100]，gridY = [0, 10, 90, 100]
+        let (v, _, _, _) = nine_slice(
+            &Rect { x: 0.0, y: 0.0, w: 100.0, h: 100.0 },
+            [1.0; 4],
+            &SliceInsets { top: 10.0, right: 10.0, bottom: 10.0, left: 10.0 },
+            100.0, 100.0,
+            [0.0, 0.0], [1.0, 1.0],
+        );
+        // 顶点行主序 4×4：v[0]=[0,0] v[3]=[100,0] v[12]=[0,100] v[15]=[100,100]
+        // v[1]=[10,0]（左切片线） v[2]=[90,0]（右切片线）
+        assert_eq!(v[0], [0.0, 0.0]);
+        assert_eq!(v[1], [10.0, 0.0]);
+        assert_eq!(v[2], [90.0, 0.0]);
+        assert_eq!(v[3], [100.0, 0.0]);
+        // v[4]=[0,10]（顶切片线）
+        assert_eq!(v[4], [0.0, 10.0]);
+    }
+
+    #[test]
+    fn nine_slice_clamps_when_rect_smaller_than_source() {
+        // rect 10×10（比源图 100×100 - 切片 20 = 80 小）→ 四角重叠 clamp
+        // fgui：contentRect.width < sourceW - gridRect.width 时 max(0,...) clamp
+        let (v, _, _, _) = nine_slice(
+            &Rect { x: 0.0, y: 0.0, w: 10.0, h: 10.0 },
+            [1.0; 4],
+            &SliceInsets { top: 10.0, right: 10.0, bottom: 10.0, left: 10.0 },
+            100.0, 100.0,
+            [0.0, 0.0], [1.0, 1.0],
+        );
+        // clamp 后 gridX = [0, max(0, 0+10), min(10, 10-10)=0, 10] → 不越界
+        // 关键：左切片线不超 rect 右边（gridX[1] <= gridX[2]）
+        let xs: Vec<f32> = (0..4).map(|c| v[c][0]).collect();
+        assert!(xs[1] <= xs[2] + 1e-3, "左切片线 <= 右切片线（clamp 防越界），xs={:?}", xs);
+    }
+
+    #[test]
+    fn nine_slice_uv_proportional_to_slice() {
+        // 源图 100×100，slice 10 → UV 切片线 = 0.1 / 0.9
+        let (_, uvs, _, _) = nine_slice(
+            &Rect { x: 0.0, y: 0.0, w: 100.0, h: 100.0 },
+            [1.0; 4],
+            &SliceInsets { top: 10.0, right: 10.0, bottom: 10.0, left: 10.0 },
+            100.0, 100.0,
+            [0.0, 0.0], [1.0, 1.0],
+        );
+        // uvs[1].x = 0.1（左切片线 UV）
+        assert!((uvs[1][0] - 0.1).abs() < 1e-4, "左切片 UV=0.1");
+        assert!((uvs[2][0] - 0.9).abs() < 1e-4, "右切片 UV=0.9");
     }
 }
