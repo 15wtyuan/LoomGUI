@@ -163,8 +163,11 @@ pub fn build_render_nodes(
                         [u_min[0], u_max[1]], [u_max[0], u_min[1]],
                     )
                 };
+                // program：Container+bg-image 命中纹理（tex_id≠0）→ 2（CSS 合成，坑 79）；
+                // 否则 0（tex*vcol：无图白占位×bg-color=bg-color，未注册哨兵同）。
+                let program = if texture != 0 { 2u32 } else { 0u32 };
                 rn.payload = NodePayload::Mesh {
-                    verts: v, uvs: uvc, colors: col, indices: idx, texture, program: 0,
+                    verts: v, uvs: uvc, colors: col, indices: idx, texture, program,
                 };
             }
             NodeKind::Image { src } => {
@@ -1048,6 +1051,112 @@ mod tests {
                 assert_eq!(uvs[0], [0.0, 1.0], "Stretch TL=(0,1)（v 翻转）");
             }
             _ => panic!("expected Mesh"),
+        }
+    }
+
+    // ── program 号（坑 79 bg-image 合成）──────────────
+
+    #[test]
+    fn build_container_bg_image_hit_sets_program_2() {
+        // Container 设 background-image 且纹理命中 → program=2（CSS 合成）。
+        let mut scene = Scene {
+            roots: vec![NodeId(0)], nodes: vec![],
+            dynamic_rules: Default::default(), focused_node: None,
+            world_transforms: Vec::new(), anim: Default::default(),
+            scroll: Default::default(), text_layouts: Vec::new(),
+        };
+        let mut n = container_node(0, None, Rect { x: 0.0, y: 0.0, w: 100.0, h: 100.0 }, Some([0.0, 1.0, 0.0, 1.0]));
+        n.style.background_image = Some("a.png".into());
+        scene.nodes.push(n);
+        let font = test_font().expect("need font");
+        let mut tex = TextureRegistry::default();
+        tex.insert("a.png", TexMeta { tex_id: 1, uv_min: [0.0, 0.0], uv_max: [1.0, 1.0], width: 10, height: 10 });
+        crate::scene::transform::compute_world_transforms(&mut scene);
+        let (frame, _) = build_render_nodes(&scene, &font, &tex, &[]);
+        match &frame.nodes[0].payload {
+            NodePayload::Mesh { program, texture, .. } => {
+                assert_ne!(*texture, 0, "命中纹理 tex_id≠0");
+                assert_eq!(*program, 2, "Container+bg-image 命中 → program=2");
+            }
+            _ => panic!("expected Mesh"),
+        }
+    }
+
+    #[test]
+    fn build_container_without_bg_image_keeps_program_0() {
+        // Container 无 bg-image → program=0（tex*vcol，白占位×bg-color=bg-color）。
+        let mut scene = Scene {
+            roots: vec![NodeId(0)], nodes: vec![],
+            dynamic_rules: Default::default(), focused_node: None,
+            world_transforms: Vec::new(), anim: Default::default(),
+            scroll: Default::default(), text_layouts: Vec::new(),
+        };
+        let n = container_node(0, None, Rect { x: 0.0, y: 0.0, w: 100.0, h: 100.0 }, Some([1.0, 0.0, 0.0, 1.0]));
+        scene.nodes.push(n);
+        let font = test_font().expect("need font");
+        crate::scene::transform::compute_world_transforms(&mut scene);
+        let (frame, _) = build_render_nodes(&scene, &font, &TextureRegistry::default(), &[]);
+        match &frame.nodes[0].payload {
+            NodePayload::Mesh { program, .. } => {
+                assert_eq!(*program, 0, "无 bg-image → program=0");
+            }
+            _ => panic!("expected Mesh"),
+        }
+    }
+
+    #[test]
+    fn build_container_bg_image_unregistered_keeps_program_0() {
+        // Container 设 bg-image 但纹理未注册（哨兵 tex_id=0）→ program=0（不走合成，白占位）。
+        let mut scene = Scene {
+            roots: vec![NodeId(0)], nodes: vec![],
+            dynamic_rules: Default::default(), focused_node: None,
+            world_transforms: Vec::new(), anim: Default::default(),
+            scroll: Default::default(), text_layouts: Vec::new(),
+        };
+        let mut n = container_node(0, None, Rect { x: 0.0, y: 0.0, w: 100.0, h: 100.0 }, Some([1.0, 0.0, 0.0, 1.0]));
+        n.style.background_image = Some("missing.png".into());
+        scene.nodes.push(n);
+        let font = test_font().expect("need font");
+        crate::scene::transform::compute_world_transforms(&mut scene);
+        let (frame, _) = build_render_nodes(&scene, &font, &TextureRegistry::default(), &[]);
+        match &frame.nodes[0].payload {
+            NodePayload::Mesh { program, texture, .. } => {
+                assert_eq!(*texture, 0, "未注册 → tex_id=0 哨兵");
+                assert_eq!(*program, 0, "未注册 → program=0（不走合成）");
+            }
+            _ => panic!("expected Mesh"),
+        }
+    }
+
+    #[test]
+    fn build_image_node_keeps_program_0() {
+        // Image 节点 program=0（tex*vcol，图透明区透下层）——零改回归。
+        let mut scene = Scene {
+            roots: vec![NodeId(0)], nodes: vec![],
+            dynamic_rules: Default::default(), focused_node: None,
+            world_transforms: Vec::new(), anim: Default::default(),
+            scroll: Default::default(), text_layouts: Vec::new(),
+        };
+        let mut root = Node::default();
+        root.id = NodeId(0); root.kind = NodeKind::Container;
+        root.layout_rect = Rect { x: 0.0, y: 0.0, w: 100.0, h: 100.0 };
+        let mut img = Node::default();
+        img.id = NodeId(1); img.parent = Some(NodeId(0));
+        img.kind = NodeKind::Image { src: "a.png".into() };
+        img.layout_rect = Rect { x: 0.0, y: 0.0, w: 10.0, h: 10.0 };
+        root.children = vec![NodeId(1)];
+        scene.nodes.push(root);
+        scene.nodes.push(img);
+        let font = test_font().expect("need font");
+        let mut tex = TextureRegistry::default();
+        tex.insert("a.png", TexMeta { tex_id: 1, uv_min: [0.0, 0.0], uv_max: [1.0, 1.0], width: 10, height: 10 });
+        crate::scene::transform::compute_world_transforms(&mut scene);
+        let (frame, _) = build_render_nodes(&scene, &font, &tex, &[]);
+        let img_rn = frame.nodes.iter()
+            .find(|n| matches!(&n.payload, NodePayload::Mesh { texture, .. } if *texture == 1))
+            .expect("img mesh");
+        if let NodePayload::Mesh { program, .. } = &img_rn.payload {
+            assert_eq!(*program, 0, "Image → program=0（零改）");
         }
     }
 
