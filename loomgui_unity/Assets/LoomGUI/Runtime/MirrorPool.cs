@@ -136,6 +136,11 @@ namespace LoomGUI
                         m[1, 0] = blob.Mb(i); m[1, 1] = blob.Md(i);
                         SetObjectMatrix(ro, m);
                     }
+                    // v1.3 ColorFilter（program=3）：矩阵 20 float 拆 5 Vector MPB SetVector。
+                    if (blob.Program(i) == 3)
+                    {
+                        SetColorFilterMatrix(ro, blob.ColorMatrix(i));
+                    }
                     ro.Mr.sharedMaterial = mat;
                 }
                 else  // kind == 2 (Text)
@@ -236,6 +241,19 @@ namespace LoomGUI
             ro.Mpb.SetVector("_ObjM1", m.GetRow(1));
             ro.Mpb.SetVector("_ObjM2", m.GetRow(2));
             ro.Mpb.SetVector("_ObjM3", m.GetRow(3));
+            ro.Mr.SetPropertyBlock(ro.Mpb);
+        }
+
+        /// ColorFilter 矩阵（20 float）拆 5 Vector MPB SetVector：_CF0..3（矩阵行）+ _CFOff（offset）。
+        /// 照搬 fgui UpdateMatrix（MPB per-renderer 覆盖，不拆 Material）。
+        static void SetColorFilterMatrix(RenderObj ro, float[] m)
+        {
+            ro.Mpb ??= new MaterialPropertyBlock();
+            ro.Mpb.SetVector("_CF0", new Vector4(m[0],  m[1],  m[2],  m[3]));
+            ro.Mpb.SetVector("_CF1", new Vector4(m[5],  m[6],  m[7],  m[8]));
+            ro.Mpb.SetVector("_CF2", new Vector4(m[10], m[11], m[12], m[13]));
+            ro.Mpb.SetVector("_CF3", new Vector4(m[15], m[16], m[17], m[18]));
+            ro.Mpb.SetVector("_CFOff", new Vector4(m[4], m[9], m[14], m[19]));
             ro.Mr.SetPropertyBlock(ro.Mpb);
         }
 

@@ -16,6 +16,13 @@ Shader "LoomGUI/Unlit"
         _ObjM1 ("ObjM1", Vector) = (0,1,0,0)
         _ObjM2 ("ObjM2", Vector) = (0,0,1,0)
         _ObjM3 ("ObjM3", Vector) = (0,0,0,1)
+        // ColorFilter 矩阵（program=3，MPB 覆盖，同 _ObjM 模式）。
+        // _CF0..3 = Matrix4x4 4 行（前 16 float），_CFOff = offset（第 5 列）。
+        _CF0 ("CF0", Vector) = (1,0,0,0)
+        _CF1 ("CF1", Vector) = (0,1,0,0)
+        _CF2 ("CF2", Vector) = (0,0,1,0)
+        _CF3 ("CF3", Vector) = (0,0,0,1)
+        _CFOff ("CFOff", Vector) = (0,0,0,0)
     }
     SubShader
     {
@@ -33,6 +40,7 @@ Shader "LoomGUI/Unlit"
             #pragma multi_compile _ OBJECT_MATRIX
             #pragma multi_compile _ ALPHA_MASK
             #pragma multi_compile _ BG_COMPOSITE
+            #pragma multi_compile _ COLOR_FILTER
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
 
             struct Attr { float4 pos : POSITION; float4 color : COLOR; float2 uv : TEXCOORD0; };
@@ -47,6 +55,11 @@ Shader "LoomGUI/Unlit"
                 float4 _ObjM1;
                 float4 _ObjM2;
                 float4 _ObjM3;
+                float4 _CF0;
+                float4 _CF1;
+                float4 _CF2;
+                float4 _CF3;
+                float4 _CFOff;
             CBUFFER_END
             TEXTURE2D(_MainTex); SAMPLER(sampler_MainTex);
 
@@ -92,6 +105,13 @@ Shader "LoomGUI/Unlit"
                 #else
                 // image/mesh（program:0）：彩色 texture → tex.rgb × vcol。
                 half4 col = tex * vcol;
+                #endif
+                #if defined(COLOR_FILTER)
+                // ColorFilter（program=3）：4×5 矩阵后处理（照搬 fgui UpdateMatrix）。
+                // matrix × col.rgb + offset；alpha 行恒 (0,0,0,1,0) → alpha 不变。
+                float4x4 cfM = float4x4(_CF0, _CF1, _CF2, _CF3);
+                col.rgb = mul(cfM, float4(col.rgb, 1.0)).rgb + _CFOff.rgb;
+                // col.a 不变（fgui alpha 行 (0,0,0,1,0)）
                 #endif
                 #ifdef CLIPPED
                 float2 f = abs(i.clipPos);
