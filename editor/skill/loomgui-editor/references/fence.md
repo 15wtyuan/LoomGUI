@@ -48,7 +48,7 @@
 
 | 属性 | 值约束 | 出处 | 标注 |
 |---|---|---|---|
-| `display` | `none`/其他→Flex（无 grid） | mapping.rs:425-431 | 【实证·待测 grid 落 Flex】 |
+| `display` | `none`/其他→Flex（无 grid） | mapping.rs:425-431 | 【实证】 |
 | `flex-direction` | row/row-reverse/column/column-reverse | mapping.rs:385-393 | 【实证】 |
 | `flex-wrap` | wrap/nowrap | mapping.rs:394-400 | 【实证】 |
 | `gap` | 四值展开取前两 | mapping.rs:377-384 | 【实证】 |
@@ -103,19 +103,19 @@
 | 属性 | 实际行为 | 标注 |
 |---|---|---|
 | `position:relative` | 靠 taffy 默认 Relative 生效，写不写一致（无 inset 偏移） | 【推断·待测】 |
-| `position:absolute/fixed/sticky` | 静默忽略，position 保持默认 Relative，**不脱离流** | 【推断·待测·关键】 |
-| `display:grid` | 非 none 落 Flex，grid 布局不生效 | 【推断·待测·关键】 |
-| `float` | 静默忽略 | 【推断·待测】 |
-| `align-content` | 无 handler，静默忽略 | 【推断·待测】 |
-| `cursor` | 静默忽略 | 【推断·待测】 |
-| `clip-path` | 静默忽略 | 【推断·待测】 |
-| `background-position` | 静默忽略 | 【推断·待测】 |
-| `background-repeat` | 静默忽略 | 【推断·待测】 |
-| `transform-origin` | 硬编码 center，自定义静默忽略 | 【推断·待测】 |
-| `transform: skew()/matrix()` | 显式跳过（mapping.rs:278） | 【推断·待测】 |
-| `font-style` | 无 handler，静默忽略 | 【推断·待测】 |
-| `border-style`（dashed/dotted） | 简写只取宽度，style 丢 | 【推断·待测】 |
-| `@media` | AtRuleParser 拒（parse/css.rs:58-63） | 【推断·待测】 |
+| `position:absolute/fixed/sticky` | 静默忽略，position 保持默认 Relative，**不脱离流** | 【实证】 |
+| `display:grid` | 非 none 落 Flex，grid 布局不生效 | 【实证】 |
+| `float` | 静默忽略 | 【实证】 |
+| `align-content` | 无 handler，静默忽略 | 【实证】 |
+| `cursor` | 静默忽略 | 【实证】 |
+| `clip-path` | 静默忽略 | 【实证】 |
+| `background-position` | 静默忽略 | 【实证】 |
+| `background-repeat` | 静默忽略 | 【实证】 |
+| `transform-origin` | 硬编码 center，自定义静默忽略 | 【实证】 |
+| `transform: skew()/matrix()` | 显式跳过（mapping.rs:278） | 【实证】 |
+| `font-style` | 无 handler，静默忽略 | 【实证】 |
+| `border-style`（dashed/dotted） | 简写只取宽度，style 丢 | 【实证】 |
+| `@media` | AtRuleParser 拒（parse/css.rs:58-63） | 【实证】 |
 
 ---
 

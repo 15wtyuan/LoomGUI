@@ -29,7 +29,7 @@ const HARNESS = {
 function ask(rl, q) { return rl.question(q); }
 
 // 增量合并规则文件：无则新建，有则替换标签段（保留用户原有内容）。
-function mergeRuleFile(targetPath, tmplContent) {
+export function mergeRuleFile(targetPath, tmplContent) {
   const tagged = tmplContent.includes(BEGIN) ? tmplContent : `${BEGIN}\n${tmplContent}\n${END}\n`;
   if (!existsSync(targetPath)) {
     writeFileSync(targetPath, tagged, "utf8");
@@ -42,7 +42,7 @@ function mergeRuleFile(targetPath, tmplContent) {
     return "appended";
   }
   // 有标签：替换标签段。
-  const re = new RegExp(`${BEGIN}[\\s\\S]*?${END}`, "g");
+  const re = new RegExp(`${BEGIN}[^]*?${END}`, "g");
   const updated = existing.replace(re, tagged.trimEnd());
   writeFileSync(targetPath, updated, "utf8");
   return "updated";
@@ -115,4 +115,6 @@ async function main() {
   console.log(`  3. pkg.bin 产出到: ${outputDir}`);
 }
 
-main().catch((e) => { console.error(e); process.exit(1); });
+if (process.argv[1] && resolve(process.argv[1]) === __filename) {
+  main().catch((e) => { console.error(e); process.exit(1); });
+}
