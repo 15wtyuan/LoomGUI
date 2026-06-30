@@ -36,7 +36,8 @@ namespace LoomGUI
                 if (matrixFlag) mat.EnableKeyword("OBJECT_MATRIX");
                 if (program == 1) mat.EnableKeyword("ALPHA_MASK");   // text: font atlas 是 alpha-mask（rgb 黑，glyph 在 alpha）
                 if (program == 2) mat.EnableKeyword("BG_COMPOSITE"); // Container+bg-image: CSS 合成（图透明区显 bg-color，坑 79）
-                if (program == 3) mat.EnableKeyword("COLOR_FILTER"); // Container/Image+filter: 4×5 矩阵后处理（坑 v1.3）
+                if (program == 3) mat.EnableKeyword("COLOR_FILTER"); // filter + tex*vcol base（Image+filter / Container+filter 无 bg-image，坑 v1.3）
+                if (program == 4) { mat.EnableKeyword("COLOR_FILTER"); mat.EnableKeyword("BG_COMPOSITE"); } // filter + bg-image base（Container+bg-image+filter，spec §3.2 双 keyword）
                 _cache[key] = mat;
             }
             return mat;

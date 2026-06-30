@@ -28,7 +28,7 @@ pub fn node_hash(rn: &RenderNode) -> u64 {
         NodePayload::Unchanged => 0u64,      // 防御；调用方不应对 Unchanged 调
         NodePayload::Mesh { texture, verts, colors, uvs, program, color_matrix, .. } => {
             texture.hash(&mut h);
-            // v1.3：捕 program 0/2→3 切换（filter 开关）与 color_matrix 值变（filter 参数改）。
+            // v1.3：捕 program 0/2→3/4 切换（filter 开关；3=filter 无 bg-image，4=filter+bg-image）与 color_matrix 值变（filter 参数改）。
             // 否则 filter on→off 或矩阵变时 hash 不变 → stale Unchanged → 视觉不更新。
             program.hash(&mut h);
             for &v in color_matrix.iter() { v.to_le_bytes().hash(&mut h); }

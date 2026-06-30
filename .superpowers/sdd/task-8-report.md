@@ -1,46 +1,35 @@
-# Task 8 Report — 滚轮输入通道（v1d.5）
+## Task 8 Report: render/mod.rs Container/Image 分流 + dirty hash
 
-## Status: DONE（controller 收尾：subagent 中断在 commit 前，改动完整 + 测试绿，由 controller 写报告 + commit）
+### What was implemented
 
-## Commit
-（见本报告下方 controller commit）
+1. **render/mod.rs Container branch (lines 126-186)**: Expanded tuple from `(texture, u_min, u_max)` to `(texture, u_min, u_max, src_w, src_h)` with `m.width as f32`/`m.height as f32` cast from `TexMeta`'s `u32` fields. Replaced `if all_zero` 2-mode with `match (has_slice, all_zero)` 4-mode routing to quad/rounded_rect/nine_slice/nine_slice_rounded. Added `has_filter` check: `color_filter.is_some() → program=3`, else `texture!=0 → 2`, else `0`. Added `color_matrix = n.style.color_filter.unwrap_or([0.0; 20])`.
 
-## 改动（3 文件，subagent 写入，controller 验证）
+2. **render/mod.rs Image branch (lines 187-207)**: Expanded tuple to include `src_w, src_h`. Added `match &n.style.border_image_slice` routing to quad/nine_slice (no radius -- YAGNI). Added same `has_filter → program=3` and `color_matrix` logic.
 
-- `loomgui_core/src/scroll.rs`：
-  - `WheelEvent { x, y, delta_x, delta_y: f32 }`（`#[repr(C)]` + `Default`），16B ABI 断言（`const _: () = { assert!(size_of::<WheelEvent>()==16) }`，坑 34）。
-  - `apply_wheel_to_hit(scene, w)`：`hit_test((w.x,w.y))` → 沿 `node.parent` 链找最近 `effective`（x/y 轴）滚动容器 → `scene.scroll.get_mut(id).apply_wheel((delta_x,delta_y))`；无 → 丢弃。独立函数，T10 wire 进 tick。
-- `loomgui_core/src/stage.rs`：`Stage.pending_wheel: Vec<WheelEvent>`（init `Vec::new()`）+ `set_wheel_input(&mut self, &[WheelEvent])`（extend，累积式）。**不接 tick**（T10 wire）。
-- `loomgui_ffi_c/src/lib.rs`：`loomgui_stage_set_wheel_input(h: *const StageHandle, events: *const WheelEvent, len: usize)`，null-safe（h/events null 或 len 0 → return），照 set_key_input 模式。
+3. **render/dirty.rs node_hash (lines 29-34)**: Changed `NodePayload::Mesh { texture, verts, colors, uvs, .. }` to `{ texture, verts, colors, uvs, program, color_matrix, .. }`. Added `program.hash(&mut h)` and `for &v in color_matrix.iter() { v.to_le_bytes().hash(&mut h); }` before existing verts.len() hash.
 
-## Test summary（controller 跑）
-`cargo test --workspace`：core 288 / ffi 38 / pkg 3 全绿，0 failed。`scroll::tests::wheel_steps_and_clamps`（T6 既有）仍绿；apply_wheel_to_hit 独立测绿。
+### TDD Evidence (RED → GREEN)
 
-## 自审
-- `WheelEvent` `#[repr(C)]` + 16B 断言 ✓（坑 34）。
-- FFI null-safe ✓。
-- apply_wheel_to_hit 不接 tick（T10 wire）✓ —— 本任务范围正确。
-- 不动 blob/pkg version；C# 镜像留 T12（坑 35）✓。
-- `pending_wheel` 累积式（多次 set_wheel_input 合并），T10 tick `std::mem::take` 消费 ✓。
+**RED phase:**
+- `build_container_with_filter_sets_program_3`: FAILED -- program=0 (expected 3)
+- `build_container_with_slice_uses_nine_slice`: FAILED -- verts.len()=4, quad instead of 16-vert nine_slice
+- `build_container_no_filter_keeps_program_0_or_2`: PASS (zero-regression, already correct)
 
-## Concerns
-无。apply_wheel_to_hit 依赖 hit_test（读 world_transforms）—— T10 tick 里它在 compute_world_transforms 前（用上帧 world_transforms），spec §8.2 认 1 帧差可接受（wheel hit 找容器非精确子命中，stale 不影响）。
+**GREEN phase:** All 3 tests pass after implementation.
 
-## T8 测试补全 fix（reviewer Important）
+### Files Changed
 
-**问题**：T8 brief Step 4 规定的 3 个测试未写（subagent 中断在测前）。
+- `loomgui_core/src/render/mod.rs`: Container 4-mode mesh dispatch + program=3 logic + color_matrix; Image 2-mode slice support + filter
+- `loomgui_core/src/render/dirty.rs`: node_hash Mesh arm now captures program + color_matrix
 
-**补测**：
+### Self-Review Findings
 
-| 测试 | 位置 | 结果 |
-|------|------|------|
-| `apply_wheel_to_hit_scrolls_nearest_effective_ancestor` | `loomgui_core/src/scroll.rs` `#[cfg(test)]` | GREEN |
-| `set_wheel_input_round_trip` | `loomgui_ffi_c/src/lib.rs` `abi_tests` | GREEN |
-| `wheel_event_is_16_bytes` | `loomgui_ffi_c/src/lib.rs` `abi_tests` | GREEN |
+- **Completeness**: Container four-mode (quad/rounded_rect/nine_slice/nine_slice_rounded) via `(has_slice, all_zero)` match. Image two-mode (quad/nine_slice) only, no radius (YAGNI). program=3 for both when filter. color_matrix via unwrap_or zeros.
+- **Quality**: program logic correct -- has_filter → 3; else bg-image hit → 2; else 0 (Container) / else 0 (Image). color_matrix zeros when no filter (program won't be 3, MatrixManager won't read it).
+- **Discipline**: No Image+radius. No new mesh functions. Dirty hash changes minimal -- only program+color_matrix added before existing verts/uvs logic, all existing hash logic preserved unchanged.
+- **u32→f32 cast**: `m.width as f32, m.height as f32` at the tuple destructure site -- correct, clean, not threaded through fit_uv.
+- **Regression safety**: All 477 workspace tests pass (414 core + 55 ffi_c + 8 pkg). Existing bg-image, program=0/2, rounded_rect, border-radius, UV flip, merge, dirty hash, and scrollbar tests all green.
 
-**关键发现**：
-- `Scene::build` 对 overflow 节点设 `clip_rect=Some(Rect::default())`（(0,0,0,0) 零尺寸），阻死 hit_test 命中整个滚动子树。测试需 hand-fill `clip_rect` 为 `layout_rect` 同尺寸（brief 已点名，但 subagent 未留意）。
-- `build_stage` helper 不存在 — 改直接构造 `Stage::new(...)`（既存 abi_tests 已有 `Stage` import 与 font 路径 pattern）。
-- `WheelEvent` 16B compile-time 断言已在 scroll.rs:27-29，新增 runtime test 为可见覆盖。
+### Concerns
 
-`cargo test --workspace`：core 289 / ffi 40 / pkg 3 / snapshot 3 全部 GREEN（335 测）。
+None.

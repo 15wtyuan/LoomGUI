@@ -174,11 +174,15 @@ pub fn build_render_nodes(
                         [u_min[0], u_max[1]], [u_max[0], u_min[1]],
                     ),
                 };
-                // program：有 color_filter → 3（叠加 filter，mesh 几何不变）；
+                // program：有 color_filter → 3 或 4（叠加 filter，mesh 几何不变）；
+                //   4=filter+bg-image（COLOR_FILTER+BG_COMPOSITE 双 keyword，spec §3.2 禁用皮肤按钮核心用例）；
+                //   3=filter 无 bg-image（COLOR_FILTER only，base tex*vcol）。
                 // 否则 bg-image 命中纹理（tex_id≠0）→ 2（CSS 合成，坑 79）；
                 // 否则 0（tex*vcol：无图白占位×bg-color=bg-color，未注册哨兵同）。
                 let has_filter = n.style.color_filter.is_some();
-                let program = if has_filter { 3u32 } else if texture != 0 { 2u32 } else { 0u32 };
+                let program = if has_filter {
+                    if texture != 0 { 4u32 } else { 3u32 }   // 4=bg-image+filter 双 keyword, 3=filter only
+                } else if texture != 0 { 2u32 } else { 0u32 };
                 let color_matrix = n.style.color_filter.unwrap_or([0.0; 20]);
                 rn.payload = NodePayload::Mesh {
                     verts: v, uvs: uvc, colors: col, indices: idx, texture, program, color_matrix,
@@ -1203,6 +1207,39 @@ mod tests {
         match &frame.nodes[0].payload {
             NodePayload::Mesh { program, color_matrix, .. } => {
                 assert_eq!(*program, 3, "filter → program=3");
+                assert!((color_matrix[0] - 0.299).abs() < 1e-4, "color_matrix 含灰化矩阵");
+            }
+            _ => panic!("expected Mesh"),
+        }
+    }
+
+    /// Container + bg-image(命中) + filter → program=4（BG_COMPOSITE+COLOR_FILTER 双 keyword，spec §3.2）。
+    /// I1 回归：split program=3 → 3（filter 无 bg-image）/ 4（filter+bg-image 双 keyword）。
+    /// program=4 由 MaterialManager.cs 同时 EnableKeyword COLOR_FILTER + BG_COMPOSITE，
+    /// 让 shader 走 `tex.rgb*tex.a + vcol.rgb*(1-tex.a)`（CSS 合成）后再跑 COLOR_FILTER 后处理。
+    #[test]
+    fn build_container_with_bg_image_and_filter_sets_program_4() {
+        let mut scene = Scene {
+            roots: vec![NodeId(0)], nodes: vec![],
+            dynamic_rules: Default::default(), focused_node: None,
+            world_transforms: Vec::new(), anim: Default::default(),
+            scroll: Default::default(), text_layouts: Vec::new(),
+        };
+        let mut n = container_node(0, None, Rect { x: 0.0, y: 0.0, w: 80.0, h: 80.0 }, Some([1.0, 0.0, 0.0, 1.0]));
+        n.style.background_image = Some("a.png".into());
+        n.style.background_size = BackgroundSize::Stretch;
+        n.style.color_filter = Some(crate::style::color_filter::grayscale());
+        scene.nodes.push(n);
+
+        let font = test_font().expect("need font");
+        let mut tex = TextureRegistry::default();
+        tex.insert("a.png", TexMeta { tex_id: 1, uv_min: [0.0, 0.0], uv_max: [1.0, 1.0], width: 10, height: 10 });
+        crate::scene::transform::compute_world_transforms(&mut scene);
+        let (frame, _) = build_render_nodes(&scene, &font, &tex, &[]);
+        match &frame.nodes[0].payload {
+            NodePayload::Mesh { program, texture, color_matrix, .. } => {
+                assert_eq!(*texture, 1, "bg-image 命中 → texture≠0");
+                assert_eq!(*program, 4, "bg-image+filter → program=4（BG_COMPOSITE+COLOR_FILTER 双 keyword，spec §3.2）");
                 assert!((color_matrix[0] - 0.299).abs() < 1e-4, "color_matrix 含灰化矩阵");
             }
             _ => panic!("expected Mesh"),

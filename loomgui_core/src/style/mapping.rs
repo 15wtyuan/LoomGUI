@@ -116,7 +116,7 @@ fn parse_filter(value: &str) -> Option<[f32; 20]> {
             }
             _ => continue,
         };
-        acc = color_filter::concat(&acc, &m);
+        acc = color_filter::concat(&m, &acc);  // 新 preset 左乘（fgui ConcatValues: newPreset × _matrix）
         any = true;
     }
     if any { Some(acc) } else { None }
@@ -912,6 +912,34 @@ mod tests {
         // 应 = concat(grayscale, brightness(1.2))：grayscale 行 0 offset +0.2
         assert!((m[4] - 0.2).abs() < 1e-4, "brightness offset 叠加到 grayscale");
         assert!((m[0] - 0.299).abs() < 1e-4, "仍含 grayscale luma");
+    }
+
+    /// 多函数 filter 串联顺序与 CSS/fgui 一致（I2 回归）。
+    /// CSS `filter: A B` = 先 A 后 B → 组合矩阵 = B × A（B 在左，最靠近 color）。
+    /// fgui ConcatValues: `_matrix = newPreset × _matrix`（新值左乘）。
+    /// LoomGUI 应同：acc 从 IDENTITY 起，每步 `acc = concat(m, acc)`（新值在左）。
+    ///
+    /// 用 saturate(0.5) hue-rotate(90deg) —— 二者不可交换（已数学验证），可检出顺序反转。
+    /// 正确（CSS）：先 saturate 后 hue-rotate → 组合 = H × S = `concat(hue_rotate(90), saturate(0.5))`。
+    /// 错误（I2 bug `concat(acc, m)`）：组合 = S × H = `concat(saturate(0.5), hue_rotate(90))`。
+    #[test]
+    fn apply_decl_filter_multi_function_concat_order_matches_css() {
+        let mut s = ResolvedStyle::default();
+        assert!(apply_decl(&mut s, "filter", "saturate(0.5) hue-rotate(90deg)"));
+        let got = s.color_filter.expect("multi filter");
+
+        let sat = color_filter::saturate(0.5);
+        let hue = color_filter::hue_rotate(90.0);
+        let correct = color_filter::concat(&hue, &sat);   // CSS: H × S（hue-rotate 在左）
+        let reversed = color_filter::concat(&sat, &hue);  // I2 bug: S × H
+
+        for i in 0..20 {
+            assert!((got[i] - correct[i]).abs() < 1e-5,
+                "[{}] 应 = concat(hue, saturate)（CSS/fgui 顺序，新值左乘），got={}, expected={}",
+                i, got[i], correct[i]);
+        }
+        assert!((got[0] - reversed[0]).abs() > 1e-4 || (got[1] - reversed[1]).abs() > 1e-4,
+            "顺序敏感：与反转矩阵（concat(saturate, hue)）应不同");
     }
 
     #[test]

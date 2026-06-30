@@ -81,7 +81,7 @@ pub fn build_blob(frame: &FrameData) -> Vec<u8> {
             NodePayload::Mesh { verts, uvs, colors, indices, texture, program, color_matrix } => {
                 col_kind.push(1);
                 col_tex_id.extend_from_slice(&(*texture).to_le_bytes()); // 写真 tex_id
-                col_program.push(*program as u8);   // v5：program 列（0=img/无图，2=Container+bg-image）
+                col_program.push(*program as u8);   // v5：program 列（0=img/无图，2=Container+bg-image，3=filter无bg-image，4=filter+bg-image）
                 for &v in color_matrix.iter() { col_color_matrix.extend_from_slice(&v.to_le_bytes()); }
                 // v4：re-base 顶点两路径。纯平移 → 减 (tx,ty) 得本地；
                 // 非纯平移 → 顶点已 box 本地 → 不减。
@@ -686,11 +686,11 @@ mod tests {
         fn tex_id(&self, i: usize) -> u32 {
             u32::from_le_bytes(self.buf[self.col_off[17] + i * 4..][0..4].try_into().unwrap())
         }
-        /// v5：第 19 列 program（u8）。0=img/无图 Container，1=Text，2=Container+bg-image。
+        /// v5：第 19 列 program（u8）。0=img/无图 Container，1=Text，2=Container+bg-image，3=filter无bg-image，4=filter+bg-image。
         fn program(&self, i: usize) -> u8 {
             self.buf[self.col_off[18] + i]
         }
-        /// v6：第 20 列 color_matrix（[f32;20]，col_off[19] + i*80）。program≠3 全零。
+        /// v6：第 20 列 color_matrix（[f32;20]，col_off[19] + i*80）。program≠3/4 全零。
         fn color_matrix(&self, i: usize) -> [f32; 20] {
             let off = self.col_off[19] + i * 80;
             let mut m = [0.0; 20];
@@ -937,7 +937,7 @@ mod tests {
         assert_eq!(u32::from_le_bytes(blob[4..8].try_into().unwrap()), 6, "VERSION=6");
     }
 
-    /// color_matrix 列（[f32;20]，第 20 列）：program=3 节点填矩阵，其余全零占位。VERSION=6。
+    /// color_matrix 列（[f32;20]，第 20 列）：program=3/4 节点填矩阵，其余全零占位。VERSION=6。
     #[test]
     fn blob_color_matrix_column_round_trips() {
         let matrix = [0.299, 0.587, 0.114, 0.0, 0.0,

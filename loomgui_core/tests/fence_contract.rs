@@ -5,9 +5,11 @@
 //!   C. 围栏外属性：apply_decl 返回 false + 布局字段不变（静默忽略）。
 //! 改 apply_decl / FENCE_TAGS / selector 必须同步本测试 + fence.md。
 
+use loomgui_core::parse::css::parse_css;
 use loomgui_core::parse::dom::parse_html;
 use loomgui_core::style::mapping::apply_decl;
 use loomgui_core::style::resolved::ResolvedStyle;
+use taffy::Display;
 
 // ── A. 元素围栏 ──────────────────────────────────────────────────
 
@@ -92,6 +94,8 @@ fn display_grid_falls_to_flex() {
     let mut s = ResolvedStyle::default();
     let ok = apply_decl(&mut s, "display", "grid");
     assert!(ok, "display:grid 走非 none 分支返回 true（落 Flex）");
+    assert_eq!(s.taffy_style.display, Display::Flex,
+        "display:grid 应落到 Flex（taffy 无 grid）");
 }
 
 // ── C. 围栏外属性静默忽略（apply_decl 返回 false，布局字段不变）─────
@@ -137,7 +141,8 @@ fn transform_skew_does_not_apply() {
     // transform 只认 translate/rotate/scale，skew 显式跳过（mapping.rs:278）。
     // apply_decl("transform",...) 返回 true（进 match arm），但 transform 字段无变化。
     let mut s1 = ResolvedStyle::default();
-    apply_decl(&mut s1, "transform", "skew(10deg,5deg)");
+    let applied = apply_decl(&mut s1, "transform", "skew(10deg,5deg)");
+    assert!(applied, "skew 应进 transform arm 返回 true（no-op 但进 arm）");
     let s2 = ResolvedStyle::default();
     assert_eq!(s1.transform, s2.transform, "skew 不应改变 transform 字段");
 }
@@ -145,7 +150,6 @@ fn transform_skew_does_not_apply() {
 #[test]
 fn at_rule_media_skipped_by_parser() {
     // @media 被 AtRuleParser 默认拒（parse/css.rs:58-63），整块跳过不报错。
-    use loomgui_core::parse::css::parse_css;
     let css = "@media (min-width: 600px) { .a { width: 100px; } }";
     let sheet = parse_css(css).expect("parse_css 不应 panic");
     // @media 块被跳过，sheet 里无 .a 规则。

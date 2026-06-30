@@ -37,7 +37,7 @@ namespace LoomGUI
         //   13=mesh_off(u32) 14=mesh_len(u32)
         //   15=text_off(u32) 16=text_len(u32)
         //   17=tex_id(u32)
-        //   18=program(u8, 0=img/无图 1=Text 2=Container+bg-image)  ← v5 新增
+        //   18=program(u8, 0=img/无图 1=Text 2=Container+bg-image 3=filter无bg-image 4=filter+bg-image)  ← v5 新增
         //   19=color_matrix([f32;20], 80B)
         int ColOff(int idx) => (int)ReadU32(12 + idx * 4);
         // 三 arena header offset。20 列 col_offset 之后：mesh(2), text(2), clip(2) 各 off+len。
@@ -69,10 +69,10 @@ namespace LoomGUI
         public uint TextOff(int i) => ReadU32(ColOff(15) + i * 4);
         public uint TextLen(int i) => ReadU32(ColOff(16) + i * 4);
         public uint TexId(int i) => ReadU32(ColOff(17) + i * 4);
-        /// 节点 i 的 program（u8 列，ColOff(18) + i）。0=img/无图 Container，1=Text，2=Container+bg-image。
+        /// 节点 i 的 program（u8 列，ColOff(18) + i）。0=img/无图 Container，1=Text，2=Container+bg-image，3=filter无bg-image，4=filter+bg-image。
         public byte Program(int i) => _buf[ColOff(18) + i];
 
-        /// 节点 i 的 color_matrix（[f32;20]，ColOff(19) + i*80）。program=3 节点填矩阵，其余全零。
+        /// 节点 i 的 color_matrix（[f32;20]，ColOff(19) + i*80）。program=3/4 节点填矩阵，其余全零。
         /// 拆 5 个 Vector4 供 MPB SetVector：_CF0..3（矩阵行）+ _CFOff（offset）。
         public float[] ColorMatrix(int i) {
             int off = ColOff(19) + i * 80;
