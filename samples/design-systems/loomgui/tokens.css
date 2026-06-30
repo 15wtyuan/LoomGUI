@@ -1,0 +1,30 @@
+/* LoomGUI Dashboard 暗色 token（测试夹具，值取自 v1-showcase 色板）。
+   AI 引用时 var(--bg) 等；也可直接写 hex（LoomGUI 不强制用 var）。 */
+:root {
+  --bg: #1a1d2e;
+  --surface: #252839;
+  --border: #3a3f55;
+  --fg: #e0e0e0;
+  --muted: #9aa0b4;
+  --accent: #5fb2c4;
+  --success: #6fa66c;
+  --warn: #c2605a;
+  --dim: #6c7080;
+
+  --text-sm: 14px;
+  --text-base: 16px;
+  --text-lg: 18px;
+  --text-xl: 22px;
+  --text-2xl: 28px;
+  --text-3xl: 36px;
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+
+  --radius-sm: 4px;
+  --radius-md: 8px;
+}

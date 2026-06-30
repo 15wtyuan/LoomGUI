@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LoomGUI Dashboard — 围栏组件样例</title>
+<style>
+  /* 围栏正面教材：flex + gap，禁 grid/margin 间距/:focus/@media。
+     本文件本身也是 LoomGUI 围栏合规的 HTML/CSS 样例。 */
+  .root { width: 1080px; height: 1920px; background-color: #1a1d2e; display: flex; flex-direction: column; gap: 16px; padding: 24px; }
+  .header { background-color: #252839; border: 1px solid #3a3f55; padding: 20px; display: flex; flex-direction: row; gap: 14px; align-items: center; }
+  .title { color: #e0e0e0; font-size: 36px; font-weight: 700; }
+  .card { background-color: #252839; border: 1px solid #3a3f55; padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+  .card-t { color: #e0e0e0; font-size: 22px; font-weight: 700; }
+  .card-x { color: #9aa0b4; font-size: 14px; }
+  .btn { background-color: #2d3148; border: 1px solid #3a3f55; padding: 10px 16px; color: #e0e0e0; font-size: 18px; }
+  .btn:hover { background-color: #3a4258; color: #5fb2c4; border: 1px solid #5fb2c4; }
+  .btn:active { background-color: #5fb2c4; color: #1a1d2e; }
+  .lamps { display: flex; flex-direction: row; gap: 6px; }
+  .lamp { width: 14px; height: 14px; background-color: #3a3f55; }
+  .ok { background-color: #6fa66c; }
+  .warn { background-color: #c2605a; }
+  .acc { background-color: #5fb2c4; }
+</style>
+</head>
+<body>
+<div class="root">
+  <div class="header">
+    <div class="title">Dashboard</div>
+  </div>
+  <div class="card">
+    <div class="card-t">状态</div>
+    <div class="card-x">系统运行中</div>
+    <div class="lamps">
+      <div class="lamp ok"></div>
+      <div class="lamp acc"></div>
+      <div class="lamp warn"></div>
+    </div>
+    <div class="btn">操作</div>
+  </div>
+</div>
+</body>
+</html>
