@@ -33,24 +33,29 @@
 
 ## 2. v other — 编辑器工作流（独立并行，不阻塞主线）
 
-**壳 = open-design**（不自建；Apache-2.0；nexu-io；~18K star；agent-driven 生成器；本有 design-system 契约 + grep linter 现成机制；自托管 docker）。
-- 不选 design.md（Google）：类别错配（token 字典 + 字典校验器，无编辑器/预览/渲染，契合 ≈10%）。可借鉴其 linter 架构。
+> **2026-06-30 修订**（brainstorm + open-design 源码调研 + 实测 `od project import` 后定稿，详见 `docs/superpowers/specs/2026-06-30-editor-workflow-design.md`）：
+> - 围栏规则**不进 DESIGN.md**，放工作区 `CLAUDE.md`（按 harness，Claude Code 自动读 cwd）。DESIGN.md 只写风格。
+> - **砍 grep linter 层**：`lint-artifact.ts` 是 open-design 硬编码函数非扩展点，改不动；围栏把关靠 `loomgui_pkg` 打包验证 + skill 引导 AI 自检。
+> - **不提供正式 design-system**：每个 UI 风格由设计师 prompt 驱动，design-system 仅作测试夹具存 `samples/`。
+> - skill **封装 loomgui_pkg**（验证器+打包器进 skill，不向设计师暴露）。
+> - 围栏权威清单 = `docs/design/fence.md`（单一真相源 `loomgui_core/tests/fence_contract.rs`）。
+
+**壳 = open-design 桌面 app**（不自建；Apache-2.0；nexu-io；~18K star；agent-driven 生成器；插件/扩展架构，不改源码在上面工作；实装 stable 通道 Win 桌面 app 验证）。
+- 不选 design.md（Google）：类别错配（token 字典 + 字典校验器，无编辑器/预览/渲染，契合 ≈10%）。
 - 不自建壳：复用 open-design 省 项目管理/对话/导出/部署 基建。
 
-**LoomGUI 围栏层**（shell-agnostic，配置/插件级，不改 open-design 源码）：
+**机制**（调研确认）：`od project import <baseDir>` 导入指定目录为工作区 → daemon 把 project cwd = baseDir → open-design spawn harness（Claude Code 等）在该 cwd → harness 自动读 cwd 的 `CLAUDE.md` + `.claude/skills/`。
 
-1. **design-system**（open-design 契约 `design-systems/loomgui/`）：
-   - `DESIGN.md` 写死围栏规则（flex only / 无 grid / 无 position:absolute / 无行内流 / 标签白名单 div-span-img-button / gap 标灰规则）——给 AI 的围栏 prompt。
-   - `tokens.css`：围栏 design token（暗色 dashboard 调色 + 字号 + 间距）。
-   - `components.html`：围栏组件库（Button/Card/List/ScrollPane/Text，纯围栏 CSS 实现）。
-   - `components.manifest.json`。
-2. **grep linter**（加 open-design `lint-artifact.ts` 扩展点）：挡 `display:grid`/`position:absolute`/`float`/围栏外标签（regex `<(?!div|span|img|button)`）——AI 生成时快速反馈自纠。
-3. **skill**（独立于 open-design）：教 AI 用 LoomGUI 围栏 + 近似预览不可信项（v1-scope §2.1 可信清单：信 flex/gap/color/px，不信 margin 折叠/文本换行像素）。
-4. **打包桥**：open-design 导出 HTML/CSS → `loomgui_pkg` → pkg.bin + atlas → Unity 加载。
+**LoomGUI editor 层**（shell-agnostic，模板源 `editor/`，init 脚本注入设计师工作区）：
 
-**预览妥协**（A 路径已知）：open-design Chromium iframe ≠ taffy（字体度量/flex 差异/margin 折叠）。skill 指导"信围栏规则别信预览不可信项"；真实靠 Unity 验（家里机）。**v2 WASM 跑核心**做零偏差预览替换近似。
+1. **init 脚本**（`editor/init.mjs`，Node 单文件）：交互输工作区路径/输出路径/harness → 拷围栏规则 + skill 进目标工作区。CLAUDE.md 增量合并（标签包裹，不覆盖用户已有）。
+2. **围栏规则**（`editor/rules/<harness>/CLAUDE.md.tmpl`）：围栏权威清单见 `docs/design/fence.md`。AI 守围栏生成 HTML+CSS。
+3. **skill**（`editor/skill/loomgui-editor/`，封装 loomgui_pkg 不暴露）：教 AI 围栏生成 + 生成完跑 `pack.mjs` 验证+打包（违规非零退出 AI 自纠，合规产出 pkg.bin）。
+4. **打包桥**：`loomgui_pkg` CLI（已存在，验证+打包合一）。
 
-**两层围栏验证**（互补）：open-design linter（grep，AI 生成时挡，快速粗筛）+ LoomGUI 打包器围栏验证器（parse FENCE_TAGS，打包时挡，最终把关）。
+**预览妥协**：open-design Chromium iframe ≠ taffy（字体度量/flex 差异/margin 折叠/position:absolute 脱离流分歧）。skill 教"信围栏规则别信预览不可信项"（fence.md §6）；真实靠 Unity 验（家里机）。**v2 WASM 跑核心**做零偏差预览替换近似。
+
+**围栏验证**（单一真相源）：`loomgui_core/tests/fence_contract.rs` 可执行围栏契约（支持项断言生效 + 围栏外项断言静默忽略）。`cargo test -p loomgui_core fence_contract` 是防漂移门。打包器围栏验证器（FENCE_TAGS）是打包期最终把关。
 
 ---
 

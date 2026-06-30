@@ -48,21 +48,25 @@
 
 ## 2. v1 围栏冻结清单（动工前签字，防范围飘）
 
-**元素**：`div`(Container) / `span`+裸文本(Text) / `img`(Image) / `button`(Button)。
-砍：`l-rich`/`input`/`l-graph`/`l-loader`/`l-movie`/`l-list`/`l-slider`/`l-combobox`/`l-tree`/`l-native`（v1.x）。v1 可滚动列表用 `div`+ScrollPane 手搓 item，**不做 `<l-list>` 虚拟化**。
+> **权威清单**：`docs/design/fence.md`（单一真相源 = `loomgui_core/tests/fence_contract.rs` 测试）。本节为 v1 冻结子集 + v1.x 扩展标注，围栏细节/维护机制以 fence.md 为准。
+> **v1.x 已扩展**（v1-scope 原停 v1，未跟 v1.x 实现，2026-06-30 同步）：`filter`/`border-image-slice`（v1.3）、`:focus`（v1d.2）、`background-image`（v1.1）、`border-radius`（v1.2）已在代码实现，见 fence.md §2.3 / §3.2。
+> **纠正**（fence.md 核实）：`position:relative` 靠 taffy 默认 Relative 生效（非显式映射，写不写一致）；`font-style` 无 handler 静默忽略（原 §2 误列支持）；`l-container` 与 div 同映射（原 §2 漏列）。
 
-**CSS 布局**：`display:flex/none`、`flex-direction`、`flex-wrap`、`gap`、`row-gap`、`column-gap`、`justify-content`、`align-items`、`align-self`、`flex`(grow/shrink/basis)、`width/height/min/max`(px/%/auto)、`padding`、`margin`、`border-width`、`position:relative`、`aspect-ratio`、`order`。
-砍：`position:absolute`、`align-content`（换行行分布不可配，围栏文档须告知）、`position:sticky/fixed`（v1.x）。
-> `row-gap`/`column-gap` 是 `gap` 的 longhand，映射同 taffy 字段，支持它们以对齐 AI 先验（AI 常写 longhand）。
+**元素**：`div`(Container) / `span`+裸文本(Text) / `img`(Image) / `button`(Button) / `l-container`(Container，与 div 同)。
+围栏外标签报错（不降级）。砍：`l-rich`/`input`/`l-graph`/`l-loader`/`l-movie`/`l-list`/`l-slider`/`l-combobox`/`l-tree`/`l-native`（v1.x）。v1 可滚动列表用 `div`+ScrollPane 手搓 item，**不做 `<l-list>` 虚拟化**。
 
-**CSS 视觉**：`background-color`、`background-image`(url)、`background-size`(cover/contain/100%)、`border-radius`(1~4 值 + h/v 椭圆角 + px/%)、`border`(color/width/solid)、`opacity`、`overflow:visible/hidden/scroll/auto` + `overflow-x/overflow-y` longhand（v1d.5）、`color/font-size/font-family/font-weight/font-style`、`text-align`、`line-height`、`letter-spacing`、`white-space:nowrap`、`transform`(translate/rotate/scale；v1d.3)、`filter`(grayscale/brightness/contrast/saturate/hue-rotate/invert/sepia)、`border-image-slice`(4 值上右下左)。
+**CSS 布局**：`display:flex/none`、`flex-direction`、`flex-wrap`、`gap`、`row-gap`、`column-gap`、`justify-content`、`align-items`、`align-self`、`flex`(grow/shrink/basis)、`width/height/min/max`(px/%/auto)、`padding`、`margin`、`border-width`、`aspect-ratio`、`order`。
+砍：`position:absolute/fixed/sticky`（静默忽略，不脱离流）、`display:grid`（落 Flex）、`float`、`align-content`（换行行分布不可配，围栏文档须告知）（v1.x）。
+> `position:relative` 靠 taffy 默认生效，写不写一致。`row-gap`/`column-gap` 是 `gap` 的 longhand，映射同 taffy 字段，支持它们以对齐 AI 先验（AI 常写 longhand）。**子项间距用 `gap`**，别用 margin（Chrome 折叠 margin、LoomGUI 求和不折叠，预览会骗 AI）。
 
-砍：`clip-path`、九宫格 `-l-slice`、`background-position`、`transform-origin`(自定义；固定 center)、`skew()`/`matrix()`(剪切由 scale∘rotate 复合支持)（v1.x）。
+**CSS 视觉**：`background-color`、`background-image`(url)、`background-size`(cover/contain/100%；拒两值)、`border-radius`(1~4 值 + h/v 椭圆角 + px/%)、`border`(color/width/solid；简写只取宽度)、`border-color`、`opacity`、`overflow:visible/hidden/scroll/auto` + `overflow-x/overflow-y` longhand（v1d.5）、`color/font-size/font-family/font-weight`、`text-align`、`line-height`、`letter-spacing`、`white-space:nowrap`、`transform`(translate/rotate/scale；v1d.3)、`filter`(grayscale/brightness/contrast/saturate/hue-rotate/invert/sepia 颜色矩阵，v1.3)、`border-image-slice`(九宫格 4 值，v1.3)。
+砍：`clip-path`、`background-position`、`background-repeat`、`transform-origin`(自定义；固定 center)、`skew()`/`matrix()`(剪切由 scale∘rotate 复合支持)、`font-style`(无 handler)、`cursor`（v1.x）。
 
-**交互/状态**：`pointer-events:auto/none`、`:hover/:active/:disabled`。
-砍：`cursor`、`:focus`、Controller/Gear/`[data-page]`、`:nth-child`、属性选择器（v1.x）。
+**交互/状态**：`pointer-events:auto/none`、`:hover/:active/:disabled/:focus`（:focus v1d.2）。
+砍：`cursor`、Controller/Gear/`[data-page]`、`:nth-child`、属性选择器（v1.x）。
 
-**选择器**：标签/类/id/后代/子代。
+**选择器**：标签/类/id/后代/子代/分组。
+砍：`+`/`~` 组合器、通配符 `*`、属性选择器、`:not()`（v1.x）。
 
 **目标市场**：亚洲/国内首发（决定文本可砍 BiDi）。
 **平台**：v1 仅 Win/Mac 桌面 + Mono backend。
