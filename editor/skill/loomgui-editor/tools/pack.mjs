@@ -20,6 +20,10 @@ const css = args[1];
 const pkgArgs = [html, css];
 for (let i = 2; i < args.length; i++) {
   if (args[i] === "-o" || args[i] === "-w" || args[i] === "-h" || args[i] === "-a" || args[i] === "--atlas-name") {
+    if (args[i + 1] === undefined || args[i + 1] === "") {
+      console.error(`flag ${args[i]} 缺值`);
+      process.exit(2);
+    }
     pkgArgs.push(args[i], args[i + 1]);
     i++;
   } else {

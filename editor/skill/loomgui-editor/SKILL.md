@@ -27,7 +27,7 @@ triggers:
 
 3. **生成完跑验证+打包**：
    ```bash
-   node tools/pack.mjs <html路径> <css路径> -o <输出.pkg.bin> [-w 1080 -h 1920]
+   node tools/pack.mjs <html路径> <css路径> -o <输出.pkg.bin> [-w 1080 -h 1920] [-a atlas.png]
    ```
    - **非零退出 = 围栏违规**（loomgui_pkg 报错）。读 stderr，自纠 HTML/CSS 后重跑。
    - **零退出 = 合规**，.pkg.bin + atlas.png 已产出到指定目录。
