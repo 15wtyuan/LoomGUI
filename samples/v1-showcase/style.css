@@ -35,7 +35,9 @@
 .skip{color:#6c7080;font-size:14px;}
 /* background-repeat:no-repeat：CSS 默认 repeat，contain/小图会平铺出多份；
    LoomGUI 不支持此属性（只画单图），显式 no-repeat 让浏览器对齐 Unity 渲染 + AI 心智模型。*/
-.bg-demo{width:100%;height:64px;color:#e0e0e0;font-size:16px;display:flex;align-items:center;justify-content:center;overflow:hidden;background-repeat:no-repeat;}
+/* 160×120（4:3）：容器接近图比例，cover/contain/100% 三种 size 模式差异明显且图标看得清。
+   旧 100%×64 极端扁宽，cover/100% 把 64×64 图拉成认不出的横带（坑 80）。*/
+.bg-demo{width:160px;height:120px;color:#e0e0e0;font-size:16px;display:flex;align-items:center;justify-content:center;overflow:hidden;background-repeat:no-repeat;}
 .br-demo{width:80px;height:80px;color:#e0e0e0;font-size:13px;display:flex;align-items:center;justify-content:center;overflow:hidden;background-repeat:no-repeat;}
 
 /* §2 布局练兵场 */
