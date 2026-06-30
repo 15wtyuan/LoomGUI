@@ -8,11 +8,11 @@ fn main() {
     let font = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/DejaVuSans.ttf");
     let html_path = concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../loomgui_unity/Assets/LoomGUI/Samples/v1-showcase/index.html"
+        "/../samples/v1-showcase/index.html"
     );
     let css_path = concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../loomgui_unity/Assets/LoomGUI/Samples/v1-showcase/style.css"
+        "/../samples/v1-showcase/style.css"
     );
     let html = std::fs::read_to_string(html_path).expect("read html");
     let css = std::fs::read_to_string(css_path).expect("read css");
