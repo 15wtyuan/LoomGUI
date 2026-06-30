@@ -126,15 +126,15 @@ pub fn build_render_nodes(
             NodeKind::Container | NodeKind::Button => {
                 let color = anim.and_then(|a| a.bg_color)
                     .unwrap_or(n.style.background_color.unwrap_or([0.0, 0.0, 0.0, 0.0]));
-                let (texture, u_min, u_max) = match &n.style.background_image {
+                let (texture, u_min, u_max, src_w, src_h) = match &n.style.background_image {
                     Some(url) => match textures.get(url) {
                         Some(m) => {
                             let (a, b) = fit_uv(n.style.background_size, rect, &m);
-                            (m.tex_id, a, b)
+                            (m.tex_id, a, b, m.width as f32, m.height as f32)
                         }
-                        None => (0u32, [0.0, 0.0], [1.0, 1.0]),  // 未注册哨兵→白占位
+                        None => (0u32, [0.0, 0.0], [1.0, 1.0], 1.0, 1.0),  // 未注册哨兵→白占位
                     },
-                    None => (0u32, [0.0, 0.0], [1.0, 1.0]),  // 无图：UV 无意义
+                    None => (0u32, [0.0, 0.0], [1.0, 1.0], 1.0, 1.0),  // 无图：UV 无意义
                 };
                 // border-radius resolve：CSS 原始值 → 像素（% 乘 rect 对应边）
                 let resolve = |lp: LengthPercentage, side: f32| -> f32 {
@@ -153,37 +153,58 @@ pub fn build_render_nodes(
                 ];
                 let all_zero = radii.iter().all(|&(rx, ry)| rx <= 0.0 || ry <= 0.0);
                 // v 翻转（同 Image 分支：design y-down 配 Unity y-up；
-                // 交换 uv v 传给 mesh 函数，quad 与 rounded_rect 同样处理）
-                let (v, uvc, col, idx) = if all_zero {
-                    crate::render::mesh::quad(
+                // 交换 uv v 传给 mesh 函数，所有 mesh 函数同样处理）
+                let has_slice = n.style.border_image_slice.is_some();
+                let (v, uvc, col, idx) = match (has_slice, all_zero) {
+                    (false, true)  => crate::render::mesh::quad(
                         rect, color, [u_min[0], u_max[1]], [u_max[0], u_min[1]],
-                    )
-                } else {
-                    crate::render::mesh::rounded_rect(
+                    ),
+                    (false, false) => crate::render::mesh::rounded_rect(
                         rect, color, &radii,
                         [u_min[0], u_max[1]], [u_max[0], u_min[1]],
-                    )
+                    ),
+                    (true,  true)  => crate::render::mesh::nine_slice(
+                        rect, color, n.style.border_image_slice.as_ref().unwrap(),
+                        src_w, src_h,
+                        [u_min[0], u_max[1]], [u_max[0], u_min[1]],
+                    ),
+                    (true,  false) => crate::render::mesh::nine_slice_rounded(
+                        rect, color, n.style.border_image_slice.as_ref().unwrap(),
+                        &radii, src_w, src_h,
+                        [u_min[0], u_max[1]], [u_max[0], u_min[1]],
+                    ),
                 };
-                // program：Container+bg-image 命中纹理（tex_id≠0）→ 2（CSS 合成，坑 79）；
+                // program：有 color_filter → 3（叠加 filter，mesh 几何不变）；
+                // 否则 bg-image 命中纹理（tex_id≠0）→ 2（CSS 合成，坑 79）；
                 // 否则 0（tex*vcol：无图白占位×bg-color=bg-color，未注册哨兵同）。
-                let program = if texture != 0 { 2u32 } else { 0u32 };
+                let has_filter = n.style.color_filter.is_some();
+                let program = if has_filter { 3u32 } else if texture != 0 { 2u32 } else { 0u32 };
+                let color_matrix = n.style.color_filter.unwrap_or([0.0; 20]);
                 rn.payload = NodePayload::Mesh {
-                    verts: v, uvs: uvc, colors: col, indices: idx, texture, program,
-                    color_matrix: [0.0; 20],
+                    verts: v, uvs: uvc, colors: col, indices: idx, texture, program, color_matrix,
                 };
             }
             NodeKind::Image { src } => {
-                let (tex_id, uv_min, uv_max) = match textures.get(src) {
-                    Some(m) => (m.tex_id, m.uv_min, m.uv_max),
-                    None => (0u32, [0.0, 0.0], [1.0, 1.0]),
+                let (tex_id, uv_min, uv_max, src_w, src_h) = match textures.get(src) {
+                    Some(m) => (m.tex_id, m.uv_min, m.uv_max, m.width as f32, m.height as f32),
+                    None => (0u32, [0.0, 0.0], [1.0, 1.0], 1.0, 1.0),
                 };
                 // v 翻转：design y-down + LoomStage scale (sf,-sf,sf) 把 design 顶映到屏幕上；
-                // mesh::quad 固定 TL→(umin,vmin)（texture 底）→ 图片上下颠倒。交换 v：TL→(umin,vmax)（texture 顶）。
-                let (v, uvc, col, idx) = crate::render::mesh::quad(
-                    rect, [1.0, 1.0, 1.0, 1.0],
-                    [uv_min[0], uv_max[1]], [uv_max[0], uv_min[1]],
-                );
-                rn.payload = NodePayload::Mesh { verts: v, uvs: uvc, colors: col, indices: idx, texture: tex_id, program: 0, color_matrix: [0.0; 20] };
+                // 所有 mesh 函数 TL→传入的umin/vmin，交换 v 后 TL→(umin, vmax)（texture 顶）。
+                let (v, uvc, col, idx) = match &n.style.border_image_slice {
+                    Some(slice) => crate::render::mesh::nine_slice(
+                        rect, [1.0; 4], slice, src_w, src_h,
+                        [uv_min[0], uv_max[1]], [uv_max[0], uv_min[1]],
+                    ),
+                    None => crate::render::mesh::quad(
+                        rect, [1.0, 1.0, 1.0, 1.0],
+                        [uv_min[0], uv_max[1]], [uv_max[0], uv_min[1]],
+                    ),
+                };
+                let has_filter = n.style.color_filter.is_some();
+                let program = if has_filter { 3u32 } else { 0u32 };
+                let color_matrix = n.style.color_filter.unwrap_or([0.0; 20]);
+                rn.payload = NodePayload::Mesh { verts: v, uvs: uvc, colors: col, indices: idx, texture: tex_id, program, color_matrix };
             }
             NodeKind::Text { content } => {
                 let s = &n.style;
@@ -1159,6 +1180,77 @@ mod tests {
             .expect("img mesh");
         if let NodePayload::Mesh { program, .. } = &img_rn.payload {
             assert_eq!(*program, 0, "Image → program=0（零改）");
+        }
+    }
+
+    // ── v1.3 color_filter → program=3 + nine_slice 分流 ──────────
+
+    #[test]
+    fn build_container_with_filter_sets_program_3() {
+        // Container + filter:grayscale(1) → program=3 + color_matrix 灰化矩阵
+        let mut scene = Scene {
+            roots: vec![NodeId(0)], nodes: vec![],
+            dynamic_rules: Default::default(), focused_node: None,
+            world_transforms: Vec::new(), anim: Default::default(),
+            scroll: Default::default(), text_layouts: Vec::new(),
+        };
+        let mut n = container_node(0, None, Rect { x: 0.0, y: 0.0, w: 80.0, h: 80.0 }, Some([1.0, 0.0, 0.0, 1.0]));
+        n.style.color_filter = Some(crate::style::color_filter::grayscale());
+        scene.nodes.push(n);
+        crate::scene::transform::compute_world_transforms(&mut scene);
+        let font = test_font().expect("need font");
+        let (frame, _) = build_render_nodes(&scene, &font, &TextureRegistry::default(), &[]);
+        match &frame.nodes[0].payload {
+            NodePayload::Mesh { program, color_matrix, .. } => {
+                assert_eq!(*program, 3, "filter → program=3");
+                assert!((color_matrix[0] - 0.299).abs() < 1e-4, "color_matrix 含灰化矩阵");
+            }
+            _ => panic!("expected Mesh"),
+        }
+    }
+
+    #[test]
+    fn build_container_with_slice_uses_nine_slice() {
+        // Container + bg-image + border-image-slice → nine_slice mesh（16 顶点）
+        let mut tex = TextureRegistry::default();
+        tex.insert("skin.png", TexMeta { tex_id: 1, uv_min: [0.0, 0.0], uv_max: [1.0, 1.0], width: 48, height: 48 });
+        let mut scene = Scene {
+            roots: vec![NodeId(0)], nodes: vec![],
+            dynamic_rules: Default::default(), focused_node: None,
+            world_transforms: Vec::new(), anim: Default::default(),
+            scroll: Default::default(), text_layouts: Vec::new(),
+        };
+        let mut n = container_node(0, None, Rect { x: 0.0, y: 0.0, w: 80.0, h: 80.0 }, Some([1.0, 0.0, 0.0, 1.0]));
+        n.style.background_image = Some("skin.png".into());
+        n.style.background_size = BackgroundSize::Stretch;
+        n.style.border_image_slice = Some(crate::style::resolved::SliceInsets { top: 10.0, right: 10.0, bottom: 10.0, left: 10.0 });
+        scene.nodes.push(n);
+        crate::scene::transform::compute_world_transforms(&mut scene);
+        let font = test_font().expect("need font");
+        let (frame, _) = build_render_nodes(&scene, &font, &tex, &[]);
+        match &frame.nodes[0].payload {
+            NodePayload::Mesh { verts, .. } => {
+                assert_eq!(verts.len(), 16, "slice → nine_slice 16 顶点");
+            }
+            _ => panic!("expected Mesh"),
+        }
+    }
+
+    #[test]
+    fn build_container_no_filter_keeps_program_0_or_2() {
+        // 零回归：无 filter → program 0（无图）/ 2（bg-image 命中）
+        let mut scene = Scene {
+            roots: vec![NodeId(0)], nodes: vec![],
+            dynamic_rules: Default::default(), focused_node: None,
+            world_transforms: Vec::new(), anim: Default::default(),
+            scroll: Default::default(), text_layouts: Vec::new(),
+        };
+        scene.nodes.push(container_node(0, None, Rect { x: 0.0, y: 0.0, w: 80.0, h: 80.0 }, Some([1.0, 0.0, 0.0, 1.0])));
+        crate::scene::transform::compute_world_transforms(&mut scene);
+        let font = test_font().expect("need font");
+        let (frame, _) = build_render_nodes(&scene, &font, &TextureRegistry::default(), &[]);
+        if let NodePayload::Mesh { program, .. } = &frame.nodes[0].payload {
+            assert_eq!(*program, 0, "无图无 filter → program=0");
         }
     }
 
