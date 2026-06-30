@@ -6,18 +6,18 @@ namespace LoomGUI
     /// 帧 blob 托管解析视图。解析 Rust build_blob 产出的 little-endian blob。
     ///
     /// 布局（镜像 loomgui_ffi_c/src/blob.rs）：
-    ///   header (112B): magic(u32 LE), version(u32)=5, node_count(u32),
-    ///                 19× col_offset(u32, byte offset from blob start),
+    ///   header (116B): magic(u32 LE), version(u32)=6, node_count(u32),
+    ///                 20× col_offset(u32, byte offset from blob start),
     ///                 mesh_arena_off(u32), mesh_arena_len(u32),
     ///                 text_arena_off(u32), text_arena_len(u32),
     ///                 clip_table_off(u32), clip_table_len(u32)
-    ///   19 列 SOA（顺序见 ColOff 注释），随后 mesh_arena / text_arena / clip_table 段。
+    ///   20 列 SOA（顺序见 ColOff 注释），随后 mesh_arena / text_arena / clip_table 段。
     /// C# on Windows 是 little-endian，BitConverter 直读无需 byte swap。
     public readonly struct FrameBlob
     {
         public const uint Magic = 0x4D4F4F4C;
         /// blob 版本。magic+version 校验在 IsValid。
-        public const uint ExpectedVersion = 5;
+        public const uint ExpectedVersion = 6;
 
         readonly byte[] _buf;
 
@@ -28,7 +28,7 @@ namespace LoomGUI
         public uint Version => ReadU32(4);
         public int NodeCount => (int)ReadU32(8);
 
-        // 列 offset 在 header[12 .. 12+19*4)。顺序同 Rust columns：
+        // 列 offset 在 header[12 .. 12+20*4)。顺序同 Rust columns：
         //   0=node_id(u32) 1=parent_id(i32,-1=none) 2=visible(u8) 3=alpha(f32)
         //   4=sort_key(u32) 5=mask_context(u32)
         //   6=m_a(f32) 7=m_b(f32) 8=m_c(f32) 9=m_d(f32) 10=m_tx(f32) 11=m_ty(f32)
@@ -38,16 +38,17 @@ namespace LoomGUI
         //   15=text_off(u32) 16=text_len(u32)
         //   17=tex_id(u32)
         //   18=program(u8, 0=img/无图 1=Text 2=Container+bg-image)  ← v5 新增
+        //   19=color_matrix([f32;20], 80B)
         int ColOff(int idx) => (int)ReadU32(12 + idx * 4);
-        // 三 arena header offset。19 列 col_offset 之后：mesh(2), text(2), clip(2) 各 off+len。
-        // mesh_arena_off @ 12+19*4 = 88；mesh_arena_len @ 92。
-        int MeshArenaOff => (int)ReadU32(12 + 19 * 4);
-        // text_arena_off @ 12+19*4+2*4 = 96；text_arena_len @ 100。
-        int TextArenaOff => (int)ReadU32(12 + 19 * 4 + 2 * 4);
-        int TextArenaLen => (int)ReadU32(12 + 19 * 4 + 2 * 4 + 4);
-        // clip_table_off @ 12+19*4+4*4 = 104；clip_table_len @ 108。
-        int ClipTableOff => (int)ReadU32(12 + 19 * 4 + 4 * 4);
-        int ClipTableLen => (int)ReadU32(12 + 19 * 4 + 4 * 4 + 4);
+        // 三 arena header offset。20 列 col_offset 之后：mesh(2), text(2), clip(2) 各 off+len。
+        // mesh_arena_off @ 12+20*4 = 92；mesh_arena_len @ 96。
+        int MeshArenaOff => (int)ReadU32(12 + 20 * 4);
+        // text_arena_off @ 12+20*4+2*4 = 100；text_arena_len @ 104。
+        int TextArenaOff => (int)ReadU32(12 + 20 * 4 + 2 * 4);
+        int TextArenaLen => (int)ReadU32(12 + 20 * 4 + 2 * 4 + 4);
+        // clip_table_off @ 12+20*4+4*4 = 108；clip_table_len @ 112。
+        int ClipTableOff => (int)ReadU32(12 + 20 * 4 + 4 * 4);
+        int ClipTableLen => (int)ReadU32(12 + 20 * 4 + 4 * 4 + 4);
 
         public uint NodeId(int i) => ReadU32(ColOff(0) + i * 4);
         public int ParentId(int i) => (int)ReadU32(ColOff(1) + i * 4);
@@ -71,6 +72,17 @@ namespace LoomGUI
         /// 节点 i 的 program（u8 列，ColOff(18) + i）。0=img/无图 Container，1=Text，2=Container+bg-image。
         public byte Program(int i) => _buf[ColOff(18) + i];
 
+        /// 节点 i 的 color_matrix（[f32;20]，ColOff(19) + i*80）。program=3 节点填矩阵，其余全零。
+        /// 拆 5 个 Vector4 供 MPB SetVector：_CF0..3（矩阵行）+ _CFOff（offset）。
+        public float[] ColorMatrix(int i) {
+            int off = ColOff(19) + i * 80;
+            float[] m = new float[20];
+            for (int j = 0; j < 20; j++) {
+                m[j] = BitConverter.ToSingle(_buf, off + j * 4);
+            }
+            return m;
+        }
+
         /// 判断节点 i 是否为纯平移（identity 2×2 部分）—— epsilon 1e-6 对齐 Rust。
         public bool IsPureTranslation(int i) =>
             Math.Abs(Ma(i) - 1f) < 1e-6f && Math.Abs(Mb(i)) < 1e-6f
@@ -78,7 +90,7 @@ namespace LoomGUI
 
         /// clip 表 entry 数（context>0 入表）。无 mask scene 恒为 0。
         /// clip 表段布局：clip_count(u32) + entries[count × {ctx,x,y,w,h}]。
-        /// clip_count(u32) 在 ClipTableOff 处；clip_table_len(header @100) 含 clip_count 本身。
+        /// clip_count(u32) 在 ClipTableOff 处；clip_table_len(header @112) 含 clip_count 本身。
         public int ClipCount => ClipTableLen >= 4 ? (int)ReadU32(ClipTableOff) : 0;
 
         /// 读某 clip context 的 design rect（绝对，y-down）。entry 布局：ctx,x,y,w,h 各 4B（20B/entry）。
