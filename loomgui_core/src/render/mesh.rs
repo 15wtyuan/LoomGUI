@@ -204,16 +204,29 @@ pub fn nine_slice(
 /// 九宫格 + 圆角共存 mesh（spec §3.7，fgui 无现成，LoomGUI 自设计）。
 ///
 /// - radius 全 0 → 退化 nine_slice（方角）。
-/// - 有 radius → 四角圆角扇形（不拉伸，UV 取源图角区）+ 四边/中心切片拉伸。
-/// - 不变量：四角不拉伸，四边单轴拉伸，中心双轴拉伸。
+/// - 有 radius → 四角圆弧扇（**纯几何圆角，无外角顶点 / 无边三角**，照 rounded_rect 语义：
+///   弧外 fragment 不绘制）+ 角区 L 形补齐 + 四边/中心切片拉伸。
+/// - 不变量：四角不拉伸（1:1 映射源角像素），四边单轴拉伸，中心双轴拉伸。
+/// - 圆角剪裁是**几何**的——弧外区域（rect 角的 `[0,r]² \ quarter-disc`）无 fragment，
+///   不靠源图 alpha 伪造。即便源图角像素不透明，圆角仍正确呈现。
 ///
-/// 顶点布局（实现期定）：
-/// - 四角各生成一个三角扇（中心=圆心 + 外角顶点 + 圆弧顶点），扇形贴在角区 slice×slice
-///   子矩形内，圆心 = 角区子矩形内缩 (rx,ry) 点，半径 = slice 钳制后的 radius。外角顶点连
-///   两直边（覆盖角像素含源角透明角），弧顶点连成圆角；UV 按角子矩形内位置比例映射源角区像素。
-/// - 四边（上中/下中/左中/右中）+ 中心 = 5 个 quad，位置取 nine_slice 的 grid_x/grid_y
-///   中段，UV 取 nine_slice 的 tex_x/tex_y 中段（单轴/双轴拉伸语义）。
-/// - 索引：四角各为独立三角扇 + 5 quad 各 2 三角形，全部按运行偏移拼接到一个索引表。
+/// ## 区域分解（修复 review Critical 1 覆盖间隙 + Important 2 几何圆角）
+///
+/// X 边界（去重排序后）`{0, r_l, slice_l, w-slice_r, w-r_r, w}`，Y 边界同理
+/// `{0, r_t, slice_t, h-slice_b, h-r_b, h}`——把 rect 切成至多 6×6 网格。每格分类：
+///
+/// 1. **四分之一圆弧格**（角区 `[0,slice]²` 内的 `[0,r]²` 子格）：仅发三角扇覆盖
+///    `[0,r]² ∩ quarter-disc`（弧内），弧外 `[0,r]² \ disc` **不发顶点**（圆角镂空）。
+///    无外角顶点、无边三角——修复 Important 2。
+/// 2. **角区 L 形格**（角区 `[0,slice]²` 内四分之一圆弧格之外的部分，即
+///    `[r,slice]×[0,r]` / `[0,r]×[r,slice]` / `[r,slice]×[r,slice]`）：发 quad，UV 1:1
+///    映射源角像素（不拉伸）——填满弧与切片线之间的角区，修复 Critical 1 间隙。
+/// 3. **边带格**（角区与中心之间 `[slice, w-slice]` 或 `[slice, h-slice]` 段）：发 quad，
+///    单轴拉伸 UV。
+/// 4. **中心格** `[slice,w-slice]×[slice,h-slice]`：发 quad，双轴拉伸 UV。
+///
+/// 网格边界本身处理 UV 不连续（角区 vs 边带 vs 中心 UV 分段落在不同格），无需在单 quad
+/// 内硬接不连续 UV——每格独立 quad / 扇形。
 #[allow(clippy::type_complexity)]
 pub fn nine_slice_rounded(
     rect: &Rect,
@@ -234,146 +247,54 @@ pub fn nine_slice_rounded(
         return nine_slice(rect, color, slice, src_w, src_h, uv_min, uv_max);
     }
 
-    // grid_x/grid_y + tex_x/tex_y（同 nine_slice：rect 坐标 4 值 + UV 4 值，clamp 防四角越界）
-    let grid_x = [
-        rect.x,
-        rect.x + slice.left.min(w * 0.5),
-        (rect.x + w - slice.right).max(rect.x + slice.left.min(w * 0.5)),
-        rect.x + w,
-    ];
-    let grid_y = [
-        rect.y,
-        rect.y + slice.top.min(h * 0.5),
-        (rect.y + h - slice.bottom).max(rect.y + slice.top.min(h * 0.5)),
-        rect.y + h,
-    ];
+    // nine_slice 同款切片线（含 clamp 防四角越界）
+    let sl_l = slice.left.min(w * 0.5);
+    let sl_r = slice.right.min(w * 0.5);
+    let sl_t = slice.top.min(h * 0.5);
+    let sl_b = slice.bottom.min(h * 0.5);
+    let cx_l = rect.x + sl_l;
+    let cx_r = (rect.x + w - sl_r).max(cx_l);
+    let cy_t = rect.y + sl_t;
+    let cy_b = (rect.y + h - sl_b).max(cy_t);
+
     let (umin, vmin) = (uv_min[0], uv_min[1]);
     let (umax, vmax) = (uv_max[0], uv_max[1]);
-    let sx = (umax - umin) / src_w.max(1e-6);
-    let sy = (vmax - vmin) / src_h.max(1e-6);
-    let tex_x = [umin, umin + slice.left * sx, umin + (src_w - slice.right) * sx, umax];
-    let tex_y = [vmin, vmin + slice.top * sy, vmin + (src_h - slice.bottom) * sy, vmax];
+    let sxf = (umax - umin) / src_w.max(1e-6);
+    let syf = (vmax - vmin) / src_h.max(1e-6);
+    // UV 切片线（源图像素坐标）
+    let tx_l = umin + slice.left * sxf;
+    let tx_r = umin + (src_w - slice.right) * sxf;
+    let ty_t = vmin + slice.top * syf;
+    let ty_b = vmin + (src_h - slice.bottom) * syf;
 
-    // 角区子矩形尺寸（slice clamped by rect half）。角区 UV 仍按源 slice 像素映射（tex_x/tex_y），
-    // 因角区不拉伸不变量要求 UV 取源图角区像素。
-    let sl_l = (grid_x[1] - grid_x[0]).max(0.0);
-    let sl_r = (grid_x[3] - grid_x[2]).max(0.0);
-    let sl_t = (grid_y[1] - grid_y[0]).max(0.0);
-    let sl_b = (grid_y[3] - grid_y[2]).max(0.0);
-
-    // radius 钳制：按角区子矩形尺寸钳（radius ≤ slice，角弧须落角子矩形内）。
-    // 全角 0 已在入口 fallback；此处逐角独立钳（角区子矩形尺寸各异）。
-    let clamp_r = |r: (f32, f32), sz_x: f32, sz_y: f32| -> (f32, f32) {
-        (r.0.min(sz_x).max(0.0), r.1.min(sz_y).max(0.0))
-    };
-    let tl_r = clamp_r(radii[0], sl_l, sl_t);
-    let tr_r = clamp_r(radii[1], sl_r, sl_t);
-    let br_r = clamp_r(radii[2], sl_r, sl_b);
-    let bl_r = clamp_r(radii[3], sl_l, sl_b);
+    // radius 钳制：≤ 角区子矩形尺寸（弧须落角区内）。逐角独立钳。
+    let tl_r = (radii[0].0.min(sl_l).max(0.0), radii[0].1.min(sl_t).max(0.0));
+    let tr_r = (radii[1].0.min(sl_r).max(0.0), radii[1].1.min(sl_t).max(0.0));
+    let br_r = (radii[2].0.min(sl_r).max(0.0), radii[2].1.min(sl_b).max(0.0));
+    let bl_r = (radii[3].0.min(sl_l).max(0.0), radii[3].1.min(sl_b).max(0.0));
 
     let mut verts: Vec<[f32; 2]> = Vec::new();
     let mut uvs: Vec<[f32; 2]> = Vec::new();
     let mut colors: Vec<[f32; 4]> = Vec::new();
     let mut indices: Vec<u32> = Vec::new();
 
-    // 局部 helper：push 一个顶点（pos + UV 映射）。UV 把角子矩形内位置 (px,py) 按比例
-    // 映射到源图角区像素 [u0..u1, v0..v1]（角区不拉伸）。
-    let push_v = |vs: &mut Vec<[f32; 2]>,
-                      us: &mut Vec<[f32; 2]>,
-                      cs: &mut Vec<[f32; 4]>,
-                      px: f32, py: f32,
-                      sub_x0: f32, sub_y0: f32, sub_w: f32, sub_h: f32,
-                      u0: f32, u1: f32, v0: f32, v1: f32| {
+    // push 一个 rect-space (px,py) 顶点，UV 按源图像素 1:1 映射
+    // （pos - rect.xy 对应源图像素 (px-rect.x, py-rect.y)）。
+    let push_rect_uv = |vs: &mut Vec<[f32; 2]>,
+                        us: &mut Vec<[f32; 2]>,
+                        cs: &mut Vec<[f32; 4]>,
+                        px: f32, py: f32| {
         vs.push([px, py]);
-        us.push([
-            u0 + ((px - sub_x0) / sub_w.max(1e-6)) * (u1 - u0),
-            v0 + ((py - sub_y0) / sub_h.max(1e-6)) * (v1 - v0),
-        ]);
+        us.push([umin + (px - rect.x) * sxf, vmin + (py - rect.y) * syf]);
         cs.push(color);
     };
-
-    // ---- 四角 ----
-    // 每角：角区子矩形 [sub_x0,sub_y0]-[sub_x0+sub_w, sub_y0+sub_h]；
-    //   矩形外角顶点（rect 角）= sub 矩形的某角；圆心 = 外角内缩 (rx,ry)；弧起始角同 rounded_rect。
-    // 圆角（rx>0 && ry>0）：三角扇（中心=圆心 + 外角顶点 + 弧顶点）——外角顶点连两直边，
-    //   弧顶点连成圆角；UV 把角子矩形内位置按比例映射源角区像素（含外角→(u0,v0) 角像素）。
-    // 直角：4 顶点 quad 覆盖角子矩形。
-    // corners: (rx, ry, center, start_angle, sub_x0, sub_y0, sub_w, sub_h, u0, u1, v0, v1, outer_x, outer_y)
-    let corners: [(f32, f32, [f32; 2], f32, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32); 4] = [
-        // TL: 子矩形 [grid_x0, grid_y0]-[grid_x1, grid_y1]，外角 (x0,y0)，圆心 (x0+rx, y0+ry)，start=π
-        (tl_r.0, tl_r.1, [grid_x[0] + tl_r.0, grid_y[0] + tl_r.1], std::f32::consts::PI,
-         grid_x[0], grid_y[0], sl_l, sl_t, tex_x[0], tex_x[1], tex_y[0], tex_y[1], grid_x[0], grid_y[0]),
-        // TR: 子矩形 [grid_x2, grid_y0]-[grid_x3, grid_y1]，外角 (x3,y0)，圆心 (x3-rx, y0+ry)，start=-π/2
-        (tr_r.0, tr_r.1, [grid_x[3] - tr_r.0, grid_y[0] + tr_r.1], -std::f32::consts::FRAC_PI_2,
-         grid_x[2], grid_y[0], sl_r, sl_t, tex_x[2], tex_x[3], tex_y[0], tex_y[1], grid_x[3], grid_y[0]),
-        // BR: 子矩形 [grid_x2, grid_y2]-[grid_x3, grid_y3]，外角 (x3,y3)，圆心 (x3-rx, y3-ry)，start=0
-        (br_r.0, br_r.1, [grid_x[3] - br_r.0, grid_y[3] - br_r.1], 0.0,
-         grid_x[2], grid_y[2], sl_r, sl_b, tex_x[2], tex_x[3], tex_y[2], tex_y[3], grid_x[3], grid_y[3]),
-        // BL: 子矩形 [grid_x0, grid_y2]-[grid_x1, grid_y3]，外角 (x0,y3)，圆心 (x0+rx, y3-ry)，start=π/2
-        (bl_r.0, bl_r.1, [grid_x[0] + bl_r.0, grid_y[3] - bl_r.1], std::f32::consts::FRAC_PI_2,
-         grid_x[0], grid_y[2], sl_l, sl_b, tex_x[0], tex_x[1], tex_y[2], tex_y[3], grid_x[0], grid_y[3]),
-    ];
-
-    for (rx, ry, center, start, sub_x0, sub_y0, sub_w, sub_h, u0, u1, v0, v1, outer_x, outer_y) in corners {
-        if rx <= 0.0 || ry <= 0.0 {
-            // 直角：角子矩形为方角，用 4 顶点 quad 覆盖（TL→TR→BR→BL CCW）。
-            // 子矩形 4 角 UV 按位置映射源角区（(0,0)→(u0,v0), (1,1)→(u1,v1)）。
-            let base = verts.len() as u32;
-            push_v(&mut verts, &mut uvs, &mut colors, sub_x0,            sub_y0,            sub_x0, sub_y0, sub_w, sub_h, u0, u1, v0, v1);
-            push_v(&mut verts, &mut uvs, &mut colors, sub_x0 + sub_w,    sub_y0,            sub_x0, sub_y0, sub_w, sub_h, u0, u1, v0, v1);
-            push_v(&mut verts, &mut uvs, &mut colors, sub_x0 + sub_w,    sub_y0 + sub_h,    sub_x0, sub_y0, sub_w, sub_h, u0, u1, v0, v1);
-            push_v(&mut verts, &mut uvs, &mut colors, sub_x0,            sub_y0 + sub_h,    sub_x0, sub_y0, sub_w, sub_h, u0, u1, v0, v1);
-            indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
-        } else {
-            // 圆角三角扇：顶点序 = [center, outer, arc_start, arc_1, ..., arc_end]。
-            // 索引：(center, outer, arc_start) 边三角 + (center, arc_j, arc_{j+1}) 弧扇形
-            //       + (center, arc_end, outer) 边三角。外角覆盖角像素（含源角透明角，UV=(u0,v0)）。
-            let fan_base = verts.len() as u32;
-            // center（扇枢轴）
-            push_v(&mut verts, &mut uvs, &mut colors, center[0], center[1],
-                    sub_x0, sub_y0, sub_w, sub_h, u0, u1, v0, v1);
-            // outer（外角顶点，连两直边）
-            push_v(&mut verts, &mut uvs, &mut colors, outer_x, outer_y,
-                    sub_x0, sub_y0, sub_w, sub_h, u0, u1, v0, v1);
-            // 弧顶点（同 rounded_rect）：sides = ceil(π·max(rx,ry)/4)+1, min 2
-            let sides = ((std::f32::consts::PI * rx.max(ry) / 4.0).ceil() as i32 + 1).max(2);
-            let delta = std::f32::consts::FRAC_PI_2 / sides as f32;
-            for j in 0..=sides {
-                let a = if j == sides {
-                    start + std::f32::consts::FRAC_PI_2 // 末段精度锁（照 rounded_rect）
-                } else {
-                    start + delta * j as f32
-                };
-                let px = center[0] + a.cos() * rx;
-                let py = center[1] + a.sin() * ry;
-                push_v(&mut verts, &mut uvs, &mut colors, px, py,
-                        sub_x0, sub_y0, sub_w, sub_h, u0, u1, v0, v1);
-            }
-            // 索引
-            let outer = fan_base + 1;          // 外角顶点索引
-            let arc_start = fan_base + 2;      // 首弧顶点
-            let arc_count = (sides + 1) as u32; // 弧顶点数（0..=sides）
-            let arc_end = arc_start + arc_count - 1;
-            // 边三角：center → outer → arc_start（连外角到弧首）
-            indices.extend_from_slice(&[fan_base, outer, arc_start]);
-            // 弧扇形：(center, arc_j, arc_{j+1}) for j in 0..arc_count-1
-            for j in 0..arc_count - 1 {
-                indices.extend_from_slice(&[fan_base, arc_start + j, arc_start + j + 1]);
-            }
-            // 边三角：center → arc_end → outer（连弧尾到外角，闭合两直边）
-            indices.extend_from_slice(&[fan_base, arc_end, outer]);
-        }
-    }
-
-    // ---- 五条带 quad（上中/下中/左中/右中/中心）----
-    // 位置取 grid_x/grid_y 中段，UV 取 tex_x/tex_y 中段（nine_slice 拉伸语义）。
-    // 每 quad 4 顶点（TL→TR→BR→BL CCW）+ 2 三角形。
-    let push_quad = |vs: &mut Vec<[f32; 2]>,
-                         us: &mut Vec<[f32; 2]>,
-                         cs: &mut Vec<[f32; 4]>,
-                         ix: &mut Vec<u32>,
-                         x0: f32, x1: f32, y0: f32, y1: f32,
-                         u0: f32, u1: f32, v0: f32, v1: f32| {
+    // push 一个 quad（4 顶点 + 2 三角形）。UV 由调用方算好传。
+    let push_quad_uv = |vs: &mut Vec<[f32; 2]>,
+                        us: &mut Vec<[f32; 2]>,
+                        cs: &mut Vec<[f32; 4]>,
+                        ix: &mut Vec<u32>,
+                        x0: f32, x1: f32, y0: f32, y1: f32,
+                        u0: f32, u1: f32, v0: f32, v1: f32| {
         let base = vs.len() as u32;
         vs.push([x0, y0]); us.push([u0, v0]); cs.push(color);
         vs.push([x1, y0]); us.push([u1, v0]); cs.push(color);
@@ -381,26 +302,180 @@ pub fn nine_slice_rounded(
         vs.push([x0, y1]); us.push([u0, v1]); cs.push(color);
         ix.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
     };
-    // 上中：x grid_x[1..2], y grid_y[0..1]（水平拉伸）
-    push_quad(&mut verts, &mut uvs, &mut colors, &mut indices,
-              grid_x[1], grid_x[2], grid_y[0], grid_y[1],
-              tex_x[1], tex_x[2], tex_y[0], tex_y[1]);
-    // 下中：x grid_x[1..2], y grid_y[2..3]（水平拉伸）
-    push_quad(&mut verts, &mut uvs, &mut colors, &mut indices,
-              grid_x[1], grid_x[2], grid_y[2], grid_y[3],
-              tex_x[1], tex_x[2], tex_y[2], tex_y[3]);
-    // 左中：x grid_x[0..1], y grid_y[1..2]（垂直拉伸）
-    push_quad(&mut verts, &mut uvs, &mut colors, &mut indices,
-              grid_x[0], grid_x[1], grid_y[1], grid_y[2],
-              tex_x[0], tex_x[1], tex_y[1], tex_y[2]);
-    // 右中：x grid_x[2..3], y grid_y[1..2]（垂直拉伸）
-    push_quad(&mut verts, &mut uvs, &mut colors, &mut indices,
-              grid_x[2], grid_x[3], grid_y[1], grid_y[2],
-              tex_x[2], tex_x[3], tex_y[1], tex_y[2]);
-    // 中心：x grid_x[1..2], y grid_y[1..2]（双轴拉伸）
-    push_quad(&mut verts, &mut uvs, &mut colors, &mut indices,
-              grid_x[1], grid_x[2], grid_y[1], grid_y[2],
-              tex_x[1], tex_x[2], tex_y[1], tex_y[2]);
+
+    // 发一个角区 quad（角区不拉伸，UV 1:1 映射源角像素）。
+    // (x0,y0)-(x1,y1) 是 rect 空间子格；角区 UV 用源图像素坐标算。
+    let corner_quad = |vs: &mut Vec<[f32; 2]>,
+                       us: &mut Vec<[f32; 2]>,
+                       cs: &mut Vec<[f32; 4]>,
+                       ix: &mut Vec<u32>,
+                       x0: f32, x1: f32, y0: f32, y1: f32| {
+        let u0 = umin + (x0 - rect.x) * sxf;
+        let u1 = umin + (x1 - rect.x) * sxf;
+        let v0 = vmin + (y0 - rect.y) * syf;
+        let v1 = vmin + (y1 - rect.y) * syf;
+        push_quad_uv(vs, us, cs, ix, x0, x1, y0, y1, u0, u1, v0, v1);
+    };
+
+    // ---- 四角：四分之一圆弧扇形（纯几何圆角）----
+    // 每角三角扇 = center（弧圆心）+ 弧顶点列（start..start+π/2）。**无外角顶点、无边三角**。
+    // 弧外 `[0,r]² \ disc` 不发顶点（圆角镂空）。UV 1:1 映射源角像素。
+    // corners: (rx, ry, center, start_angle)
+    let arc_corners: [(f32, f32, [f32; 2], f32); 4] = [
+        // TL: 圆心 (x + rx, y + ry)，start = π
+        (tl_r.0, tl_r.1, [rect.x + tl_r.0, rect.y + tl_r.1], std::f32::consts::PI),
+        // TR: 圆心 (x+w - rx, y + ry)，start = -π/2
+        (tr_r.0, tr_r.1, [rect.x + w - tr_r.0, rect.y + tr_r.1], -std::f32::consts::FRAC_PI_2),
+        // BR: 圆心 (x+w - rx, y+h - ry)，start = 0
+        (br_r.0, br_r.1, [rect.x + w - br_r.0, rect.y + h - br_r.1], 0.0),
+        // BL: 圆心 (x + rx, y+h - ry)，start = π/2
+        (bl_r.0, bl_r.1, [rect.x + bl_r.0, rect.y + h - bl_r.1], std::f32::consts::FRAC_PI_2),
+    ];
+    for (rx, ry, center, start) in arc_corners {
+        if rx <= 0.0 || ry <= 0.0 {
+            // 该角无圆角：角区子矩形整体当角区 L 形 quad 处理（下方网格覆盖），这里跳过扇形。
+            continue;
+        }
+        // 三角扇：center + 弧顶点列 (0..=sides)。
+        let fan_base = verts.len() as u32;
+        push_rect_uv(&mut verts, &mut uvs, &mut colors, center[0], center[1]);
+        let sides = ((std::f32::consts::PI * rx.max(ry) / 4.0).ceil() as i32 + 1).max(2);
+        let delta = std::f32::consts::FRAC_PI_2 / sides as f32;
+        for j in 0..=sides {
+            let a = if j == sides {
+                start + std::f32::consts::FRAC_PI_2
+            } else {
+                start + delta * j as f32
+            };
+            let px = center[0] + a.cos() * rx;
+            let py = center[1] + a.sin() * ry;
+            push_rect_uv(&mut verts, &mut uvs, &mut colors, px, py);
+        }
+        // 扇形索引：(center, arc_j, arc_{j+1}) for j in 0..sides
+        for j in 0..sides as u32 {
+            indices.extend_from_slice(&[fan_base, fan_base + 1 + j, fan_base + 1 + j + 1]);
+        }
+    }
+
+    // ---- 角区 L 形 quad（填角区 [0,slice]² 减 [0,r]² 镂空）----
+    // 逐角发角区 L 形 quad：角区 [0,slice]² 内，[0,r]² 子块由弧扇覆盖弧内、弧外镂空；
+    // L 形剩余（[r,slice]×[0,slice] ∪ [0,r]×[r,slice]）发 quad，UV 1:1 映射源角像素（不拉伸）。
+    // r=0 时无镂空，整个角区 [0,slice]² 当 L 形（2 quad 合并覆盖）。每角用各自 r 精确处理。
+    // 4 角各自的角区子矩形：
+    let tl_x0 = rect.x;          let tl_y0 = rect.y;          let tl_x1 = cx_l;     let tl_y1 = cy_t;
+    let tr_x0 = cx_r;            let tr_y0 = rect.y;          let tr_x1 = rect.x+w; let tr_y1 = cy_t;
+    let br_x0 = cx_r;            let br_y0 = cy_b;            let br_x1 = rect.x+w; let br_y1 = rect.y+h;
+    let bl_x0 = rect.x;          let bl_y0 = cy_b;            let bl_x1 = cx_l;     let bl_y1 = rect.y+h;
+
+    // 单角 L 形分解：角区 [ax0,ax1]×[ay0,ay1]，圆角 r=(rx,ry) 在角顶（角顶方向由 corner 决定）。
+    // L 形 = 3 个 quad：
+    //   q1 = [ax0, ax1]×[ay0+ry, ay1]（远端条，跨角区宽）—— 但角顶方向不同，远端定义不同。
+    // 简化：L 形 = 角区减 [0,r]²（角顶 [0,r]² 镂空）。按角顶方向分 4 种。
+    // 统一用"角顶内缩 r"模型：角顶 = (cx, cy)，圆心 = (cx±rx, cy±ry)。
+    // 镂空方块 = 角顶起的 [0,r]×[0,r]（方向朝角顶）。
+    // L 形 3 quad（以 TL 为例，角顶 (ax0,ay0)，镂空 [ax0,ax0+rx]×[ay0,ay0+ry]）：
+    //   q_right = [ax0+rx, ax1]×[ay0, ay1]        （角区右部，含 [ay0,ay0+ry] 和 [ay0+ry,ay1]）
+    //   q_top   = [ax0, ax0+rx]×[ay0+ry, ay1]     （角区左部上段，镂空上方）
+    //   （[ax0,ax0+rx]×[ay0,ay0+ry] = 镂空，跳过）
+    // 但 q_right 跨整个 [ay0,ay1]——其 [ay0,ay0+ry] 部分是角区右部近角段（[r,slice]×[0,r]），
+    // [ay0+ry,ay1] 部分是角区右部远段（[r,slice]×[r,slice]）。两者 UV 都 1:1 源角像素，可合一 quad。
+    // 故 TL L 形 = 2 quad：
+    //   q_right = [ax0+rx, ax1]×[ay0, ay1]
+    //   q_top   = [ax0, ax0+rx]×[ay0+ry, ay1]
+    // 其他角对称。
+    let emit_corner_l = |vs: &mut Vec<[f32; 2]>,
+                         us: &mut Vec<[f32; 2]>,
+                         cs: &mut Vec<[f32; 4]>,
+                         ix: &mut Vec<u32>,
+                         ax0: f32, ay0: f32, ax1: f32, ay1: f32,
+                         rx: f32, ry: f32,
+                         // 角顶方向：true = 朝 (ax0,ay0)（TL/BR 内缩 +rx,+ry / -rx,-ry 取决于角）
+                         // 用 corner 标识：0=TL 1=TR 2=BR 3=BL
+                         corner: usize| {
+        if ax1 - ax0 <= 1e-6 || ay1 - ay0 <= 1e-6 { return; }
+        // 镂空方块（角顶 [0,r]²）：按 corner 定方向
+        // TL: 镂空 [ax0, ax0+rx]×[ay0, ay0+ry]
+        // TR: 镂空 [ax1-rx, ax1]×[ay0, ay0+ry]
+        // BR: 镂空 [ax1-rx, ax1]×[ay1-ry, ay1]
+        // BL: 镂空 [ax0, ax0+rx]×[ay1-ry, ay1]
+        let (hx0, hx1, hy0, hy1) = match corner {
+            0 => (ax0, ax0 + rx, ay0, ay0 + ry),
+            1 => (ax1 - rx, ax1, ay0, ay0 + ry),
+            2 => (ax1 - rx, ax1, ay1 - ry, ay1),
+            3 => (ax0, ax0 + rx, ay1 - ry, ay1),
+            _ => unreachable!(),
+        };
+        // L 形 = 角区 - 镂空方块。分解为 2 quad（镂空方块把角区分成 L 形）：
+        // 通用分解（按镂空方块在角区的位置）：
+        //   q_strip_far = 角区"远端"条（不含镂空的那一整条）
+        //   q_strip_near = 角区"近端"条（镂空那一侧的非镂空部分）
+        // 以 TL（镂空在左上）为例：
+        //   q_right = [hx1, ax1]×[ay0, ay1]   （右条，整高）
+        //   q_bottom = [ax0, hx1]×[hy1, ay1]  （左下，镂空下方）
+        // 其他角对称。
+        match corner {
+            0 => { // TL 镂空左上
+                if ax1 - hx1 > 1e-6 { corner_quad(vs, us, cs, ix, hx1, ax1, ay0, ay1); }
+                if hx1 - ax0 > 1e-6 && ay1 - hy1 > 1e-6 { corner_quad(vs, us, cs, ix, ax0, hx1, hy1, ay1); }
+            }
+            1 => { // TR 镂空右上
+                if hx0 - ax0 > 1e-6 { corner_quad(vs, us, cs, ix, ax0, hx0, ay0, ay1); }
+                if ax1 - hx0 > 1e-6 && ay1 - hy1 > 1e-6 { corner_quad(vs, us, cs, ix, hx0, ax1, hy1, ay1); }
+            }
+            2 => { // BR 镂空右下
+                if hx0 - ax0 > 1e-6 { corner_quad(vs, us, cs, ix, ax0, hx0, ay0, ay1); }
+                if ax1 - hx0 > 1e-6 && hy0 - ay0 > 1e-6 { corner_quad(vs, us, cs, ix, hx0, ax1, ay0, hy0); }
+            }
+            3 => { // BL 镂空左下
+                if ax1 - hx1 > 1e-6 { corner_quad(vs, us, cs, ix, hx1, ax1, ay0, ay1); }
+                if hx1 - ax0 > 1e-6 && hy0 - ay0 > 1e-6 { corner_quad(vs, us, cs, ix, ax0, hx1, ay0, hy0); }
+            }
+            _ => unreachable!(),
+        }
+    };
+
+    emit_corner_l(&mut verts, &mut uvs, &mut colors, &mut indices, tl_x0, tl_y0, tl_x1, tl_y1, tl_r.0, tl_r.1, 0);
+    emit_corner_l(&mut verts, &mut uvs, &mut colors, &mut indices, tr_x0, tr_y0, tr_x1, tr_y1, tr_r.0, tr_r.1, 1);
+    emit_corner_l(&mut verts, &mut uvs, &mut colors, &mut indices, br_x0, br_y0, br_x1, br_y1, br_r.0, br_r.1, 2);
+    emit_corner_l(&mut verts, &mut uvs, &mut colors, &mut indices, bl_x0, bl_y0, bl_x1, bl_y1, bl_r.0, bl_r.1, 3);
+
+    // ---- 边带 + 中心 quad ----
+    // 上边带：x [cx_l, cx_r], y [rect.y, cy_t] —— 水平拉伸（UV x: tx_l..tx_r, v: ty_t 段 1:1）
+    //   但上边带 y 跨 [0, slice_t]，含角弧段 [0,r] 与 L 段 [r,slice]。边带 x 仅 [slice, w-slice]，
+    //   不含角区——故 y 全段 [0, slice_t] 都是边带（无角弧，因 x 在中心段）。
+    //   UV：x 拉伸 (tx_l..tx_r)，y 1:1 源像素 (vmin..ty_t)。
+    if cx_r - cx_l > 1e-6 {
+        // 上边带
+        if cy_t - rect.y > 1e-6 {
+            push_quad_uv(&mut verts, &mut uvs, &mut colors, &mut indices,
+                cx_l, cx_r, rect.y, cy_t, tx_l, tx_r, vmin, ty_t);
+        }
+        // 下边带
+        if (rect.y + h) - cy_b > 1e-6 {
+            push_quad_uv(&mut verts, &mut uvs, &mut colors, &mut indices,
+                cx_l, cx_r, cy_b, rect.y + h, tx_l, tx_r, ty_b, vmax);
+        }
+        // 中心
+        if cy_b - cy_t > 1e-6 {
+            push_quad_uv(&mut verts, &mut uvs, &mut colors, &mut indices,
+                cx_l, cx_r, cy_t, cy_b, tx_l, tx_r, ty_t, ty_b);
+        }
+    }
+    // 左右边带：y [cy_t, cy_b], x 角区段（含角弧段 [0,r] 与 L 段 [r,slice]）
+    //   边带 y 仅 [slice, h-slice]（中心段），不含角区——x 全段 [0, slice] / [w-slice, w] 都是边带。
+    //   UV：x 1:1 源像素，y 拉伸 (ty_t..ty_b)。
+    if cy_b - cy_t > 1e-6 {
+        // 左边带
+        if cx_l - rect.x > 1e-6 {
+            push_quad_uv(&mut verts, &mut uvs, &mut colors, &mut indices,
+                rect.x, cx_l, cy_t, cy_b, umin, tx_l, ty_t, ty_b);
+        }
+        // 右边带
+        if (rect.x + w) - cx_r > 1e-6 {
+            push_quad_uv(&mut verts, &mut uvs, &mut colors, &mut indices,
+                cx_r, rect.x + w, cy_t, cy_b, tx_r, umax, ty_t, ty_b);
+        }
+    }
 
     (verts, uvs, colors, indices)
 }
@@ -653,6 +728,8 @@ mod tests {
     #[test]
     fn nine_slice_rounded_corner_uv_in_source_corner_region() {
         // 不变量：四角顶点 UV 落在源图角区（左上角区 = uv [0..0.2, 0..0.2]）
+        // 修复 Important 2 后：角区无外角顶点（(0,0) UV 顶点不再存在），弧扇顶点 UV
+        // 落在源角区内（最接近角顶的弧点 = (r,0)/(0,r) → UV (0.1,0)/(0,0.1)）。
         let (_v, uvs, _col, _idx) = nine_slice_rounded(
             &Rect { x: 0.0, y: 0.0, w: 100.0, h: 100.0 },
             [1.0; 4],
@@ -662,12 +739,67 @@ mod tests {
             [0.0, 0.0], [1.0, 1.0],
         );
         // 左上角区顶点 UV 应在 [0..0.2, 0..0.2]（slice 20 / src 100 = 0.2）
-        // 取前几个顶点（左上角扇形）验
         let tl_uvs: Vec<[f32;2]> = uvs.iter().cloned().filter(|uv| uv[0] <= 0.21 && uv[1] <= 0.21).collect();
         assert!(!tl_uvs.is_empty(), "左上角区有顶点");
-        // 最左上顶点 UV ≈ (0,0)
+        // 弧扇顶点 UV 落在角区内（含接近角顶的弧点 (0.1,0)/(0,0.1)）。
+        // 不应有 (0,0) UV 外角顶点（Important 2 修复后该顶点已删）。
         let has_origin = tl_uvs.iter().any(|uv| uv[0].abs() < 1e-3 && uv[1].abs() < 1e-3);
-        assert!(has_origin, "左上角含 (0,0) UV 顶点");
+        assert!(!has_origin, "Important 2 修复：左上角不应有 (0,0) UV 外角顶点");
+        // 弧扇中心 (r,r)=(10,10) → UV (0.1, 0.1)，应在角区内
+        let has_arc_center = tl_uvs.iter().any(|uv| (uv[0] - 0.1).abs() < 1e-3 && (uv[1] - 0.1).abs() < 1e-3);
+        assert!(has_arc_center, "左上角弧扇中心 UV=(0.1,0.1) 存在");
+    }
+
+    #[test]
+    fn nine_slice_rounded_arc_cutout_geometric() {
+        // 修复 Critical 1 + Important 2 的覆盖测试：point-in-triangle 扫描网格采样点。
+        // rect 100×100，slice 20，radius 10，src 100×100。
+        // 期望：圆弧外角点 (2,2)（在 [0,r]² 内但弧外，距圆心 (10,10)=√128≈11.3>10）**不被覆盖**；
+        //      中心 (50,50) / 上边中点 (50,5) / 角区 L 形点 (15,5)（[r,slice]×[0,r]）被覆盖。
+        let (verts, _uvs, _col, idx) = nine_slice_rounded(
+            &Rect { x: 0.0, y: 0.0, w: 100.0, h: 100.0 },
+            [1.0; 4],
+            &SliceInsets { top: 20.0, right: 20.0, bottom: 20.0, left: 20.0 },
+            &[(10.0, 10.0); 4],
+            100.0, 100.0,
+            [0.0, 0.0], [1.0, 1.0],
+        );
+        // 收集所有三角形（每 3 索引一个三角形）
+        let tris: Vec<([f32; 2], [f32; 2], [f32; 2])> = idx
+            .chunks(3)
+            .filter_map(|c| {
+                if c.len() == 3 {
+                    Some((verts[c[0] as usize], verts[c[1] as usize], verts[c[2] as usize]))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert!(!tris.is_empty(), "mesh 有三角形");
+
+        let point_in_tri = |p: [f32; 2], a: [f32; 2], b: [f32; 2], c: [f32; 2]| -> bool {
+            // 重心坐标法（含边界，容差 1e-4）
+            let d1 = (p[0] - b[0]) * (a[1] - b[1]) - (a[0] - b[0]) * (p[1] - b[1]);
+            let d2 = (p[0] - c[0]) * (b[1] - c[1]) - (b[0] - c[0]) * (p[1] - c[1]);
+            let d3 = (p[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (p[1] - a[1]);
+            let neg = (d1 < -1e-4) || (d2 < -1e-4) || (d3 < -1e-4);
+            let pos = (d1 > 1e-4) || (d2 > 1e-4) || (d3 > 1e-4);
+            !(neg && pos)
+        };
+        let covered = |px: f32, py: f32| -> bool {
+            tris.iter().any(|&(a, b, c)| point_in_tri([px, py], a, b, c))
+        };
+
+        // 中心点：必覆盖
+        assert!(covered(50.0, 50.0), "中心 (50,50) 被覆盖");
+        // 上边中点 (50,5)：上边带（x 在 [slice,w-slice]，y 在 [0,slice]）必覆盖
+        assert!(covered(50.0, 5.0), "上边中点 (50,5) 被覆盖");
+        // 角区 L 形点 (15,5)：在 [r,slice]×[0,r]（TL 角区 L 形右条），必覆盖（修复 Critical 1 间隙）
+        assert!(covered(15.0, 5.0), "角区 L 形点 (15,5) 被覆盖（修复 Critical 1 间隙）");
+        // 圆弧外角点 (2,2)：在 [0,r]² 内但弧外（距圆心 (10,10)=√128>10），**不应覆盖**（修复 Important 2 几何圆角）
+        assert!(!covered(2.0, 2.0), "圆弧外角点 (2,2) 不被覆盖（几何圆角镂空，修复 Important 2）");
+        // 圆弧内点 (5,5)：距圆心 (10,10)=√50≈7.07<10，应覆盖（弧扇内）
+        assert!(covered(5.0, 5.0), "圆弧内点 (5,5) 被覆盖（弧扇内）");
     }
 
     #[test]
