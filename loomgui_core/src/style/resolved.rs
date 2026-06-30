@@ -45,6 +45,16 @@ pub struct BorderRadius {
     pub corners: [CornerRadius; 4],
 }
 
+/// CSS border-image-slice 四边切片量（源图像素）。top/right/bottom/left。
+/// None = 无九宫格切片；Some = 四条切片线距各边距离。
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct SliceInsets {
+    pub top: f32,
+    pub right: f32,
+    pub bottom: f32,
+    pub left: f32,
+}
+
 /// CSS transform 解析产物。内部存 Affine2 矩阵（非分解字段）——这样单节点
 /// `scale(2,1) rotate(45deg)` 的复合剪切在解析期就保留，不因提取字段丢失。
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -91,6 +101,11 @@ pub struct ResolvedStyle {
     pub touchable: bool,
     /// CSS transform 解析产物（Affine2 矩阵，含多函数复合剪切）。默认 identity。
     pub transform: crate::style::LocalTransform,
+    /// CSS filter → 4×5 颜色矩阵（行主序，20 float）。None=无 filter。
+    /// grayscale/brightness/contrast/saturate/hue-rotate/invert/sepia → fgui 预设矩阵。
+    pub color_filter: Option<[f32; 20]>,
+    /// CSS border-image-slice 四边切片（源图像素）。None=无九宫格。
+    pub border_image_slice: Option<SliceInsets>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -130,6 +145,8 @@ impl Default for ResolvedStyle {
             order: 0,
             touchable: true,
             transform: LocalTransform::default(),
+            color_filter: None,
+            border_image_slice: None,
         }
     }
 }
@@ -285,5 +302,36 @@ mod tests {
         assert_eq!(back.overflow_x, OverflowMode::Hidden);
         assert_eq!(back.overflow_y, OverflowMode::Scroll);
         assert_eq!(back, s, "overflow 字段 round-trip 全等");
+    }
+
+    #[test]
+    fn color_filter_default_is_none() {
+        let s = ResolvedStyle::default();
+        assert!(s.color_filter.is_none(), "默认无 color_filter");
+        assert!(s.border_image_slice.is_none(), "默认无 border_image_slice");
+    }
+
+    #[test]
+    fn color_filter_bincode_roundtrip() {
+        let mut s = ResolvedStyle::default();
+        // 非单位矩阵（grayscale 预设的前 4 值非默认）
+        s.color_filter = Some([0.299, 0.587, 0.114, 0.0, 0.0,
+                              0.299, 0.587, 0.114, 0.0, 0.0,
+                              0.299, 0.587, 0.114, 0.0, 0.0,
+                              0.0,   0.0,   0.0,   1.0, 0.0]);
+        let bytes = bincode::serialize(&s).expect("serialize");
+        let back: ResolvedStyle = bincode::deserialize(&bytes).expect("deserialize");
+        assert_eq!(back.color_filter, s.color_filter, "color_filter round-trip");
+        assert_eq!(back, s, "加字段后全字段 round-trip 仍相等");
+    }
+
+    #[test]
+    fn border_image_slice_bincode_roundtrip() {
+        let mut s = ResolvedStyle::default();
+        s.border_image_slice = Some(SliceInsets { top: 10.0, right: 10.0, bottom: 10.0, left: 10.0 });
+        let bytes = bincode::serialize(&s).expect("serialize");
+        let back: ResolvedStyle = bincode::deserialize(&bytes).expect("deserialize");
+        assert_eq!(back.border_image_slice, s.border_image_slice, "slice round-trip");
+        assert_eq!(back, s, "加字段后全字段 round-trip 仍相等");
     }
 }

@@ -1,4 +1,4 @@
-//! 包格式（.pkg.bin，当前 version=9）：Rust-internal（packager 写、runtime 读，C# 不解析）。
+//! 包格式（.pkg.bin，当前 version=10）：Rust-internal（packager 写、runtime 读，C# 不解析）。
 //!
 //! 扁平布局：Header(28B) + StringTable + NodeBlock（DFS 先序，含 classes/id/flags/tabindex）+
 //! AtlasSection + DynamicRuleSection（bincode 整个 DynamicRuleTable）。
@@ -14,9 +14,9 @@ use crate::style::resolved::ResolvedStyle;
 pub mod texture; // 纹理注册表（src→TexMeta）
 
 pub const PKG_MAGIC: u32 = 0x474B504C; // 磁盘字节(LE) "LPKG"（不与 frame blob "LOOM" 撞）
-pub const PKG_FORMAT_VERSION: u32 = 9; // +border_radius 字段（bincode 字段序变，旧 v8 pkg 须重打）
-const MIN_VERSION: u32 = 9;
-const MAX_VERSION: u32 = 9;
+pub const PKG_FORMAT_VERSION: u32 = 10; // +color_filter +border_image_slice 字段（bincode 字段序变，旧 v9 pkg 须重打）
+const MIN_VERSION: u32 = 10;
+const MAX_VERSION: u32 = 10;
 const NULL_IDX: u16 = 0xFFFF;
 
 const KIND_CONTAINER: u8 = 0;
@@ -535,15 +535,15 @@ mod tests {
 
     #[test]
     fn read_rejects_unsupported_version() {
-        // 借 round-trip 测的合法包（v9），把 version 字段（offset 4）改成 10 / 8。
-        // MIN_VERSION=MAX_VERSION=9：v8 → TooOld，v10 → TooNew。
+        // 借 round-trip 测的合法包（v10），把 version 字段（offset 4）改成 11 / 9。
+        // MIN_VERSION=MAX_VERSION=10：v9 → TooOld，v11 → TooNew。
         let entries: Vec<(Option<usize>, NodeKind, ResolvedStyle, Vec<String>, Option<String>, bool, Option<i32>)> =
             vec![(None, NodeKind::Container, ResolvedStyle::default(), Vec::new(), None, false, None)];
         let mut bytes = write_package(&Scene::build(&entries), (100.0, 100.0), &AtlasSection::default(), &crate::style::dynamic::DynamicRuleTable::default());
-        bytes[4..8].copy_from_slice(&10u32.to_le_bytes()); // version=10 → too new
-        assert!(matches!(read_package(&bytes), Err(PkgError::TooNew(10))));
-        bytes[4..8].copy_from_slice(&8u32.to_le_bytes()); // version=8 → too old（v9 起拒 v8 及以下）
-        assert!(matches!(read_package(&bytes), Err(PkgError::TooOld(8))));
+        bytes[4..8].copy_from_slice(&11u32.to_le_bytes()); // version=11 → too new
+        assert!(matches!(read_package(&bytes), Err(PkgError::TooNew(11))));
+        bytes[4..8].copy_from_slice(&9u32.to_le_bytes()); // version=9 → too old（v10 起拒 v9 及以下）
+        assert!(matches!(read_package(&bytes), Err(PkgError::TooOld(9))));
     }
 
     #[test]
