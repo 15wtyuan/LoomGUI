@@ -226,6 +226,34 @@ div { display:flex; flex-direction:column; }
           </div>
         </div>
       </div>
+      <!-- §3.8 ColorFilter -->
+      <div class="sec" id="sec38">
+        <div class="sec-h">3.8 ColorFilter（filter）</div>
+        <div class="card">
+          <div class="card-h"><div class="card-t">filter 函数</div><div class="card-x">标准 CSS</div></div>
+          <div class="card-b">
+            <div class="cf-demo" style="filter:grayscale(1)">grayscale</div>
+            <div class="cf-demo" style="filter:brightness(1.5)">brightness 1.5</div>
+            <div class="cf-demo" style="filter:contrast(1.5)">contrast 1.5</div>
+            <div class="cf-demo" style="filter:saturate(2)">saturate 2</div>
+            <div class="cf-demo" style="filter:hue-rotate(90deg)">hue 90°</div>
+            <div class="cf-demo" style="filter:invert(1)">invert</div>
+            <div class="cf-demo" style="filter:grayscale(1) brightness(1.2)">gray+bright</div>
+          </div>
+        </div>
+      </div>
+      <!-- §3.9 九宫格 slice -->
+      <div class="sec" id="sec39">
+        <div class="sec-h">3.9 九宫格 border-image-slice</div>
+        <div class="card">
+          <div class="card-h"><div class="card-t">slice 皮肤缩放</div><div class="card-x">四角不变形</div></div>
+          <div class="card-b">
+            <div class="ns-demo ns-sm" style="background-image:url(icons/home.png);border-image-slice:16">小 80×60</div>
+            <div class="ns-demo ns-lg" style="background-image:url(icons/home.png);border-image-slice:16">大 240×120</div>
+            <div class="ns-demo ns-sm" style="background-image:url(icons/home.png);border-image-slice:16;border-radius:12">slice+radius</div>
+          </div>
+        </div>
+      </div>
       <div class="sec" id="sec-4">
         <div class="sec-h">§4 交互事件集</div>
         <div class="card">

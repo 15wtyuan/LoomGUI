@@ -40,6 +40,16 @@
 .bg-demo{width:160px;height:120px;color:#e0e0e0;font-size:16px;display:flex;align-items:center;justify-content:center;overflow:hidden;background-repeat:no-repeat;}
 .br-demo{width:80px;height:80px;color:#e0e0e0;font-size:13px;display:flex;align-items:center;justify-content:center;overflow:hidden;background-repeat:no-repeat;}
 
+/* §3.8 ColorFilter：filter 函数演示。带 bg-image 让 filter 效果可见。
+   160×60 横条，图 + 文字，filter 各函数对比。*/
+.cf-demo{width:160px;height:60px;background-image:url(icons/home.png);background-size:cover;background-repeat:no-repeat;background-color:#5fb2c4;color:#1a1d2e;font-size:14px;display:flex;align-items:center;justify-content:center;}
+
+/* §3.9 九宫格：border-image-slice 皮肤缩放。小/大两种尺寸验四角不变形。
+   slice+radius 共存验 nine_slice_rounded。*/
+.ns-demo{color:#e0e0e0;font-size:14px;display:flex;align-items:center;justify-content:center;background-repeat:no-repeat;border:1px solid #3a3f55;}
+.ns-sm{width:80px;height:60px;}
+.ns-lg{width:240px;height:120px;}
+
 /* §2 布局练兵场 */
 .flx{flex-direction:row;background-color:#1a1d2e;border:1px solid #3a3f55;height:36px;padding:4px;gap:6px;align-items:center;}
 /* §2 布局练兵场：小方块用 div（Container 画 bg），非 span（Text 节点不画 bg，跟 fgui GTextField 一致）。
