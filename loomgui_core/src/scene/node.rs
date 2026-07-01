@@ -301,8 +301,10 @@ impl Scene {
                 None => scene.roots.push(ids[i]),
             }
         }
-        // text_layouts 随存活节点数对齐（None 占位，layout::solve 填实际 TextLayout）。
-        scene.text_layouts = vec![None; scene.nodes.len()];
+        // text_layouts 随槽位容量对齐（None 占位，layout::solve 填实际 TextLayout）。
+        // **容量而非存活数**（T5）：按 id.index() 索引，remove_node 后 idx 不变但存活数减，
+        // 按 len 分配会越界。capacity+1（1 基索引，idx 0 占位）。
+        scene.text_layouts = vec![None; scene.nodes.capacity() + 1];
         scene
     }
 
@@ -337,7 +339,7 @@ impl Scene {
                 scene.roots.push(id);
             }
         }
-        scene.text_layouts = vec![None; scene.nodes.len()];
+        scene.text_layouts = vec![None; scene.nodes.capacity() + 1];
         scene
     }
 

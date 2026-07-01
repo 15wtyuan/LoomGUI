@@ -114,9 +114,10 @@ use crate::scene::node::{AnimTable, NodeId, Scene};
 use crate::transform::{self};
 
 /// 一个进行中的 tween（内部结构，TweenManager 内部 Vec 管理）。
+/// pub(crate)：测试断言 + Stage 联动查需读字段（killed/node）。
 #[derive(Debug, Clone)]
-struct Tween {
-    node: NodeId,
+pub(crate) struct Tween {
+    pub(crate) node: NodeId,
     prop: TweenProp,
     start: [f32; 4],
     end: [f32; 4],
@@ -126,13 +127,14 @@ struct Tween {
     elapsed: f32,
     tag: u32,
     started: bool,
-    killed: bool,
+    pub(crate) killed: bool,
 }
 
 /// Tween 引擎：持一组 Tween，每 tick 推进、写 scene.anim，完成时产 EVT_TWEEN_COMPLETE。
 #[derive(Debug, Default)]
 pub struct TweenManager {
-    tweens: Vec<Tween>,
+    /// pub(crate) 供测试断言（kill_node 后验全 killed）+ Stage 联动查。
+    pub(crate) tweens: Vec<Tween>,
 }
 
 impl TweenManager {
@@ -140,6 +142,16 @@ impl TweenManager {
 
     /// 清空所有 tween（load 重建 scene 时调，防残留指向失效 node_id）。
     pub fn clear(&mut self) { self.tweens.clear(); }
+
+    /// 杀该节点所有 tween（remove_node 联动调）。标 killed，update 末尾 retain 清出。
+    /// 与 `kill(node, prop)`（单 prop）不同——此杀该 node 全部 prop 的 tween。
+    pub fn kill_node(&mut self, node: NodeId) {
+        for t in &mut self.tweens {
+            if t.node == node && !t.killed {
+                t.killed = true;
+            }
+        }
+    }
 
     /// 注册一个 tween。越界 node 由 update 跳过。
     pub fn tween(
@@ -172,9 +184,11 @@ impl TweenManager {
             if t.killed {
                 continue;
             }
-            // 悬空/无效 NodeId（不在 scene.nodes）→ 跳过 apply + 不产 complete
+            // 悬空/无效 NodeId（不在 scene.nodes）→ 标 killed 跳过 apply + 不产 complete。
+            // 双保险：remove_node 联动 kill_node 主动杀；此处兜底——若 tween 残留指向已删 node
             // （HashMap 对任意 NodeId 都能插条目，故须显式校验 live，防悬空 tween 写幽灵槽）。
             if scene.get(t.node).is_none() {
+                t.killed = true;
                 continue;
             }
             t.elapsed += dt;
@@ -369,5 +383,39 @@ mod tests {
         let mut out = Vec::new();
         mgr.update(1.0, &mut s, &mut out);   // index 99 越界 → 跳过
         assert!(out.is_empty(), "越界 node 不产事件");
+    }
+
+    #[test]
+    fn kill_node_kills_all_tweens_for_node() {
+        // 2 节点 scene：nid 的 2 tween + other 的 1 tween。
+        let (mut s, nid) = one_node_scene();
+        // 加第二节点取其 id（不进 roots/children——仅需要一个 live NodeId 喂 tween + update）。
+        let other = {
+            let mut n = Node::default();
+            n.kind = NodeKind::Container;
+            n.layout_rect = Rect { x: 0.0, y: 0.0, w: 10.0, h: 10.0 };
+            let key = s.nodes.insert(n);
+            NodeId::from_key(key)
+        };
+        let mut mgr = TweenManager::new();
+        mgr.tween(nid, TweenProp::Opacity,
+            [0.0,0.0,0.0,0.0], [1.0,0.0,0.0,0.0],
+            Ease::Linear, 0.0, 1.0, 0);
+        mgr.tween(nid, TweenProp::BgColor,
+            [0.0,0.0,0.0,0.0], [1.0,0.0,0.0,0.0],
+            Ease::Linear, 0.0, 1.0, 0);
+        mgr.tween(other, TweenProp::Opacity,
+            [0.0,0.0,0.0,0.0], [1.0,0.0,0.0,0.0],
+            Ease::Linear, 0.0, 1.0, 0);
+        mgr.kill_node(nid);
+        // nid 的全 tween killed；other 的不被误杀
+        assert!(mgr.tweens.iter().all(|t| t.node != nid || t.killed), "kill_node 杀该 node 全 tween");
+        assert!(mgr.tweens.iter().any(|t| t.node == other && !t.killed), "其他 node tween 不被误杀");
+        // update 后 killed(nid) 的被 retain 清出；nid 不产 complete（被 kill 不推进）。
+        // other 的 tween 会完成（dur=1.0,dt=1.0）→ 产 complete + 被 retain 清出。
+        let mut out = Vec::new();
+        mgr.update(1.0, &mut s, &mut out);
+        assert!(out.iter().all(|e| e.node_id != nid.0), "nid killed tween 不产 complete");
+        assert!(mgr.tweens.iter().all(|t| t.node != nid), "nid killed tween 被 retain 清出");
     }
 }

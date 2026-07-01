@@ -4,6 +4,7 @@
 
 pub mod node;
 pub mod transform;
+pub mod dynamic;
 
 pub use node::{Node, NodeId, NodeKind, Rect, Scene};
 #[cfg(feature = "parse")]

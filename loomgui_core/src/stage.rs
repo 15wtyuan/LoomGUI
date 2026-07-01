@@ -232,6 +232,15 @@ impl Stage {
         }
     }
 
+    /// 删节点（递归删子 + 联动清 anim/scroll/tween + slotmap remove）。
+    /// 旧 NodeId 此后失效（gen++）。无 scene / 已删节点 → no-op。
+    /// spec §5.3：删节点联动清持久附属 map，防悬空 NodeId 残留。
+    pub fn remove_node(&mut self, node: NodeId) {
+        if let Some(scene) = self.scene.as_mut() {
+            crate::scene::dynamic::remove_node(scene, &mut self.tweens, node);
+        }
+    }
+
     /// 本帧产出的事件（tick 后读；FFI borrow_events 用）。
     pub fn last_events(&self) -> &[EventRecord] {
         &self.last_events
@@ -387,6 +396,17 @@ mod tests {
             sc.get(sc.roots[0]).unwrap().children[0]
         };
         s2.set_node_disabled(btn_id, true);
+        // warmup tick：compute_world_transforms 在 process/scroll 后跑，hit_test 读上帧
+        // world_transforms（1 帧延迟语义，T4）。首帧 world_transforms 空 → 首帧 hit_test 全 None，
+        // 故输入前先 warmup，否则 Down 落不到 btn → 测因"未命中"通过而非"disabled 抑制"（T4 Minor-1）。
+        s2.tick_and_render();
+        // 命中前置断言：Move 到按钮 (50,25)（按钮在 (0,0,100,50)）→ is_pointer_on_ui=true
+        // 证明按钮被几何命中，disabled 才有抑制对象（否则"无 Click"是因未命中，非 disabled 抑制）。
+        s2.set_input(&[
+            crate::input::PointerEvent { kind: crate::input::PointerKind::Move, x: 50.0, y: 25.0, button: 0, pad: [0, 0], touch_id: -1 },
+        ]);
+        s2.tick_and_render();
+        assert!(s2.is_pointer_on_ui(), "Move 到按钮 → 命中 UI（命中前置：证明按钮被几何命中）");
         // Down + Up 在按钮上——disabled 不产 Click
         s2.set_input(&[
             crate::input::PointerEvent { kind: crate::input::PointerKind::Down, x: 50.0, y: 25.0, button: 0, pad: [0, 0], touch_id: -1 },
@@ -563,5 +583,40 @@ mod tests {
         // world_transforms 空（未 compute）→ hit_test bounds guard 应拦截，不 panic，返 None
         let hit = crate::hit::hit_test(s.scene.as_ref().unwrap(), (50.0, 50.0));
         assert_eq!(hit, None, "world_transforms 空 → bounds guard 返 None（未命中，1 帧延迟语义）");
+    }
+
+    /// T5：remove_node 后 tick_and_render 不 panic（容量化并行数组防越界）。
+    /// 删中间节点产生 slotmap 间隙 → 高 idx live 节点 id.index() > nodes.len()。
+    /// 若 world_transforms/taffy_ids/text_layouts 按存活数(len)分配 → 越界 panic。
+    /// T5 改按 capacity+1 分配 → 间隙安全。此测验证整条管线（solve+compute+render）不崩。
+    #[cfg(feature = "parse")]
+    #[test]
+    fn remove_node_then_tick_does_not_panic_on_slot_gap() {
+        let font_path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/DejaVuSans.ttf");
+        // 4 节点：root + 3 子（a, b, c），删 b（中间）→ a/c 仍 live，c 在高 idx。
+        let html = r#"<div class="root"><div class="a"></div><div class="b"></div><div class="c"></div></div>"#;
+        let css = ".root{width:200px;height:200px;} .a,.b,.c{width:50px;height:50px;}";
+        let mut s = Stage::new(font_path, (200.0, 200.0)).unwrap();
+        s.load_inline(html, css).unwrap();
+        s.tick_and_render();   // 首帧：建 world_transforms 基线
+        // 取 b 的 NodeId（root 的第 2 个 div 子——注意 root 的 Text 子不在这里，3 个 div 子直接挂 root）
+        let scene = s.scene.as_ref().unwrap();
+        let root_id = scene.roots[0];
+        let div_kids: Vec<_> = scene.get(root_id).unwrap().children.iter()
+            .filter(|&&c| matches!(scene.get(c).unwrap().kind, crate::scene::node::NodeKind::Container))
+            .copied().collect();
+        assert_eq!(div_kids.len(), 3, "3 个 div 子");
+        let b_id = div_kids[1];
+        // 删 b（中间子）→ slotmap 间隙
+        s.remove_node(b_id);
+        // tick + render：solve/compute_world_transforms/build_render_nodes 全跑，不应越界 panic
+        s.tick_and_render();
+        // b 已删（旧 NodeId 失效），a/c 仍 live
+        let scene = s.scene.as_ref().unwrap();
+        assert!(scene.get(b_id).is_none(), "b 删除后旧 NodeId 失效");
+        assert!(scene.get(div_kids[0]).is_some(), "a 仍 live");
+        assert!(scene.get(div_kids[2]).is_some(), "c 仍 live（高 idx，间隙后仍可索引）");
+        // 再 tick 一帧确认稳定（world_transforms 已按新容量重算）
+        s.tick_and_render();
     }
 }

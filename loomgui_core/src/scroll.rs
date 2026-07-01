@@ -109,6 +109,10 @@ impl ScrollTable {
     pub fn ensure(&mut self, id: NodeId) -> &mut ScrollPaneState {
         self.0.entry(id).or_insert_with(ScrollPaneState::default)
     }
+    /// 删该节点 scroll 槽（remove_node 联动调，防悬空 NodeId 残留）。
+    pub fn remove(&mut self, id: NodeId) {
+        self.0.remove(&id);
+    }
     pub fn clear(&mut self) {
         self.0.clear();
     }

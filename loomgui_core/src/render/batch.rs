@@ -113,12 +113,17 @@ fn reorder_unit(scene: &Scene, nodes: &[RenderNode], unit: &mut Vec<usize>) {
 /// 祖先 clip 链的累乘交 (`accumulated`) 求交，得 `intersected`；新 context 记
 /// `(ctx, intersected)` 入表；子树 `accumulated = intersected`。非 clipper 节点继承
 /// 父 `accumulated` 不变（其 mask_context 继承父层级）。
-pub fn assign_sort_keys(scene: &Scene, nodes: &mut [RenderNode]) -> Vec<ClipEntry> {
+pub fn assign_sort_keys(
+    scene: &Scene,
+    nodes: &mut [RenderNode],
+    id_to_pos: &std::collections::HashMap<NodeId, usize>,
+) -> Vec<ClipEntry> {
     let mut counter: u32 = 0;
     let mut clips: Vec<ClipEntry> = Vec::new();
     fn dfs(
         scene: &Scene,
         nodes: &mut [RenderNode],
+        id_to_pos: &std::collections::HashMap<NodeId, usize>,
         id: NodeId,
         counter: &mut u32,
         clips: &mut Vec<ClipEntry>,
@@ -152,8 +157,9 @@ pub fn assign_sort_keys(scene: &Scene, nodes: &mut [RenderNode]) -> Vec<ClipEntr
             (parent_mask, accumulated)
         };
         {
-            // nodes 0 基索引：slotmap idx 1 基连续无空洞，idx-1 = values() 位置。
-            let pos = id.index() - 1;
+            // nodes 0 基位置：用 id_to_pos 映射（slotmap 删节点后有空洞，idx-1 ≠ 位置）。
+            // T5：remove_node 后 slotmap idx 不连续，须用 build_render_nodes 算的 id_to_pos。
+            let pos = *id_to_pos.get(&id).expect("live node 在 id_to_pos 中");
             let rn = &mut nodes[pos];
             rn.sort_key = *counter;
             rn.mask_context = mask;
@@ -172,11 +178,11 @@ pub fn assign_sort_keys(scene: &Scene, nodes: &mut [RenderNode]) -> Vec<ClipEntr
         // clone children 避免与 nodes 的 &mut 冲突借（scene 与 nodes 是独立借用）。
         let kids = node.children.clone();
         for c in kids {
-            dfs(scene, nodes, c, counter, clips, mask, child_accumulated, child_scroll_offset);
+            dfs(scene, nodes, id_to_pos, c, counter, clips, mask, child_accumulated, child_scroll_offset);
         }
     }
     for root in &scene.roots {
-        dfs(scene, nodes, *root, &mut counter, &mut clips, MaskContext(0), None, (0.0, 0.0));
+        dfs(scene, nodes, id_to_pos, *root, &mut counter, &mut clips, MaskContext(0), None, (0.0, 0.0));
     }
     clips
 }
@@ -245,6 +251,12 @@ mod tests {
         }
     }
 
+    /// 测 helper：从 scene 构 id_to_pos 映射（同 build_render_nodes 的算法——values() 0 基位置）。
+    /// 无间隙时等价 id.index()-1；有间隙时仍正确（remove_node 后用）。
+    fn id_to_pos_map(scene: &Scene) -> std::collections::HashMap<NodeId, usize> {
+        scene.nodes.values().enumerate().map(|(i, n)| (n.id, i)).collect()
+    }
+
     /// 构造 root > [a, b]，全部 Container 无 clip。
     fn tree_root_two_kids() -> Scene {
         let mut root = Node::default();
@@ -261,7 +273,7 @@ mod tests {
     fn keys_monotonic() {
         let scene = tree_root_two_kids();
         let mut rns: Vec<RenderNode> = (0..3).map(placeholder_rn).collect();
-        assign_sort_keys(&scene, &mut rns);
+        assign_sort_keys(&scene, &mut rns, &id_to_pos_map(&scene));
         // DFS 树序：root(0) → a(1) → b(2)
         assert!(rns[0].sort_key < rns[1].sort_key);
         assert!(rns[1].sort_key < rns[2].sort_key);
@@ -274,7 +286,7 @@ mod tests {
     fn no_clip_keeps_mask_zero() {
         let scene = tree_root_two_kids();
         let mut rns: Vec<RenderNode> = (0..3).map(placeholder_rn).collect();
-        assign_sort_keys(&scene, &mut rns);
+        assign_sort_keys(&scene, &mut rns, &id_to_pos_map(&scene));
         for rn in &rns {
             assert_eq!(rn.mask_context, MaskContext(0), "无 clip 应保持 mask=0");
         }
@@ -289,7 +301,7 @@ mod tests {
         let scene = Scene::from_nodes(vec![root, child], vec![(0, 1)]);
 
         let mut rns: Vec<RenderNode> = (0..2).map(placeholder_rn).collect();
-        assign_sort_keys(&scene, &mut rns);
+        assign_sort_keys(&scene, &mut rns, &id_to_pos_map(&scene));
         // root 是首个分配（counter=0），clip → MaskContext(0+1)=1
         assert_eq!(rns[0].mask_context, MaskContext(1), "clip root 开层级 1");
         assert_eq!(rns[1].mask_context, MaskContext(1), "child 继承父层级");
@@ -306,7 +318,7 @@ mod tests {
         let scene = Scene::from_nodes(vec![root, mid, leaf], vec![(0, 1), (1, 2)]);
 
         let mut rns: Vec<RenderNode> = (0..3).map(placeholder_rn).collect();
-        let _clips = assign_sort_keys(&scene, &mut rns);
+        let _clips = assign_sort_keys(&scene, &mut rns, &id_to_pos_map(&scene));
         // root: counter=0 → mask(1)
         // mid:  counter=1 → mask(2)
         // leaf: counter=2 → 继承 mid mask(2)
@@ -333,7 +345,7 @@ mod tests {
         scene.scroll.ensure(root_id).scroll_pos = (0.0, 30.0);
 
         let mut rns: Vec<RenderNode> = (0..2).map(placeholder_rn).collect();
-        let clips = assign_sort_keys(&scene, &mut rns);
+        let clips = assign_sort_keys(&scene, &mut rns, &id_to_pos_map(&scene));
 
         // root ctx(1)：容器自身 world 不含自己 scroll_pos（transform.rs 约定）→ clip rect 不减。
         let root_ctx = clips.iter().find(|c| c.context_id == 1).expect("root clip ctx");
@@ -365,7 +377,7 @@ mod tests {
         let scene = Scene::from_nodes(vec![outer, inner, leaf], vec![(0, 1), (1, 2)]);
 
         let mut rns: Vec<RenderNode> = (0..3).map(placeholder_rn).collect();
-        let clips = assign_sort_keys(&scene, &mut rns);
+        let clips = assign_sort_keys(&scene, &mut rns, &id_to_pos_map(&scene));
 
         // mask_context: outer=1, inner=2, leaf 继承 inner=2。
         assert_eq!(rns[0].mask_context, MaskContext(1));
@@ -399,7 +411,7 @@ mod tests {
         let scene = Scene::from_nodes(vec![outer, inner, leaf], vec![(0, 1), (1, 2)]);
 
         let mut rns: Vec<RenderNode> = (0..3).map(placeholder_rn).collect();
-        let clips = assign_sort_keys(&scene, &mut rns);
+        let clips = assign_sort_keys(&scene, &mut rns, &id_to_pos_map(&scene));
 
         let ctx2 = clips.iter().find(|c| c.context_id == 2).expect("ctx 2 in table");
         // outer ∩ inner = [max(0,50), max(0,50)] .. [min(100,150), min(100,150)]

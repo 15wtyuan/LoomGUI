@@ -118,8 +118,13 @@ pub fn build_render_nodes(
         rn.parent_id = n.parent.map(|p| p.0 as u32);
         rn.alpha = anim.and_then(|a| a.opacity).unwrap_or(n.style.opacity);
         rn.color_tint = anim.and_then(|a| a.text_color).unwrap_or(n.style.color);
-        // world_transforms 1 基索引（transform.rs 按 id.index() 填，len=N+1）。
-        let wm = scene.world_transforms[n.id.index()];
+        // world_transforms 1 基索引（transform.rs 按 id.index() 填，capacity+1 长防 remove 间隙越界）。
+        // bounds guard（T5）：compute 前若结构变更致未对齐 → fallback IDENTITY（同 dump.rs/hit.rs）。
+        let wm = scene
+            .world_transforms
+            .get(n.id.index())
+            .copied()
+            .unwrap_or(crate::transform::IDENTITY);
         rn.world_matrix = wm;
         rn.visible = true;
         let rect = if crate::transform::is_pure_translation(&wm) {
@@ -263,7 +268,7 @@ pub fn build_render_nodes(
             rn.payload = NodePayload::Unchanged;
         }
     }
-    let clips = batch::assign_sort_keys(scene, &mut nodes);
+    let clips = batch::assign_sort_keys(scene, &mut nodes, &id_to_pos);
     // max_sort 在 reorder/merge 前算（内容 sort_key；scrollbar 用 max+1 排内容后）。
     let max_sort = nodes.iter().map(|n| n.sort_key).max().unwrap_or(0);
     batch::reorder_for_batching(scene, &mut nodes);

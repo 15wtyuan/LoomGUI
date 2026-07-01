@@ -73,8 +73,9 @@ pub fn solve(scene: &mut Scene, font: &Font, root_size: (f32, f32), textures: &T
         return;
     }
     let mut taffy_tree: TaffyTree<MeasureContext> = TaffyTree::new();
-    // scene NodeId → taffy NodeId 映射（按 NodeId.index() 索引，1 基故 len+1）。
-    let mut taffy_ids: Vec<Option<taffy::NodeId>> = vec![None; scene.nodes.len() + 1];
+    // scene NodeId → taffy NodeId 映射（按 NodeId.index() 索引，1 基故 capacity+1）。
+    // **容量而非存活数**（T5）：remove_node 后 slotmap idx 不变但存活数减——按 len 分配会越界。
+    let mut taffy_ids: Vec<Option<taffy::NodeId>> = vec![None; scene.nodes.capacity() + 1];
 
     fn build(
         scene: &Scene,
@@ -157,7 +158,7 @@ pub fn solve(scene: &mut Scene, font: &Font, root_size: (f32, f32), textures: &T
             taffy_to_scene.insert(tid, n.id);
         }
     }
-    let mut text_layouts: Vec<Option<TextLayout>> = vec![None; scene.nodes.len() + 1];
+    let mut text_layouts: Vec<Option<TextLayout>> = vec![None; scene.nodes.capacity() + 1];
 
     // 设根 size：覆盖为调用方给的 root_size（viewport）。
     // Style.size 字段类型是 Size<Dimension>（不是 LengthPercentageAuto）。
