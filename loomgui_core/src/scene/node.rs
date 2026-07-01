@@ -168,9 +168,11 @@ impl NodeAnim {
 
 /// 每节点动画 override 表（HashMap<NodeId, NodeAnim>）。运行时态，不进 pkg（同 world_transforms）。
 ///
-/// **T3 校准**：brief 原定 `SecondaryMap<NodeId, NodeAnim>`，但 slotmap 1.1 的 `Key` trait 是
-/// sealed——外部类型 NodeId（手写 `pub u32`，非 `new_key_type!` 产物）无法 impl Key，故
-/// `SecondaryMap<NodeId, _>` 不可行。T2 的 DefaultKey 桥接使 anim/scroll 的访问句柄是 NodeId，
+/// **T3 校准**：brief 原定 `SecondaryMap<NodeId, NodeAnim>`，但 slotmap 1.1 的 `Key` 是
+/// `unsafe` trait（依赖 `KeyData` 内部不变量，slotmap 强烈建议用 `new_key_type!` 而非手 impl）；
+/// 且 `KeyData` 内部是 `idx:u32 + version:NonZeroU32`（64 bit），与 NodeId 的 32 bit 应用句柄
+/// 布局不匹配——手 `unsafe impl Key` 要把 20/12 编码强行映射到 32/32，语义错位比 HashMap 危险。
+/// 故 `SecondaryMap<NodeId, _>` 不可行。T2 的 DefaultKey 桥接使 anim/scroll 的访问句柄是 NodeId，
 /// 若用 `SecondaryMap<DefaultKey, _>` 则每次访问要 `NodeId::to_key()` 转换，且 SecondaryMap 不
 /// 自动跟踪主 SlotMap 的删除（删节点须手动 remove，否则残留）。改用 `HashMap<NodeId, NodeAnim>`：
 /// NodeId 已 derive Hash+Eq（T1），零 trait 限制、零转换、悬空安全（删节点联动 remove，否则

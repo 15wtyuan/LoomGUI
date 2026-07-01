@@ -93,7 +93,8 @@ pub struct ScrollPaneState {
 /// transient——不进 pkg（同 `anim` / `world_transforms`）。
 ///
 /// **T3 校准**：原 `Vec<Option<ScrollPaneState>>`（按 id.index() 索引）改 HashMap（同 AnimTable，
-/// 见 node.rs AnimTable doc：slotmap Key trait sealed，NodeId 不能直接当 SecondaryMap Key）。
+/// 见 node.rs AnimTable doc：slotmap Key 是 unsafe trait + KeyData 64bit 与 NodeId 32bit 不匹配，
+/// NodeId 不能直接当 SecondaryMap Key）。
 #[derive(Debug, Clone, Default)]
 pub struct ScrollTable(pub std::collections::HashMap<NodeId, ScrollPaneState>);
 
