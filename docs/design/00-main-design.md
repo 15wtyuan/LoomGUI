@@ -240,7 +240,7 @@ Node (基类: 变换/尺寸/可见/touchable/事件/sortingOrder)
 ### 6.3 Node 核心数据结构
 ```rust
 struct Node {
-    id: NodeId,
+    id: NodeId,                 // 代际句柄（v1.3+）：删节点后旧 id 自动失效，详见 §13.1
     parent: Option<NodeId>,
     transform: Transform2D,     // x/y/rotation/scale_x/scale_y/pivot（渲染/命中层，不进 taffy）
     style_size: SizeStyle,      // 用户声明值 (width/height/min/max/flex_basis)（进 taffy）
@@ -248,7 +248,8 @@ struct Node {
     layout_rect: Rect,          // 父坐标系最终矩形（只读，不含 transform）
     alpha: f32, visible: bool, touchable: bool, grayed: bool,
     color_tint: Color,
-    style: ResolvedStyle,       // §4 CSS 子集解析产物
+    base_style: ResolvedStyle,  // §4 CSS 子集解析产物（源：build/动态 set_style 写）
+    style: ResolvedStyle,       // 派生：每帧 rematch 从 base_style 起算 + 叠伪类（§5.5）
     dirty: DirtyFlags,          // style/mesh/text/layout/batching/outline/transform
     // listeners 在业务侧（C# LoomEventHandler），非核心 Node 字段（v1c.2 §10.2 方向 A：路由降级业务侧）
     children: Option<Vec<NodeId>>,           // 仅 Container
@@ -285,6 +286,8 @@ struct Node {
   → Dispose：从父移除、释放纹理引用(refcount)、清事件/tween、后端销毁镜像对象
 ```
 **与 fgui 关键区别**：fgui 改属性立即推 DisplayObject（无 layout pass）。LoomGUI 改属性只置 dirty，每帧统一 solve。**所有布局都是帧末一致**。
+
+> **v1.3+ 实现状态**：运行时 new（`create_node`/`create_root`）+ Dispose（`remove_node` 联动清 anim/scroll/tween/focused_node + 后端镜像池 stale-mark-sweep）已落地，见 §13.1。v1 仅"从包反序列化"（static-tree），v1.3+ 解冻为动态树。
 
 ---
 
@@ -569,14 +572,23 @@ stage.is_pointer_on_ui() -> bool   // = 命中目标非空且非根
 
 ## 13. 动态 UI / 数据模型
 
+> **v1.3+ 实现状态**：§13.1 命令式节点 API 已落地（`scene/dynamic.rs` + 9 FFI）。§13.2 列表虚拟化 v1.4，§13.3 数据绑定后期。
+
 ### 13.1 命令式节点 API
 ```rust
-let c = Container::new();
-c.add_child(img); c.remove_child(img); c.set_child_index(...);
-node.set_text(...); node.set_position(...); node.set_style(...);
-node.add_event_listener(Click, cb);
+let c = stage.create_node("div", "width:100px;background:#f00")?;   // 建孤立节点（CSS 串入参）
+stage.create_root(kind, css)?;                                       // 建根（stage 初始无 UI 时）
+stage.append_child(parent, c)?;                                      // 挂为末子（child 须无父）
+stage.insert_before(parent, c, ref)?;                                // ref=INVALID 末尾追加
+stage.remove_child(parent, c)?;                                      // 摘除（节点存活，变孤立）
+stage.remove_node(c)?;                                               // 删节点（递归删子 + 联动清 anim/scroll/tween/focused_node）
+stage.set_text(node, "hi")?;                                         // 改 Text content
+stage.set_src(node, "icon.png")?;                                    // 改 Image src
+stage.set_style(node, "background:#00f")?;                           // 改 base_style（下帧 rematch 重算 style）
 ```
 所有操作只置 dirty，帧末统一 solve + 重生成几何。
+
+**NodeId 是代际不透明句柄**（v1.3+）：对外 `u32`（FFI/C#/包格式零变化），内部含 generation。`remove_node` 后旧 NodeId 自动失效（generation++，再用时 no-op）——业务侧持有的旧句柄安全，无需手动清。删除是事件：核心联动清所有持 NodeId 的持久状态（anim/scroll/tween/focused_node），后端镜像池按 NodeId keying 自动跟进增删（stale-mark-sweep）。详见 `docs/superpowers/specs/2026-07-01-v1.3-dynamic-tree-design.md`。
 
 ### 13.2 数据驱动的列表虚拟化（`<l-list>`）*(v1.x)*
 建在 ScrollPane 上：核心维护固定数量可视槽（item index → slot），后端按 slot 复用渲染对象（不销毁重建，零 GC）。两身份正交：NodeId=逻辑身份（事件/命中），slot=渲染复用身份。**slot 复用的核心不变量**（slot 换内容时必发真实 payload 非 Unchanged，防花屏）与 reuse_key 机制见 roadmap。
