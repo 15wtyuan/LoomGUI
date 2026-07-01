@@ -50,9 +50,9 @@
 
 > **权威清单**：`docs/design/fence.md`（单一真相源 = `loomgui_core/tests/fence_contract.rs` 测试）。本节为 v1 冻结子集 + v1.x 扩展标注，围栏细节/维护机制以 fence.md 为准。
 > **v1.x 已扩展**（v1-scope 原停 v1，未跟 v1.x 实现，2026-06-30 同步）：`filter`/`border-image-slice`（v1.3）、`:focus`（v1d.2）、`background-image`（v1.1）、`border-radius`（v1.2）已在代码实现，见 fence.md §2.3 / §3.2。
-> **纠正**（fence.md 核实）：`position:relative` 靠 taffy 默认 Relative 生效（非显式映射，写不写一致）；`font-style` 无 handler 静默忽略（原 §2 误列支持）；`l-container` 与 div 同映射（原 §2 漏列）。
+> **纠正**（fence.md 核实）：`position:relative` 靠 taffy 默认 Relative 生效（非显式映射，写不写一致）；`font-style` 无 handler 静默忽略（原 §2 误列支持）。
 
-**元素**：`div`(Container) / `span`+裸文本(Text) / `img`(Image) / `button`(Button) / `l-container`(Container，与 div 同)。
+**元素**：`div`(Container) / `span`+裸文本(Text) / `img`(Image) / `button`(Button)。
 围栏外标签报错（不降级）。砍：`l-rich`/`input`/`l-graph`/`l-loader`/`l-movie`/`l-list`/`l-slider`/`l-combobox`/`l-tree`/`l-native`（v1.x）。v1 可滚动列表用 `div`+ScrollPane 手搓 item，**不做 `<l-list>` 虚拟化**。
 > `l-list`/`l-rich` **设计层不用**：虚拟列表（slot 复用/防花屏）和富文本（行内混排/多样式）是 runtime 行为，设计师用 `div`+`gap` 画 item 模板/纯文本占位即可，虚拟化和图文混排由代码层在 ScrollPane/文本测量上做。围栏不暴露这两个标签，AI 不知道就不会写。
 
