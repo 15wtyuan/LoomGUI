@@ -26,7 +26,7 @@ pub struct ElementTree {
 /// 围栏内支持的 tag 白名单。
 /// 未识别 tag（`<video>`/`<input>`/`<b>`/…）一律报错，不降级——
 /// AI 可预测性口径：写什么得到什么，围栏外即失败。
-const FENCE_TAGS: &[&str] = &["div", "span", "img", "button", "l-container"];
+const FENCE_TAGS: &[&str] = &["div", "span", "img", "button"];
 
 /// 相邻文本节点合并为一个 Text 叶子；行内混排（元素内"文本+元素+文本"）报错。
 pub fn parse_html(html: &str) -> Result<ElementTree, String> {
@@ -201,7 +201,7 @@ mod tests {
 
     #[test]
     fn rejects_fence_out_element() {
-        // 围栏白名单：div/span/img/button/l-container。其余 tag 一律报错，不降级。
+        // 围栏白名单：div/span/img/button。其余 tag 一律报错，不降级。
         // AI 可预测性核心：写什么得到什么，围栏外即失败。
         let video = parse_html(r#"<video src="x.mp4"></video>"#);
         assert!(video.is_err(), "<video> 应被围栏拒绝");
@@ -214,11 +214,9 @@ mod tests {
 
     #[test]
     fn fence_tags_all_accepted() {
-        // 白名单内五种 tag 均通过（l-container 同 div）
+        // 白名单内四种 tag 均通过（l-container 砍，与 div 同映射冗余）
         let html = r#"<div><span>x</span><img src="a.png"><button>ok</button></div>"#;
         let tree = parse_html(html).unwrap();
         assert_eq!(tree.roots.len(), 1);
-        let lcontainer = parse_html(r#"<l-container></l-container>"#).unwrap();
-        assert_eq!(lcontainer.nodes[lcontainer.roots[0].0].tag, "l-container");
     }
 }

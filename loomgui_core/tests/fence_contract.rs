@@ -15,8 +15,8 @@ use taffy::Display;
 
 #[test]
 fn fence_tags_whitelist_accepted() {
-    // FENCE_TAGS = div/span/img/button/l-container，全部应接受。
-    for tag in ["div", "span", "img", "button", "l-container"] {
+    // FENCE_TAGS = div/span/img/button（砍 l-container，与 div 同映射冗余）。
+    for tag in ["div", "span", "img", "button"] {
         let html = format!("<{tag}></{tag}>");
         assert!(parse_html(&html).is_ok(), "<{tag}> 应被围栏接受");
     }
@@ -24,8 +24,8 @@ fn fence_tags_whitelist_accepted() {
 
 #[test]
 fn fence_out_tags_rejected() {
-    // 围栏外标签一律报错，不降级。
-    for tag in ["video", "input", "b", "section", "p", "ul"] {
+    // 围栏外标签一律报错，不降级。l-container 砍后是围栏外（用 div）。
+    for tag in ["video", "input", "b", "section", "p", "ul", "l-container"] {
         let html = format!("<{tag}></{tag}>");
         assert!(parse_html(&html).is_err(), "<{tag}> 应被围栏拒绝");
     }
