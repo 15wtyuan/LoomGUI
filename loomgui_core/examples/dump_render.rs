@@ -27,12 +27,14 @@ fn main() {
     );
     for rn in &frame.nodes {
         let nid = rn.node_id as usize;
-        if nid >= scene.nodes.len() {
-            // scrollbar thumb sentinel 等
-            println!("n{:>3} [sentinel/merged-anchor] {}", nid, payload_str(&rn.payload));
-            continue;
-        }
-        let n = &scene.nodes[nid];
+        let n = match scene.get(loomgui_core::scene::node::NodeId(rn.node_id)) {
+            Some(n) => n,
+            None => {
+                // scrollbar thumb sentinel 等
+                println!("n{:>3} [sentinel/merged-anchor] {}", nid, payload_str(&rn.payload));
+                continue;
+            }
+        };
         let id = n.id_attr.clone().unwrap_or_default();
         let classes = n.classes.join(",");
         let bg = n.style.background_color;

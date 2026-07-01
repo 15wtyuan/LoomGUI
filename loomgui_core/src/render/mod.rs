@@ -82,6 +82,14 @@ pub fn build_render_nodes(
     prev_hashes: &[u64],
 ) -> (FrameData, Vec<u64>) {
     let n_nodes = scene.nodes.len();
+    // nodes/new_hashes 按 scene.nodes.values() 0 基顺序索引（FrameData 输出 0 基，
+    // 不改 FFI 契约）。NodeId → 0 基位置映射用 slotmap 插入序（= values() 顺序）。
+    let id_to_pos: std::collections::HashMap<NodeId, usize> = scene
+        .nodes
+        .values()
+        .enumerate()
+        .map(|(i, n)| (n.id, i))
+        .collect();
     // 预分配 Unchanged 占位，逐个按 scene 节点覆写。
     let mut nodes: Vec<RenderNode> = (0..n_nodes)
         .map(|_| RenderNode {
@@ -102,14 +110,16 @@ pub fn build_render_nodes(
     let mut new_hashes: Vec<u64> = vec![0; n_nodes];
     let baselined = prev_hashes.len() == n_nodes;
 
-    for n in &scene.nodes {
-        let rn = &mut nodes[n.id.0 as usize];
+    for n in scene.nodes.values() {
+        let pos = id_to_pos[&n.id];
+        let rn = &mut nodes[pos];
         let anim = scene.anim.get(n.id);
         rn.node_id = n.id.0 as u32;
         rn.parent_id = n.parent.map(|p| p.0 as u32);
         rn.alpha = anim.and_then(|a| a.opacity).unwrap_or(n.style.opacity);
         rn.color_tint = anim.and_then(|a| a.text_color).unwrap_or(n.style.color);
-        let wm = scene.world_transforms[n.id.0 as usize];
+        // world_transforms 1 基索引（transform.rs 按 id.index() 填，len=N+1）。
+        let wm = scene.world_transforms[n.id.index()];
         rn.world_matrix = wm;
         rn.visible = true;
         let rect = if crate::transform::is_pure_translation(&wm) {
@@ -226,7 +236,7 @@ pub fn build_render_nodes(
                 // 会误判换行。fallback（text_layouts 空，如 test 未走 solve）：用 rect.w 测。
                 let mut layout = scene
                     .text_layouts
-                    .get(n.id.0 as usize)
+                    .get(n.id.index())
                     .cloned()
                     .flatten()
                     .unwrap_or_else(|| {
@@ -248,8 +258,8 @@ pub fn build_render_nodes(
         }
         // 算本帧 hash，与上帧比。相等（且有基线）→ payload 改回 Unchanged。
         let h = crate::render::dirty::node_hash(rn);
-        new_hashes[n.id.0 as usize] = h;
-        if baselined && prev_hashes[n.id.0 as usize] == h {
+        new_hashes[pos] = h;
+        if baselined && prev_hashes[pos] == h {
             rn.payload = NodePayload::Unchanged;
         }
     }
@@ -260,9 +270,8 @@ pub fn build_render_nodes(
     let mut nodes = merge::merge_meshes(nodes);
     // 合成 scrollbar thumb（merge 后追加——sentinel id = container|V/H_THUMB_FLAG 高位，
     // batch.rs reorder 用 node 索引 scene.nodes，sentinel 越界；故不参与 batch，独立 quad 末尾追加）。
-    for id in 0..scene.nodes.len() {
-        let nid = NodeId(id as u32);
-        let n = &scene.nodes[id];
+    for n in scene.nodes.values() {
+        let nid = n.id;
         if let Some(s) = scene.scroll.get(nid) {
             if crate::scroll::effective(n.style.overflow_y, s.content_size.1, s.viewport_size.1) {
                 if let Some(r) = crate::scroll::v_thumb_rect(scene, nid) {
@@ -368,14 +377,7 @@ mod tests {
     #[test]
     fn build_container_produces_mesh_quad() {
         // root 红底 10x10 → Mesh payload，4 verts / 6 indices，背景色烤进 colors。
-        let mut scene = Scene {
-            roots: vec![NodeId(0)],
-            nodes: vec![],
-            dynamic_rules: Default::default(),
-            focused_node: None,
-            world_transforms: Vec::new(), anim: Default::default(), scroll: Default::default(), text_layouts: Vec::new(),
-        };
-        scene.nodes.push(container_node(
+        let mut scene = Scene::from_nodes(vec![container_node(
             0,
             None,
             Rect {
@@ -385,7 +387,7 @@ mod tests {
                 h: 10.0,
             },
             Some([1.0, 0.0, 0.0, 1.0]),
-        ));
+        )], vec![]);
         let font = test_font().expect("need test font for build_render_nodes");
         crate::scene::transform::compute_world_transforms(&mut scene);
         let (frame, _) = build_render_nodes(&scene, &font, &TextureRegistry::default(), &[]);
@@ -417,12 +419,10 @@ mod tests {
 
     #[test]
     fn build_image_uses_registered_tex_id() {
-        let mut scene = Scene { roots: vec![NodeId(0)], nodes: vec![], dynamic_rules: Default::default(), focused_node: None, world_transforms: Vec::new(), anim: Default::default(), scroll: Default::default(), text_layouts: Vec::new() };
         let mut a = Node::default();
-        a.id = NodeId(0);
         a.kind = NodeKind::Image { src: "logo.png".into() };
         a.layout_rect = Rect { x: 0.0, y: 0.0, w: 5.0, h: 5.0 };
-        scene.nodes.push(a);
+        let mut scene = Scene::from_nodes(vec![a], vec![]);
 
         let font = test_font().expect("need test font");
         let mut tex = TextureRegistry::default();
@@ -446,12 +446,10 @@ mod tests {
 
     #[test]
     fn build_image_unregistered_is_zero() {
-        let mut scene = Scene { roots: vec![NodeId(0)], nodes: vec![], dynamic_rules: Default::default(), focused_node: None, world_transforms: Vec::new(), anim: Default::default(), scroll: Default::default(), text_layouts: Vec::new() };
         let mut a = Node::default();
-        a.id = NodeId(0);
         a.kind = NodeKind::Image { src: "logo.png".into() };
         a.layout_rect = Rect { x: 0.0, y: 0.0, w: 5.0, h: 5.0 };
-        scene.nodes.push(a);
+        let mut scene = Scene::from_nodes(vec![a], vec![]);
 
         let font = test_font().expect("need test font");
         let tex = TextureRegistry::default(); // 未注册
@@ -467,12 +465,10 @@ mod tests {
     #[test]
     fn build_image_unregistered_uv_is_full() {
         // 未注册 src → 哨兵 uv (0,0)-(1,1)（与 tex_id=0 白占位配合，UV 无关）。
-        let mut scene = Scene { roots: vec![NodeId(0)], nodes: vec![], dynamic_rules: Default::default(), focused_node: None, world_transforms: Vec::new(), anim: Default::default(), scroll: Default::default(), text_layouts: Vec::new() };
         let mut a = Node::default();
-        a.id = NodeId(0);
         a.kind = NodeKind::Image { src: "logo.png".into() };
         a.layout_rect = Rect { x: 0.0, y: 0.0, w: 5.0, h: 5.0 };
-        scene.nodes.push(a);
+        let mut scene = Scene::from_nodes(vec![a], vec![]);
 
         let font = test_font().expect("need test font");
         let tex = TextureRegistry::default(); // 未注册
@@ -496,15 +492,7 @@ mod tests {
                 return;
             }
         };
-        let mut scene = Scene {
-            roots: vec![NodeId(0)],
-            nodes: vec![],
-            dynamic_rules: Default::default(),
-            focused_node: None,
-            world_transforms: Vec::new(), anim: Default::default(), scroll: Default::default(), text_layouts: Vec::new(),
-        };
         let mut n = Node::default();
-        n.id = NodeId(0);
         n.kind = NodeKind::Text {
             content: "Hello".into(),
         };
@@ -516,7 +504,7 @@ mod tests {
             w: 100.0,
             h: 20.0,
         };
-        scene.nodes.push(n);
+        let mut scene = Scene::from_nodes(vec![n], vec![]);
 
         crate::scene::transform::compute_world_transforms(&mut scene);
         let (frame, _) = build_render_nodes(&scene, &font, &TextureRegistry::default(), &[]);
@@ -548,15 +536,7 @@ mod tests {
                 return;
             }
         };
-        let mut scene = Scene {
-            roots: vec![NodeId(0)],
-            nodes: vec![],
-            dynamic_rules: Default::default(),
-            focused_node: None,
-            world_transforms: Vec::new(), anim: Default::default(), scroll: Default::default(), text_layouts: Vec::new(),
-        };
         let mut n = Node::default();
-        n.id = NodeId(0);
         n.kind = NodeKind::Text {
             content: "AB".into(),
         };
@@ -580,7 +560,7 @@ mod tests {
             w: 100.0,
             h: 20.0,
         };
-        scene.nodes.push(n);
+        let mut scene = Scene::from_nodes(vec![n], vec![]);
 
         crate::scene::transform::compute_world_transforms(&mut scene);
         let (frame, _) = build_render_nodes(&scene, &font, &TextureRegistry::default(), &[]);
@@ -608,24 +588,16 @@ mod tests {
         // 用嵌套 clip 链（root > mid > leaf，每层 clip_rect 开新 mask_context）
         // → 3 个不同 DrawState → 不合并 → 保 3 节点。
         // 验 sort_key 单调（batch 已测，这里走端到端确认 build 接通 assign_sort_keys）。
-        let mut scene = Scene {
-            roots: vec![NodeId(0)],
-            nodes: vec![],
-            dynamic_rules: Default::default(),
-            focused_node: None,
-            world_transforms: Vec::new(), anim: Default::default(), scroll: Default::default(), text_layouts: Vec::new(),
-        };
-        let mut root = container_node(0, None, Rect::default(), None);
-        root.clip_rect = Some(Rect::default()); // 开 mask_context=1
-        root.children = vec![NodeId(1)];
-        scene.nodes.push(root);
-        let mut mid = container_node(1, Some(0), Rect::default(), None);
-        mid.clip_rect = Some(Rect::default()); // 开 mask_context=2
-        mid.children = vec![NodeId(2)];
-        scene.nodes.push(mid);
-        let mut leaf = container_node(2, Some(1), Rect::default(), None);
-        leaf.clip_rect = Some(Rect::default()); // 开 mask_context=3
-        scene.nodes.push(leaf);
+        let root = container_node(0, None, Rect::default(), None);
+        let mid = container_node(1, Some(0), Rect::default(), None);
+        let leaf = container_node(2, Some(1), Rect::default(), None);
+        let mut scene = Scene::from_nodes(vec![root, mid, leaf], vec![(0, 1), (1, 2)]);
+        let root_id = scene.roots[0];
+        let mid_id = scene.get(root_id).unwrap().children[0];
+        let leaf_id = scene.get(mid_id).unwrap().children[0];
+        scene.get_mut(root_id).unwrap().clip_rect = Some(Rect::default()); // 开 mask_context=1
+        scene.get_mut(mid_id).unwrap().clip_rect = Some(Rect::default()); // 开 mask_context=2
+        scene.get_mut(leaf_id).unwrap().clip_rect = Some(Rect::default()); // 开 mask_context=3
 
         let font = test_font().expect("need test font");
         crate::scene::transform::compute_world_transforms(&mut scene);
@@ -643,27 +615,19 @@ mod tests {
     /// 结果：FrameData 含恰好 1 个 8-vert Mesh payload（两 Image 合并）。
     #[test]
     fn build_merges_adjacent_same_drawstate_meshes() {
-        let mut scene = Scene { roots: vec![NodeId(0)], nodes: vec![], dynamic_rules: Default::default(), focused_node: None, world_transforms: Vec::new(), anim: Default::default(), scroll: Default::default(), text_layouts: Vec::new() };
-        let mut root = container_node(
+        let root = container_node(
             0,
             None,
             Rect { x: 0.0, y: 0.0, w: 300.0, h: 50.0 },
             None,
         );
-        root.children = vec![NodeId(1), NodeId(2)];
-        scene.nodes.push(root);
         let mut a = Node::default();
-        a.id = NodeId(1);
-        a.parent = Some(NodeId(0));
         a.kind = NodeKind::Image { src: "a.png".into() };
         a.layout_rect = Rect { x: 0.0, y: 0.0, w: 10.0, h: 10.0 };
-        scene.nodes.push(a);
         let mut b = Node::default();
-        b.id = NodeId(2);
-        b.parent = Some(NodeId(0));
         b.kind = NodeKind::Image { src: "a.png".into() };
         b.layout_rect = Rect { x: 100.0, y: 0.0, w: 10.0, h: 10.0 };
-        scene.nodes.push(b);
+        let mut scene = Scene::from_nodes(vec![root, a, b], vec![(0, 1), (0, 2)]);
 
         let font = test_font().expect("need test font");
         let mut tex = TextureRegistry::default();
@@ -696,21 +660,13 @@ mod tests {
     fn image_uv_flips_v_for_design_y_down() {
         // design y-down + LoomStage scale (sf,-sf,sf) 把 design 顶映到屏幕上；
         // mesh::quad 固定 TL→(umin,vmin)（texture 底）→ Unity 上下颠倒。须 swap v：TL→(umin,vmax)。
-        let mut scene = Scene {
-            roots: vec![NodeId(0)], nodes: vec![],
-            dynamic_rules: Default::default(), focused_node: None,
-            world_transforms: Vec::new(), anim: Default::default(), scroll: Default::default(), text_layouts: Vec::new(),
-        };
         let mut root = Node::default();
-        root.id = NodeId(0); root.kind = NodeKind::Container;
+        root.kind = NodeKind::Container;
         root.layout_rect = Rect { x: 0.0, y: 0.0, w: 100.0, h: 100.0 };
         let mut img = Node::default();
-        img.id = NodeId(1); img.parent = Some(NodeId(0));
         img.kind = NodeKind::Image { src: "a.png".into() };
         img.layout_rect = Rect { x: 0.0, y: 0.0, w: 10.0, h: 10.0 };
-        root.children = vec![NodeId(1)];
-        scene.nodes.push(root);
-        scene.nodes.push(img);
+        let mut scene = Scene::from_nodes(vec![root, img], vec![(0, 1)]);
         let font = test_font().expect("need test font");
         let mut tex = TextureRegistry::default();
         tex.insert("a.png", TexMeta { tex_id: 1, uv_min: [0.25, 0.25], uv_max: [0.75, 0.75], width: 10, height: 10 });
@@ -730,22 +686,16 @@ mod tests {
     /// CSS opacity=1.0、bg=红；anim opacity=0.25、bg=蓝 → alpha=0.25、Mesh colors=蓝。
     #[test]
     fn build_reads_anim_opacity_and_bg_override() {
-        let mut scene = Scene {
-            roots: vec![NodeId(0)],
-            nodes: vec![],
-            dynamic_rules: Default::default(),
-            focused_node: None,
-            world_transforms: Vec::new(),
-            anim: Default::default(),
-            scroll: Default::default(), text_layouts: Vec::new(),
-        };
         let mut n = container_node(0, None, Rect { x: 0.0, y: 0.0, w: 10.0, h: 10.0 }, Some([1.0, 0.0, 0.0, 1.0]));
         n.style.opacity = 1.0;
-        scene.nodes.push(n);
-        // anim override：opacity=0.25、bg=蓝
-        scene.anim.ensure(1);
-        scene.anim.0[0].opacity = Some(0.25);
-        scene.anim.0[0].bg_color = Some([0.0, 0.0, 1.0, 1.0]);
+        let mut scene = Scene::from_nodes(vec![n], vec![]);
+        let rid = scene.roots[0];
+        // anim override：opacity=0.25、bg=蓝（生产路径写法：ensure 返切片后按 index 写）
+        {
+            let anim = scene.anim.ensure(rid.index() + 1);
+            anim[rid.index()].opacity = Some(0.25);
+            anim[rid.index()].bg_color = Some([0.0, 0.0, 1.0, 1.0]);
+        }
 
         let font = test_font().expect("need font");
         crate::scene::transform::compute_world_transforms(&mut scene);
@@ -782,9 +732,12 @@ mod tests {
             (Some(0), NodeKind::Container, ResolvedStyle::default(), vec![], None, false, None),
         ];
         let mut scene = Scene::build(&entries);
-        scene.nodes[0].layout_rect = Rect { x: 0.0, y: 0.0, w: 100.0, h: 100.0 };
-        scene.nodes[1].layout_rect = Rect { x: 0.0, y: 0.0, w: 40.0, h: 40.0 };
-        scene.nodes[2].layout_rect = Rect { x: 0.0, y: 0.0, w: 30.0, h: 200.0 }; // content_y=200 > viewport=100
+        let root_id = scene.roots[0];
+        let c0 = scene.get(root_id).unwrap().children[0];
+        let c1 = scene.get(root_id).unwrap().children[1];
+        scene.get_mut(root_id).unwrap().layout_rect = Rect { x: 0.0, y: 0.0, w: 100.0, h: 100.0 };
+        scene.get_mut(c0).unwrap().layout_rect = Rect { x: 0.0, y: 0.0, w: 40.0, h: 40.0 };
+        scene.get_mut(c1).unwrap().layout_rect = Rect { x: 0.0, y: 0.0, w: 30.0, h: 200.0 }; // content_y=200 > viewport=100
         crate::scroll::refresh_content_sizes(&mut scene);
         crate::scene::transform::compute_world_transforms(&mut scene);
 
@@ -819,8 +772,10 @@ mod tests {
             (Some(0), NodeKind::Container, ResolvedStyle::default(), vec![], None, false, None),
         ];
         let mut scene = Scene::build(&entries);
-        scene.nodes[0].layout_rect = Rect { x: 0.0, y: 0.0, w: 100.0, h: 100.0 };
-        scene.nodes[1].layout_rect = Rect { x: 0.0, y: 0.0, w: 40.0, h: 40.0 }; // content < viewport
+        let root_id = scene.roots[0];
+        let c0 = scene.get(root_id).unwrap().children[0];
+        scene.get_mut(root_id).unwrap().layout_rect = Rect { x: 0.0, y: 0.0, w: 100.0, h: 100.0 };
+        scene.get_mut(c0).unwrap().layout_rect = Rect { x: 0.0, y: 0.0, w: 40.0, h: 40.0 }; // content < viewport
         crate::scroll::refresh_content_sizes(&mut scene);
         crate::scene::transform::compute_world_transforms(&mut scene);
 
@@ -838,12 +793,7 @@ mod tests {
     /// 首帧（prev_hashes 空）→ 全 emit Mesh，无 Unchanged。
     #[test]
     fn build_first_frame_all_emit_no_unchanged() {
-        let mut scene = Scene {
-            roots: vec![NodeId(0)], nodes: vec![],
-            dynamic_rules: Default::default(), focused_node: None,
-            world_transforms: Vec::new(), anim: Default::default(), scroll: Default::default(), text_layouts: Vec::new(),
-        };
-        scene.nodes.push(container_node(0, None, Rect { x: 0.0, y: 0.0, w: 10.0, h: 10.0 }, Some([1.0,0.0,0.0,1.0])));
+        let mut scene = Scene::from_nodes(vec![container_node(0, None, Rect { x: 0.0, y: 0.0, w: 10.0, h: 10.0 }, Some([1.0,0.0,0.0,1.0]))], vec![]);
         let font = test_font().expect("need font");
         crate::scene::transform::compute_world_transforms(&mut scene);
         let (frame, _hashes) = build_render_nodes(&scene, &font, &TextureRegistry::default(), &[]);
@@ -855,12 +805,7 @@ mod tests {
     /// 第二帧无变化 → 该节点 Unchanged。
     #[test]
     fn build_static_frame_emits_unchanged() {
-        let mut scene = Scene {
-            roots: vec![NodeId(0)], nodes: vec![],
-            dynamic_rules: Default::default(), focused_node: None,
-            world_transforms: Vec::new(), anim: Default::default(), scroll: Default::default(), text_layouts: Vec::new(),
-        };
-        scene.nodes.push(container_node(0, None, Rect { x: 0.0, y: 0.0, w: 10.0, h: 10.0 }, Some([1.0,0.0,0.0,1.0])));
+        let mut scene = Scene::from_nodes(vec![container_node(0, None, Rect { x: 0.0, y: 0.0, w: 10.0, h: 10.0 }, Some([1.0,0.0,0.0,1.0]))], vec![]);
         let font = test_font().expect("need font");
         crate::scene::transform::compute_world_transforms(&mut scene);
         // 首帧拿 hash 基线。
@@ -875,17 +820,13 @@ mod tests {
     /// 第二帧 style 变（bg color）→ 该节点重 emit Mesh（非 Unchanged）。
     #[test]
     fn build_changed_frame_re_emits() {
-        let mut scene = Scene {
-            roots: vec![NodeId(0)], nodes: vec![],
-            dynamic_rules: Default::default(), focused_node: None,
-            world_transforms: Vec::new(), anim: Default::default(), scroll: Default::default(), text_layouts: Vec::new(),
-        };
-        scene.nodes.push(container_node(0, None, Rect { x: 0.0, y: 0.0, w: 10.0, h: 10.0 }, Some([1.0,0.0,0.0,1.0])));
+        let mut scene = Scene::from_nodes(vec![container_node(0, None, Rect { x: 0.0, y: 0.0, w: 10.0, h: 10.0 }, Some([1.0,0.0,0.0,1.0]))], vec![]);
         let font = test_font().expect("need font");
         crate::scene::transform::compute_world_transforms(&mut scene);
         let (_f1, hashes) = build_render_nodes(&scene, &font, &TextureRegistry::default(), &[]);
         // 改 bg color。
-        scene.nodes[0].style.background_color = Some([0.0,1.0,0.0,1.0]);
+        let rid = scene.roots[0];
+        scene.get_mut(rid).unwrap().style.background_color = Some([0.0,1.0,0.0,1.0]);
         let (f2, _) = build_render_nodes(&scene, &font, &TextureRegistry::default(), &hashes);
         assert!(f2.nodes.iter().all(|n| !matches!(n.payload, NodePayload::Unchanged)),
             "bg color 变 → 重 emit Mesh（colors[0] hash 不等）");
@@ -894,12 +835,7 @@ mod tests {
     /// reload（节点数变，prev_hashes 长度不符）→ 全 emit（无基线）。
     #[test]
     fn build_reload_clears_baseline() {
-        let mut scene = Scene {
-            roots: vec![NodeId(0)], nodes: vec![],
-            dynamic_rules: Default::default(), focused_node: None,
-            world_transforms: Vec::new(), anim: Default::default(), scroll: Default::default(), text_layouts: Vec::new(),
-        };
-        scene.nodes.push(container_node(0, None, Rect { x: 0.0, y: 0.0, w: 10.0, h: 10.0 }, Some([1.0,0.0,0.0,1.0])));
+        let mut scene = Scene::from_nodes(vec![container_node(0, None, Rect { x: 0.0, y: 0.0, w: 10.0, h: 10.0 }, Some([1.0,0.0,0.0,1.0]))], vec![]);
         let font = test_font().expect("need font");
         crate::scene::transform::compute_world_transforms(&mut scene);
         let (_f1, hashes) = build_render_nodes(&scene, &font, &TextureRegistry::default(), &[]);
@@ -933,8 +869,9 @@ mod tests {
         let mut scene = Scene::build(&entries);
         let tex = TextureRegistry::default();
         crate::layout::solve(&mut scene, &font, (120.0, 100.0), &tex);
-        assert!(scene.text_layouts[1].is_some(), "solve 应为 Text 节点填 text_layouts");
-        let layout_lines = scene.text_layouts[1].as_ref().unwrap().lines.len();
+        let text_id = scene.get(scene.roots[0]).unwrap().children[0];
+        assert!(scene.text_layouts[text_id.index()].is_some(), "solve 应为 Text 节点填 text_layouts");
+        let layout_lines = scene.text_layouts[text_id.index()].as_ref().unwrap().lines.len();
         crate::scene::transform::compute_world_transforms(&mut scene);
         let (frame, _) = build_render_nodes(&scene, &font, &tex, &[]);
         let render_lines = match &frame.nodes[1].payload {
@@ -1026,16 +963,10 @@ mod tests {
     fn build_container_with_bg_image_uses_tex_id_and_fit_uv() {
         // Container 设 background-image + background-size:cover → Mesh texture=tex_id(非0)
         // + UV 按 cover 内收 + v 翻转。
-        let mut scene = Scene {
-            roots: vec![NodeId(0)], nodes: vec![],
-            dynamic_rules: Default::default(), focused_node: None,
-            world_transforms: Vec::new(), anim: Default::default(),
-            scroll: Default::default(), text_layouts: Vec::new(),
-        };
         let mut n = container_node(0, None, Rect { x: 0.0, y: 0.0, w: 200.0, h: 50.0 }, None);
         n.style.background_image = Some("a.png".into());
         n.style.background_size = BackgroundSize::Cover;
-        scene.nodes.push(n);
+        let mut scene = Scene::from_nodes(vec![n], vec![]);
 
         let font = test_font().expect("need font");
         let mut tex = TextureRegistry::default();
@@ -1059,16 +990,10 @@ mod tests {
     fn build_container_bg_image_contain_shrinks_geometry() {
         // contain：图完整放入，geometry 缩到子矩形（左上 CSS position 0% 0%），右下留白。
         // 100×100 图，200×100 容器：s=min(2,1)=1，子矩形 100×100 左上 → verts xmax=100（右留白 100）。
-        let mut scene = Scene {
-            roots: vec![NodeId(0)], nodes: vec![],
-            dynamic_rules: Default::default(), focused_node: None,
-            world_transforms: Vec::new(), anim: Default::default(),
-            scroll: Default::default(), text_layouts: Vec::new(),
-        };
         let mut n = container_node(0, None, Rect { x: 0.0, y: 0.0, w: 200.0, h: 100.0 }, None);
         n.style.background_image = Some("a.png".into());
         n.style.background_size = BackgroundSize::Contain;
-        scene.nodes.push(n);
+        let mut scene = Scene::from_nodes(vec![n], vec![]);
 
         let font = test_font().expect("need font");
         let mut tex = TextureRegistry::default();
@@ -1084,16 +1009,10 @@ mod tests {
     #[test]
     fn build_container_bg_image_coexists_with_bg_color() {
         // background-color + background-image 共存：顶点色=底色 tint + texture=tex_id
-        let mut scene = Scene {
-            roots: vec![NodeId(0)], nodes: vec![],
-            dynamic_rules: Default::default(), focused_node: None,
-            world_transforms: Vec::new(), anim: Default::default(),
-            scroll: Default::default(), text_layouts: Vec::new(),
-        };
         let mut n = container_node(0, None, Rect { x: 0.0, y: 0.0, w: 100.0, h: 100.0 }, Some([0.0, 1.0, 0.0, 1.0]));
         n.style.background_image = Some("a.png".into());
         n.style.background_size = BackgroundSize::Stretch;
-        scene.nodes.push(n);
+        let mut scene = Scene::from_nodes(vec![n], vec![]);
 
         let font = test_font().expect("need font");
         let mut tex = TextureRegistry::default();
@@ -1116,15 +1035,9 @@ mod tests {
     #[test]
     fn build_container_bg_image_hit_sets_program_2() {
         // Container 设 background-image 且纹理命中 → program=2（CSS 合成）。
-        let mut scene = Scene {
-            roots: vec![NodeId(0)], nodes: vec![],
-            dynamic_rules: Default::default(), focused_node: None,
-            world_transforms: Vec::new(), anim: Default::default(),
-            scroll: Default::default(), text_layouts: Vec::new(),
-        };
         let mut n = container_node(0, None, Rect { x: 0.0, y: 0.0, w: 100.0, h: 100.0 }, Some([0.0, 1.0, 0.0, 1.0]));
         n.style.background_image = Some("a.png".into());
-        scene.nodes.push(n);
+        let mut scene = Scene::from_nodes(vec![n], vec![]);
         let font = test_font().expect("need font");
         let mut tex = TextureRegistry::default();
         tex.insert("a.png", TexMeta { tex_id: 1, uv_min: [0.0, 0.0], uv_max: [1.0, 1.0], width: 10, height: 10 });
@@ -1142,14 +1055,8 @@ mod tests {
     #[test]
     fn build_container_without_bg_image_keeps_program_0() {
         // Container 无 bg-image → program=0（tex*vcol，白占位×bg-color=bg-color）。
-        let mut scene = Scene {
-            roots: vec![NodeId(0)], nodes: vec![],
-            dynamic_rules: Default::default(), focused_node: None,
-            world_transforms: Vec::new(), anim: Default::default(),
-            scroll: Default::default(), text_layouts: Vec::new(),
-        };
         let n = container_node(0, None, Rect { x: 0.0, y: 0.0, w: 100.0, h: 100.0 }, Some([1.0, 0.0, 0.0, 1.0]));
-        scene.nodes.push(n);
+        let mut scene = Scene::from_nodes(vec![n], vec![]);
         let font = test_font().expect("need font");
         crate::scene::transform::compute_world_transforms(&mut scene);
         let (frame, _) = build_render_nodes(&scene, &font, &TextureRegistry::default(), &[]);
@@ -1164,15 +1071,9 @@ mod tests {
     #[test]
     fn build_container_bg_image_unregistered_keeps_program_0() {
         // Container 设 bg-image 但纹理未注册（哨兵 tex_id=0）→ program=0（不走合成，白占位）。
-        let mut scene = Scene {
-            roots: vec![NodeId(0)], nodes: vec![],
-            dynamic_rules: Default::default(), focused_node: None,
-            world_transforms: Vec::new(), anim: Default::default(),
-            scroll: Default::default(), text_layouts: Vec::new(),
-        };
         let mut n = container_node(0, None, Rect { x: 0.0, y: 0.0, w: 100.0, h: 100.0 }, Some([1.0, 0.0, 0.0, 1.0]));
         n.style.background_image = Some("missing.png".into());
-        scene.nodes.push(n);
+        let mut scene = Scene::from_nodes(vec![n], vec![]);
         let font = test_font().expect("need font");
         crate::scene::transform::compute_world_transforms(&mut scene);
         let (frame, _) = build_render_nodes(&scene, &font, &TextureRegistry::default(), &[]);
@@ -1188,22 +1089,13 @@ mod tests {
     #[test]
     fn build_image_node_keeps_program_0() {
         // Image 节点 program=0（tex*vcol，图透明区透下层）——零改回归。
-        let mut scene = Scene {
-            roots: vec![NodeId(0)], nodes: vec![],
-            dynamic_rules: Default::default(), focused_node: None,
-            world_transforms: Vec::new(), anim: Default::default(),
-            scroll: Default::default(), text_layouts: Vec::new(),
-        };
         let mut root = Node::default();
-        root.id = NodeId(0); root.kind = NodeKind::Container;
+        root.kind = NodeKind::Container;
         root.layout_rect = Rect { x: 0.0, y: 0.0, w: 100.0, h: 100.0 };
         let mut img = Node::default();
-        img.id = NodeId(1); img.parent = Some(NodeId(0));
         img.kind = NodeKind::Image { src: "a.png".into() };
         img.layout_rect = Rect { x: 0.0, y: 0.0, w: 10.0, h: 10.0 };
-        root.children = vec![NodeId(1)];
-        scene.nodes.push(root);
-        scene.nodes.push(img);
+        let mut scene = Scene::from_nodes(vec![root, img], vec![(0, 1)]);
         let font = test_font().expect("need font");
         let mut tex = TextureRegistry::default();
         tex.insert("a.png", TexMeta { tex_id: 1, uv_min: [0.0, 0.0], uv_max: [1.0, 1.0], width: 10, height: 10 });
@@ -1222,15 +1114,9 @@ mod tests {
     #[test]
     fn build_container_with_filter_sets_program_3() {
         // Container + filter:grayscale(1) → program=3 + color_matrix 灰化矩阵
-        let mut scene = Scene {
-            roots: vec![NodeId(0)], nodes: vec![],
-            dynamic_rules: Default::default(), focused_node: None,
-            world_transforms: Vec::new(), anim: Default::default(),
-            scroll: Default::default(), text_layouts: Vec::new(),
-        };
         let mut n = container_node(0, None, Rect { x: 0.0, y: 0.0, w: 80.0, h: 80.0 }, Some([1.0, 0.0, 0.0, 1.0]));
         n.style.color_filter = Some(crate::style::color_filter::grayscale());
-        scene.nodes.push(n);
+        let mut scene = Scene::from_nodes(vec![n], vec![]);
         crate::scene::transform::compute_world_transforms(&mut scene);
         let font = test_font().expect("need font");
         let (frame, _) = build_render_nodes(&scene, &font, &TextureRegistry::default(), &[]);
@@ -1249,17 +1135,11 @@ mod tests {
     /// 让 shader 走 `tex.rgb*tex.a + vcol.rgb*(1-tex.a)`（CSS 合成）后再跑 COLOR_FILTER 后处理。
     #[test]
     fn build_container_with_bg_image_and_filter_sets_program_4() {
-        let mut scene = Scene {
-            roots: vec![NodeId(0)], nodes: vec![],
-            dynamic_rules: Default::default(), focused_node: None,
-            world_transforms: Vec::new(), anim: Default::default(),
-            scroll: Default::default(), text_layouts: Vec::new(),
-        };
         let mut n = container_node(0, None, Rect { x: 0.0, y: 0.0, w: 80.0, h: 80.0 }, Some([1.0, 0.0, 0.0, 1.0]));
         n.style.background_image = Some("a.png".into());
         n.style.background_size = BackgroundSize::Stretch;
         n.style.color_filter = Some(crate::style::color_filter::grayscale());
-        scene.nodes.push(n);
+        let mut scene = Scene::from_nodes(vec![n], vec![]);
 
         let font = test_font().expect("need font");
         let mut tex = TextureRegistry::default();
@@ -1281,17 +1161,11 @@ mod tests {
         // Container + bg-image + border-image-slice → nine_slice mesh（16 顶点）
         let mut tex = TextureRegistry::default();
         tex.insert("skin.png", TexMeta { tex_id: 1, uv_min: [0.0, 0.0], uv_max: [1.0, 1.0], width: 48, height: 48 });
-        let mut scene = Scene {
-            roots: vec![NodeId(0)], nodes: vec![],
-            dynamic_rules: Default::default(), focused_node: None,
-            world_transforms: Vec::new(), anim: Default::default(),
-            scroll: Default::default(), text_layouts: Vec::new(),
-        };
         let mut n = container_node(0, None, Rect { x: 0.0, y: 0.0, w: 80.0, h: 80.0 }, Some([1.0, 0.0, 0.0, 1.0]));
         n.style.background_image = Some("skin.png".into());
         n.style.background_size = BackgroundSize::Stretch;
         n.style.border_image_slice = Some(crate::style::resolved::SliceInsets { top: 10.0, right: 10.0, bottom: 10.0, left: 10.0 });
-        scene.nodes.push(n);
+        let mut scene = Scene::from_nodes(vec![n], vec![]);
         crate::scene::transform::compute_world_transforms(&mut scene);
         let font = test_font().expect("need font");
         let (frame, _) = build_render_nodes(&scene, &font, &tex, &[]);
@@ -1306,13 +1180,7 @@ mod tests {
     #[test]
     fn build_container_no_filter_keeps_program_0_or_2() {
         // 零回归：无 filter → program 0（无图）/ 2（bg-image 命中）
-        let mut scene = Scene {
-            roots: vec![NodeId(0)], nodes: vec![],
-            dynamic_rules: Default::default(), focused_node: None,
-            world_transforms: Vec::new(), anim: Default::default(),
-            scroll: Default::default(), text_layouts: Vec::new(),
-        };
-        scene.nodes.push(container_node(0, None, Rect { x: 0.0, y: 0.0, w: 80.0, h: 80.0 }, Some([1.0, 0.0, 0.0, 1.0])));
+        let mut scene = Scene::from_nodes(vec![container_node(0, None, Rect { x: 0.0, y: 0.0, w: 80.0, h: 80.0 }, Some([1.0, 0.0, 0.0, 1.0]))], vec![]);
         crate::scene::transform::compute_world_transforms(&mut scene);
         let font = test_font().expect("need font");
         let (frame, _) = build_render_nodes(&scene, &font, &TextureRegistry::default(), &[]);
@@ -1324,15 +1192,9 @@ mod tests {
     #[test]
     fn build_container_bg_image_unregistered_falls_back_texture_zero() {
         // url 未注册 → texture=0（白占位退化），不 panic
-        let mut scene = Scene {
-            roots: vec![NodeId(0)], nodes: vec![],
-            dynamic_rules: Default::default(), focused_node: None,
-            world_transforms: Vec::new(), anim: Default::default(),
-            scroll: Default::default(), text_layouts: Vec::new(),
-        };
         let mut n = container_node(0, None, Rect { x: 0.0, y: 0.0, w: 100.0, h: 100.0 }, None);
         n.style.background_image = Some("missing.png".into());
-        scene.nodes.push(n);
+        let mut scene = Scene::from_nodes(vec![n], vec![]);
 
         let font = test_font().expect("need font");
         let tex = TextureRegistry::default(); // 未注册
@@ -1349,13 +1211,7 @@ mod tests {
     #[test]
     fn build_container_no_bg_image_keeps_texture_zero() {
         // 无 background-image → 现状 texture:0（零回归）
-        let mut scene = Scene {
-            roots: vec![NodeId(0)], nodes: vec![],
-            dynamic_rules: Default::default(), focused_node: None,
-            world_transforms: Vec::new(), anim: Default::default(),
-            scroll: Default::default(), text_layouts: Vec::new(),
-        };
-        scene.nodes.push(container_node(0, None, Rect { x: 0.0, y: 0.0, w: 10.0, h: 10.0 }, Some([1.0, 0.0, 0.0, 1.0])));
+        let mut scene = Scene::from_nodes(vec![container_node(0, None, Rect { x: 0.0, y: 0.0, w: 10.0, h: 10.0 }, Some([1.0, 0.0, 0.0, 1.0]))], vec![]);
         let font = test_font().expect("need font");
         crate::scene::transform::compute_world_transforms(&mut scene);
         let (frame, _) = build_render_nodes(&scene, &font, &TextureRegistry::default(), &[]);
@@ -1370,13 +1226,7 @@ mod tests {
     #[test]
     fn container_zero_radius_uses_quad() {
         // 未设 border-radius（默认全 0）→ 走 quad（4 顶点）
-        let mut scene = Scene {
-            roots: vec![NodeId(0)], nodes: vec![],
-            dynamic_rules: Default::default(), focused_node: None,
-            world_transforms: Vec::new(), anim: Default::default(),
-            scroll: Default::default(), text_layouts: Vec::new(),
-        };
-        scene.nodes.push(container_node(0, None, Rect { x: 0.0, y: 0.0, w: 80.0, h: 80.0 }, Some([1.0, 0.0, 0.0, 1.0])));
+        let mut scene = Scene::from_nodes(vec![container_node(0, None, Rect { x: 0.0, y: 0.0, w: 80.0, h: 80.0 }, Some([1.0, 0.0, 0.0, 1.0]))], vec![]);
         let font = test_font().expect("need font");
         crate::scene::transform::compute_world_transforms(&mut scene);
         let (frame, _) = build_render_nodes(&scene, &font, &TextureRegistry::default(), &[]);
@@ -1392,12 +1242,6 @@ mod tests {
     #[test]
     fn container_radius_uses_rounded_rect() {
         // border-radius:8px → 走 rounded_rect（顶点 >4）
-        let mut scene = Scene {
-            roots: vec![NodeId(0)], nodes: vec![],
-            dynamic_rules: Default::default(), focused_node: None,
-            world_transforms: Vec::new(), anim: Default::default(),
-            scroll: Default::default(), text_layouts: Vec::new(),
-        };
         let mut n = container_node(0, None, Rect { x: 0.0, y: 0.0, w: 80.0, h: 80.0 }, Some([1.0, 0.0, 0.0, 1.0]));
         n.style.border_radius = BorderRadius {
             corners: [CornerRadius {
@@ -1405,7 +1249,7 @@ mod tests {
                 v: LengthPercentage::Length(8.0),
             }; 4],
         };
-        scene.nodes.push(n);
+        let mut scene = Scene::from_nodes(vec![n], vec![]);
         let font = test_font().expect("need font");
         crate::scene::transform::compute_world_transforms(&mut scene);
         let (frame, _) = build_render_nodes(&scene, &font, &TextureRegistry::default(), &[]);
@@ -1422,12 +1266,6 @@ mod tests {
     fn container_radius_percent_resolved() {
         // border-radius:50% × 80×80 rect → resolve 成 40 → rounded_rect（顶点>4）
         // 使用 container_node 直接设 layout_rect，无需 solve。
-        let mut scene = Scene {
-            roots: vec![NodeId(0)], nodes: vec![],
-            dynamic_rules: Default::default(), focused_node: None,
-            world_transforms: Vec::new(), anim: Default::default(),
-            scroll: Default::default(), text_layouts: Vec::new(),
-        };
         let mut n = container_node(0, None, Rect { x: 0.0, y: 0.0, w: 80.0, h: 80.0 }, Some([1.0, 0.0, 0.0, 1.0]));
         n.style.border_radius = BorderRadius {
             corners: [CornerRadius {
@@ -1435,7 +1273,7 @@ mod tests {
                 v: LengthPercentage::Percent(0.5),
             }; 4],
         };
-        scene.nodes.push(n);
+        let mut scene = Scene::from_nodes(vec![n], vec![]);
         let font = test_font().expect("need font");
         crate::scene::transform::compute_world_transforms(&mut scene);
         let (frame, _) = build_render_nodes(&scene, &font, &TextureRegistry::default(), &[]);
@@ -1451,12 +1289,6 @@ mod tests {
     #[test]
     fn container_bg_image_with_radius_uses_rounded_rect() {
         // bg-image + border-radius 共存：texture 非零 AND 走 rounded_rect（verts>4）
-        let mut scene = Scene {
-            roots: vec![NodeId(0)], nodes: vec![],
-            dynamic_rules: Default::default(), focused_node: None,
-            world_transforms: Vec::new(), anim: Default::default(),
-            scroll: Default::default(), text_layouts: Vec::new(),
-        };
         let mut n = container_node(0, None, Rect { x: 0.0, y: 0.0, w: 100.0, h: 100.0 }, Some([0.0, 1.0, 0.0, 1.0]));
         n.style.background_image = Some("a.png".into());
         n.style.background_size = BackgroundSize::Stretch;
@@ -1466,7 +1298,7 @@ mod tests {
                 v: LengthPercentage::Length(12.0),
             }; 4],
         };
-        scene.nodes.push(n);
+        let mut scene = Scene::from_nodes(vec![n], vec![]);
 
         let font = test_font().expect("need font");
         let mut tex = TextureRegistry::default();

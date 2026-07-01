@@ -10,11 +10,12 @@ use loomgui_core::style::cascade::resolve_styles;
 
 fn dump(stage: &Stage, label: &str, focus: u32) {
     let scene = stage.scene.as_ref().unwrap();
-    let focus = focus as usize;
+    let focus_nid = loomgui_core::scene::node::NodeId(focus);
     // 取最近 tick 的 frame：重跑 build_render_nodes 不现实；改读 scene 节点状态 + prev_hashes
     println!("=== {} ===", label);
-    for (i, n) in scene.nodes.iter().enumerate() {
-        if i == focus || n.parent == Some(loomgui_core::scene::node::NodeId(focus as u32)) {
+    for (i, n) in scene.nodes.values().enumerate() {
+        if n.id == focus_nid || n.parent == Some(focus_nid) {
+            let wi = n.id.index();
             println!(
                 "  n{} kind={:?} active={} hovered={} rect=({:.0},{:.0},{:.0},{:.0}) bg={:?} wm={:?}",
                 i,
@@ -26,7 +27,7 @@ fn dump(stage: &Stage, label: &str, focus: u32) {
                 n.layout_rect.w,
                 n.layout_rect.h,
                 n.style.background_color,
-                scene.world_transforms[i]
+                scene.world_transforms.get(wi).copied().unwrap_or_default()
             );
         }
     }
@@ -36,13 +37,18 @@ fn dump_frame(stage: &mut Stage, label: &str, focus: u32) {
     let frame = stage.tick_and_render();
     println!("=== {} (frame payload) ===", label);
     let scene = stage.scene.as_ref().unwrap();
-    let focus_us = focus as usize;
+    let focus_nid = loomgui_core::scene::node::NodeId(focus);
     for rn in &frame.nodes {
         let nid = rn.node_id as usize;
-        if nid == focus_us
-            || (nid < scene.nodes.len()
-                && scene.nodes[nid].parent == Some(loomgui_core::scene::node::NodeId(focus_us as u32)))
-        {
+        let is_focus_or_child = if rn.node_id == focus {
+            true
+        } else {
+            scene
+                .get(loomgui_core::scene::node::NodeId(rn.node_id))
+                .map(|n| n.parent == Some(focus_nid))
+                .unwrap_or(false)
+        };
+        if is_focus_or_child {
             let pk = match &rn.payload {
                 NodePayload::Mesh { verts, colors, .. } => {
                     let c0 = colors.first().copied().unwrap_or([0.0; 4]);
@@ -77,7 +83,7 @@ fn main() {
     let mut s = Stage::new(font, (200.0, 100.0)).unwrap();
     s.load_package(&pkg).unwrap();
     let btn = s.find_node_by_id("b1").expect("b1").0 as u32;
-    let r = s.scene.as_ref().unwrap().nodes[btn as usize].layout_rect;
+    let r = s.scene.as_ref().unwrap().get(loomgui_core::scene::node::NodeId(btn)).expect("live node").layout_rect;
     println!("btn={} rect=({:.0},{:.0},{:.0},{:.0})", btn, r.x, r.y, r.w, r.h);
 
     dump_frame(&mut s, "frame1 (首帧)", btn);

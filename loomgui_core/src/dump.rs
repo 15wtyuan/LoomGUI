@@ -21,7 +21,7 @@ pub fn json_escape(s: &str) -> String {
 /// 整树 JSON：每节点 {node_id, parent, tag, id, classes, kind, layout, world_matrix, visible}。
 pub fn dump_scene_json(scene: &Scene) -> String {
     let mut s = String::from("[");
-    for (i, n) in scene.nodes.iter().enumerate() {
+    for (i, n) in scene.nodes.values().enumerate() {
         if i > 0 { s.push(','); }
         let (tag, kind_str) = match &n.kind {
             NodeKind::Container => ("div", "Container"),
@@ -31,9 +31,16 @@ pub fn dump_scene_json(scene: &Scene) -> String {
         };
         let id = json_escape(n.id_attr.as_deref().unwrap_or(""));
         let classes = n.classes.iter().map(|c| json_escape(c)).collect::<Vec<_>>().join(" ");
-        let wm = if (n.id.0 as usize) < scene.world_transforms.len() { &scene.world_transforms[n.id.0 as usize] } else { &crate::transform::IDENTITY };
+        // world_transforms / anim 按 slotmap idx 索引（idx 从 1 起，数组长 N+1）。
+        // bounds guard：未对齐时 fallback IDENTITY / (false, None)。
+        let wm = if n.id.index() < scene.world_transforms.len() {
+            &scene.world_transforms[n.id.index()]
+        } else {
+            &crate::transform::IDENTITY
+        };
         // 诊断：附 anim.transform 是否 Some + opacity 值，定位 tween 是否真写进 anim。
-        let (anim_tr, anim_op) = match scene.anim.0.get(n.id.0 as usize) {
+        // AnimTable.0 仍是 Vec<NodeAnim>，按 idx 索引（T3 改 SecondaryMap 前）。
+        let (anim_tr, anim_op) = match scene.anim.0.get(n.id.index()) {
             Some(a) => (a.transform.is_some(), a.opacity),
             None => (false, None),
         };
@@ -55,16 +62,16 @@ pub fn dump_scene_json(scene: &Scene) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scene::node::{Node, NodeId, Rect, Scene};
+    use crate::scene::node::{Node, Rect, Scene};
 
     #[test]
     fn dump_has_node_fields() {
         let mut n = Node::default();
-        n.id = NodeId(0);
         n.id_attr = Some("root".into());
         n.classes = vec!["main".into()];
         n.layout_rect = Rect { x: 1.0, y: 2.0, w: 3.0, h: 4.0 };
-        let s = Scene { roots: vec![NodeId(0)], nodes: vec![n], dynamic_rules: Default::default(), focused_node: None, world_transforms: Vec::new(), anim: Default::default(), scroll: Default::default(), text_layouts: Vec::new() };
+        // from_nodes 分配 slotmap id（首节点 = NodeId((1<<12)|1)）；world_transforms 空 → IDENTITY。
+        let s = Scene::from_nodes(vec![n], vec![]);
         let json = dump_scene_json(&s);
         assert!(json.contains(r#""id":"root""#), "含 id");
         assert!(json.contains(r#""classes":"main""#), "含 classes");
@@ -77,9 +84,8 @@ mod tests {
     #[test]
     fn dump_escapes_quotes_in_id() {
         let mut n = Node::default();
-        n.id = NodeId(0);
         n.id_attr = Some("a\"b".into());
-        let s = Scene { roots: vec![NodeId(0)], nodes: vec![n], dynamic_rules: Default::default(), focused_node: None, world_transforms: Vec::new(), anim: Default::default(), scroll: Default::default(), text_layouts: Vec::new() };
+        let s = Scene::from_nodes(vec![n], vec![]);
         let json = dump_scene_json(&s);
         assert!(json.contains(r#""id":"a\"b""#), "id 中的引号被转义：{}", json);
     }

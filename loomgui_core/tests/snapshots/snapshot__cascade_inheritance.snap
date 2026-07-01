@@ -1,10 +1,11 @@
 ---
 source: loomgui_core/tests/snapshot.rs
+assertion_line: 56
 expression: json
 ---
 [
   {
-    "node_id": 0,
+    "node_id": 4097,
     "parent_id": null,
     "visible": true,
     "alpha": 1.0,
@@ -126,8 +127,8 @@ expression: json
     }
   },
   {
-    "node_id": 1,
-    "parent_id": 0,
+    "node_id": 8193,
+    "parent_id": 4097,
     "visible": true,
     "alpha": 1.0,
     "grayed": false,

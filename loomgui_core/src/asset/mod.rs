@@ -174,10 +174,20 @@ pub fn write_package(
     let mut idx_of: std::collections::HashMap<String, u16> = std::collections::HashMap::new();
 
     // 每节点：(parent_idx, kind_tag, style_blob, text_idx, src_idx)
-    // scene.nodes 已是 DFS 先序、NodeId(i).0 == i（build_scene / Scene::build 不变量）。
+    // slotmap values() 顺 = 插入序 = build 顺序（无删除）。用 0 基位置作 parent_idx
+    // （read_package 的 Scene::build entries 用 0 基 parent_idx）。先建 NodeId→position 映射。
+    let pos_of: std::collections::HashMap<NodeId, usize> = scene
+        .nodes
+        .values()
+        .enumerate()
+        .map(|(i, n)| (n.id, i))
+        .collect();
     let mut nodes: Vec<(i32, u8, Vec<u8>, u16, u16)> = Vec::new();
-    for n in &scene.nodes {
-        let parent_idx = n.parent.map(|NodeId(p)| p as i32).unwrap_or(-1);
+    for n in scene.nodes.values() {
+        let parent_idx = n
+            .parent
+            .map(|p| pos_of[&p] as i32)
+            .unwrap_or(-1);
         let (kind_tag, text_idx, src_idx) = match &n.kind {
             NodeKind::Container => (KIND_CONTAINER, NULL_IDX, NULL_IDX),
             NodeKind::Button => (KIND_BUTTON, NULL_IDX, NULL_IDX),
@@ -208,7 +218,7 @@ pub fn write_package(
     // 字符串共用同一 stringTable）。classes 每元素 intern；id_attr 若 None → NULL_IDX。
     let mut node_class_idx: Vec<Vec<u16>> = Vec::with_capacity(scene.nodes.len());
     let mut node_id_idx: Vec<u16> = Vec::with_capacity(scene.nodes.len());
-    for n in &scene.nodes {
+    for n in scene.nodes.values() {
         let cls: Vec<u16> = n
             .classes
             .iter()
@@ -238,7 +248,8 @@ pub fn write_package(
         out.extend_from_slice(&(bytes.len() as u16).to_le_bytes());
         out.extend_from_slice(bytes);
     }
-    // NodeBlock
+    // NodeBlock（值与索引按 slotmap 插入序同序，pos_of 映射保证 parent_idx 一致）
+    let all_nodes: Vec<&crate::scene::node::Node> = scene.nodes.values().collect();
     for (node_i, (parent_idx, kind_tag, style_blob, text_idx, src_idx)) in nodes.iter().enumerate() {
         out.extend_from_slice(&parent_idx.to_le_bytes());
         out.push(*kind_tag);
@@ -253,10 +264,10 @@ pub fn write_package(
         }
         out.extend_from_slice(&node_id_idx[node_i].to_le_bytes());
         // flags byte（bit0=draggable）
-        let flags: u8 = if scene.nodes[node_i].draggable { 0x01 } else { 0x00 };
+        let flags: u8 = if all_nodes[node_i].draggable { 0x01 } else { 0x00 };
         out.push(flags);
         // tabindex i32（None→i32::MIN 哨兵，反序列化还原 None）
-        let tab = scene.nodes[node_i].tabindex.unwrap_or(i32::MIN);
+        let tab = all_nodes[node_i].tabindex.unwrap_or(i32::MIN);
         out.extend_from_slice(&tab.to_le_bytes());
     }
     // —— AtlasSection（NodeBlock 之后）——
@@ -510,22 +521,24 @@ mod tests {
 
         assert_eq!(rs, (1080.0, 1920.0));
         assert_eq!(scene2.nodes.len(), scene.nodes.len());
-        // 结构：parent / children
-        for (a, b) in scene.nodes.iter().zip(scene2.nodes.iter()) {
+        // 结构：parent / children（slotmap values() 顺 = 插入序，两端一致）
+        for (a, b) in scene.nodes.values().zip(scene2.nodes.values()) {
             assert_eq!(a.parent, b.parent);
             assert_eq!(a.children, b.children);
         }
-        // kind + payload
-        assert!(matches!(&scene2.nodes[1].kind, NodeKind::Text { content } if content == "hi"));
-        assert!(matches!(&scene2.nodes[2].kind, NodeKind::Image { src } if src == "logo.png"));
-        assert!(matches!(scene2.nodes[0].kind, NodeKind::Container));
-        assert!(matches!(scene2.nodes[3].kind, NodeKind::Button));
+        // kind + payload（按 slotmap 插入序取值）
+        let s1: Vec<_> = scene.nodes.values().collect();
+        let s2: Vec<_> = scene2.nodes.values().collect();
+        assert!(matches!(&s2[1].kind, NodeKind::Text { content } if content == "hi"));
+        assert!(matches!(&s2[2].kind, NodeKind::Image { src } if src == "logo.png"));
+        assert!(matches!(&s2[0].kind, NodeKind::Container));
+        assert!(matches!(&s2[3].kind, NodeKind::Button));
         // style 经 bincode round-trip（background_color 非 None）——全字段相等
-        assert_eq!(scene2.nodes[2].style, img_style);
+        assert_eq!(s2[2].style, img_style);
         // 其他节点 style 也应 round-trip（default）
-        assert_eq!(scene2.nodes[0].style, scene.nodes[0].style);
-        assert_eq!(scene2.nodes[1].style, scene.nodes[1].style);
-        assert_eq!(scene2.nodes[3].style, scene.nodes[3].style);
+        assert_eq!(s2[0].style, s1[0].style);
+        assert_eq!(s2[1].style, s1[1].style);
+        assert_eq!(s2[3].style, s1[3].style);
     }
 
     #[test]
@@ -706,11 +719,12 @@ mod tests {
             &crate::style::dynamic::DynamicRuleTable::default(),
         );
         let (scene2, _, _) = read_package(&pkg).unwrap();
+        let n0 = scene2.nodes.values().next().expect("at least one node");
         assert_eq!(
-            scene2.nodes[0].classes,
+            n0.classes,
             vec!["a".to_string(), "b".to_string()]
         );
-        assert_eq!(scene2.nodes[0].id_attr.as_deref(), Some("x"));
+        assert_eq!(n0.id_attr.as_deref(), Some("x"));
     }
 
     #[test]
@@ -746,8 +760,9 @@ mod tests {
         let sc = u32::from_le_bytes(bytes[16..20].try_into().unwrap());
         assert_eq!(sc, 1, "重复 content 应去重为 1 条");
         let (scene2, _, _) = read_package(&bytes).unwrap();
-        assert!(matches!(&scene2.nodes[1].kind, NodeKind::Text { content } if content == "dup"));
-        assert!(matches!(&scene2.nodes[2].kind, NodeKind::Text { content } if content == "dup"));
+        let ns: Vec<_> = scene2.nodes.values().collect();
+        assert!(matches!(&ns[1].kind, NodeKind::Text { content } if content == "dup"));
+        assert!(matches!(&ns[2].kind, NodeKind::Text { content } if content == "dup"));
     }
 
     #[test]
@@ -760,8 +775,9 @@ mod tests {
         let scene = Scene::build(&entries);
         let pkg = write_package(&scene, (100.0, 50.0), &AtlasSection::default(), &crate::style::dynamic::DynamicRuleTable::default());
         let (scene2, _, _) = read_package(&pkg).unwrap();
-        assert!(!scene2.nodes[0].draggable, "root draggable=false round-trip");
-        assert!(scene2.nodes[1].draggable, "btn draggable=true round-trip");
+        let ns: Vec<_> = scene2.nodes.values().collect();
+        assert!(!ns[0].draggable, "root draggable=false round-trip");
+        assert!(ns[1].draggable, "btn draggable=true round-trip");
     }
 
     #[test]
@@ -793,10 +809,11 @@ mod tests {
         let scene = Scene::build(&entries);
         let pkg = write_package(&scene, (100.0, 50.0), &AtlasSection::default(), &crate::style::dynamic::DynamicRuleTable::default());
         let (scene2, _, _) = read_package(&pkg).unwrap();
-        assert_eq!(scene2.nodes[0].tabindex, None, "root tabindex=None round-trip");
-        assert_eq!(scene2.nodes[1].tabindex, Some(0));
-        assert_eq!(scene2.nodes[2].tabindex, Some(3));
-        assert_eq!(scene2.nodes[3].tabindex, Some(-1));
+        let ns: Vec<_> = scene2.nodes.values().collect();
+        assert_eq!(ns[0].tabindex, None, "root tabindex=None round-trip");
+        assert_eq!(ns[1].tabindex, Some(0));
+        assert_eq!(ns[2].tabindex, Some(3));
+        assert_eq!(ns[3].tabindex, Some(-1));
     }
 
     #[test]

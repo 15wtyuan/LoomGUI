@@ -302,11 +302,10 @@ pub extern "C" fn loomgui_node_parent(h: *const StageHandle, node_id: u32) -> u3
     let sh = unsafe { &*h };
     match &sh.stage.scene {
         Some(scene) => {
-            let idx = node_id as usize;
-            if idx < scene.nodes.len() {
-                scene.nodes[idx].parent.map(|p| p.0 as u32).unwrap_or(ROOT_SENTINEL)
-            } else {
-                ROOT_SENTINEL
+            // NodeId(u32) → slotmap lookup（代际安全）。无效/悬空 NodeId → sentinel。
+            match scene.get(NodeId(node_id)) {
+                Some(n) => n.parent.map(|p| p.0 as u32).unwrap_or(ROOT_SENTINEL),
+                None => ROOT_SENTINEL,
             }
         }
         None => ROOT_SENTINEL,
@@ -888,21 +887,32 @@ mod abi_tests {
         use loomgui_core::scene::{NodeKind, Scene};
         use loomgui_core::style::{resolved::ResolvedStyle, dynamic::DynamicRuleTable};
         let (fp, fplen) = font_path();
+        // root/child 各带 id_attr → find_node_by_id 解析 slotmap 分配的 NodeId（u32 打包值）
         let entries: Vec<(Option<usize>, NodeKind, ResolvedStyle, Vec<String>, Option<String>, bool, Option<i32>)> = vec![
-            (None, NodeKind::Container, ResolvedStyle::default(), Vec::new(), None, false, None),
-            (Some(0), NodeKind::Container, ResolvedStyle::default(), Vec::new(), None, false, None),
+            (None, NodeKind::Container, ResolvedStyle::default(), Vec::new(), Some("root".to_string()), false, None),
+            (Some(0), NodeKind::Container, ResolvedStyle::default(), Vec::new(), Some("child".to_string()), false, None),
         ];
         let pkg = write_package(&Scene::build(&entries), (100.0, 50.0), &AtlasSection::default(), &DynamicRuleTable::default());
         let h = loomgui_stage_new(fp.as_ptr() as *const u8, fplen, 100.0, 50.0);
         assert!(!h.is_null());
         assert_eq!(loomgui_stage_load_package(h, pkg.as_ptr(), pkg.len()), 0);
-        assert_eq!(loomgui_node_parent(h, 1), 0, "child(1).parent == root(0)");
-        assert_eq!(loomgui_node_parent(h, 0), 0xFFFF_FFFF, "root(0).parent == sentinel");
-        assert_eq!(loomgui_node_parent(h, 99), 0xFFFF_FFFF, "OOB == sentinel");
+        let root_id = {
+            let c = std::ffi::CString::new("root").unwrap();
+            loomgui_stage_find_node_by_id(h, c.as_ptr() as *const u8, c.as_bytes().len())
+        };
+        let child_id = {
+            let c = std::ffi::CString::new("child").unwrap();
+            loomgui_stage_find_node_by_id(h, c.as_ptr() as *const u8, c.as_bytes().len())
+        };
+        assert_ne!(root_id, 0xFFFF_FFFF, "find root ok");
+        assert_ne!(child_id, 0xFFFF_FFFF, "find child ok");
+        assert_eq!(loomgui_node_parent(h, child_id), root_id, "child.parent == root");
+        assert_eq!(loomgui_node_parent(h, root_id), 0xFFFF_FFFF, "root.parent == sentinel");
+        assert_eq!(loomgui_node_parent(h, 0xFFFF_FFFF), 0xFFFF_FFFF, "OOB == sentinel");
         loomgui_stage_free(h);
     }
 
-    /// find_node_by_id round-trip：手搓包（root + btn id="ok" + Text 子）→ find "ok" 返 btn(1)；
+    /// find_node_by_id round-trip：手搓包（root + btn id="ok" + Text 子）→ find "ok" 返 btn NodeId；
     /// 无匹配 → sentinel。照 node_parent 测用包路径（不走 parse）。
     #[test]
     fn find_node_by_id_round_trip() {
@@ -920,11 +930,9 @@ mod abi_tests {
         assert!(!h.is_null());
         assert_eq!(loomgui_stage_load_package(h, pkg.as_ptr(), pkg.len()), 0);
         let id = std::ffi::CString::new("ok").unwrap();
-        assert_eq!(
-            loomgui_stage_find_node_by_id(h, id.as_ptr() as *const u8, id.as_bytes().len()),
-            1,
-            "find 'ok' → btn node 1"
-        );
+        let btn_id = loomgui_stage_find_node_by_id(h, id.as_ptr() as *const u8, id.as_bytes().len());
+        assert_ne!(btn_id, 0xFFFF_FFFF, "find 'ok' → btn NodeId（非 sentinel）");
+        assert_ne!(btn_id, 0, "btn NodeId 非零（slotmap idx 从 1 起）");
         let miss = std::ffi::CString::new("nope").unwrap();
         assert_eq!(
             loomgui_stage_find_node_by_id(h, miss.as_ptr() as *const u8, miss.as_bytes().len()),
@@ -1106,9 +1114,14 @@ mod abi_tests {
         let recs = unsafe { std::slice::from_raw_parts(p as *const loomgui_core::input::EventRecord, len) };
         assert!(recs.iter().any(|e| e.event_type == EVT_FOCUS_IN), "Tab → FocusIn");
         assert!(recs.iter().all(|e| e.event_type != EVT_KEY_DOWN), "Tab 被消费，无 KeyDown");
-        // focused_node 读首个可聚焦（A=node 0：parse 无合成根，两 button 各为 root；
-        // DFS 先序：button.a(0)→Text(1)→button.b(2)→Text(3)；tabindex=0 进 zero 桶 → chain=[0,2]，Tab→0）
-        assert_eq!(loomgui_stage_focused_node(h), 0, "Tab → 焦点 button.a(node 0，首个可聚焦)");
+        // focused_node 读首个可聚焦（A）。parse 无合成根，两 button 各为 root；
+        // DFS 先序：button.a→Text→button.b→Text；tabindex=0 进 zero 桶 → chain=[a,b]，Tab→a。
+        // NodeId 由 slotmap 分配（首节点 idx=1, version=1 → u32 = (1<<12)|1 = 4097）。
+        let a_id = loomgui_stage_focused_node(h);
+        assert_ne!(a_id, 0xFFFF_FFFF, "Tab → 有焦点");
+        assert_ne!(a_id, 0, "NodeId 非零（slotmap idx 从 1 起）");
+        // 验 a 是 button.a：node_parent 应为 sentinel（a 是 root）
+        assert_eq!(loomgui_node_parent(h, a_id), 0xFFFF_FFFF, "button.a 是 root → parent=sentinel");
         loomgui_stage_free(h);
     }
 
@@ -1189,20 +1202,22 @@ mod abi_tests {
         ];
         stage.scene = Some(Scene::build(&entries));
         let scene = stage.scene.as_mut().unwrap();
-        scene.nodes[0].layout_rect = loomgui_core::scene::node::Rect { x: 0.0, y: 0.0, w: 200.0, h: 100.0 };
+        let root_id = scene.roots[0];
+        scene.get_mut(root_id).unwrap().layout_rect = loomgui_core::scene::node::Rect { x: 0.0, y: 0.0, w: 200.0, h: 100.0 };
         // refresh 需要 content_size/viewport/overlap（set_pos 读 overlap 做 clamp）
         loomgui_core::scroll::refresh_content_sizes(&mut stage.scene.as_mut().unwrap());
         // 手动改 overlap 到 200 让 scroll_pos 可测（无子 content=0,overlap=0 → set_pos 全 clamp 0）
-        stage.scene.as_mut().unwrap().scroll.get_mut(NodeId(0)).unwrap().overlap = (0.0, 200.0);
+        stage.scene.as_mut().unwrap().scroll.get_mut(root_id).unwrap().overlap = (0.0, 200.0);
         stage
     }
 
     #[test]
     fn set_scroll_pos_updates_state() {
         let mut stage = build_scroll_stage();
-        stage.set_scroll_pos(NodeId(0), 0.0, 50.0, false);
+        let root_id = stage.scene.as_ref().unwrap().roots[0];
+        stage.set_scroll_pos(root_id, 0.0, 50.0, false);
         assert_eq!(
-            stage.scene.as_ref().unwrap().scroll.get(NodeId(0)).unwrap().scroll_pos,
+            stage.scene.as_ref().unwrap().scroll.get(root_id).unwrap().scroll_pos,
             (0.0, 50.0)
         );
     }
@@ -1210,8 +1225,9 @@ mod abi_tests {
     #[test]
     fn set_scroll_pos_animated_starts_tween() {
         let mut stage = build_scroll_stage();
-        stage.set_scroll_pos(NodeId(0), 0.0, 80.0, true);
-        let st = stage.scene.as_ref().unwrap().scroll.get(NodeId(0)).unwrap();
+        let root_id = stage.scene.as_ref().unwrap().roots[0];
+        stage.set_scroll_pos(root_id, 0.0, 80.0, true);
+        let st = stage.scene.as_ref().unwrap().scroll.get(root_id).unwrap();
         assert_eq!(st.tweening, 1, "animated=true 启 tweening=1");
     }
 
@@ -1228,16 +1244,17 @@ mod abi_tests {
             (None::<usize>, NodeKind::Container, ResolvedStyle::default(), vec![], None::<String>, false, None::<i32>),
         ];
         stage.scene = Some(Scene::build(&entries));
-        // node 0 是 Container，overflow=Visible（默认）→ 非 scroll 容器 → set_scroll_pos no-op（不 panic）
-        stage.set_scroll_pos(NodeId(0), 0.0, 50.0, false);
+        let root_id = stage.scene.as_ref().unwrap().roots[0];
+        // root 是 Container，overflow=Visible（默认）→ 非 scroll 容器 → set_scroll_pos no-op（不 panic）
+        stage.set_scroll_pos(root_id, 0.0, 50.0, false);
         // 不 panic 即通过
     }
 
     #[test]
     fn set_scroll_pos_oob_no_op() {
         let mut stage = build_scroll_stage();
-        // NodeId(99) 越界 → no-op 不 panic
-        stage.set_scroll_pos(NodeId(99), 0.0, 50.0, false);
+        // 越界 NodeId（idx=99）→ no-op 不 panic
+        stage.set_scroll_pos(NodeId((99u32 << 12) | 1), 0.0, 50.0, false);
     }
 
     /// loomgui_stage_set_scroll_pos FFI round-trip。
@@ -1252,15 +1269,16 @@ mod abi_tests {
         loomgui_stage_load_html(h, html.as_ptr() as *const u8, html.len(), css.as_ptr() as *const u8, css.len());
         // fill scroll state（load_inline 后需 refresh + 手动扩 overlap）
         let handle = unsafe { &mut *h };
+        let root_id = handle.stage.scene.as_ref().unwrap().roots[0];
         loomgui_core::scroll::refresh_content_sizes(handle.stage.scene.as_mut().unwrap());
-        handle.stage.scene.as_mut().unwrap().scroll.get_mut(NodeId(0)).unwrap().overlap = (0.0, 200.0);
-        // 调 FFI set_scroll_pos（animated=0 瞬移）
-        loomgui_stage_set_scroll_pos(h, 0, 0.0, 50.0, 0);
-        let st = handle.stage.scene.as_ref().unwrap().scroll.get(NodeId(0)).unwrap();
+        handle.stage.scene.as_mut().unwrap().scroll.get_mut(root_id).unwrap().overlap = (0.0, 200.0);
+        // 调 FFI set_scroll_pos（animated=0 瞬移）——传 slotmap 分配的 NodeId.0（u32 打包值）
+        loomgui_stage_set_scroll_pos(h, root_id.0, 0.0, 50.0, 0);
+        let st = handle.stage.scene.as_ref().unwrap().scroll.get(root_id).unwrap();
         assert_eq!(st.scroll_pos, (0.0, 50.0), "FFI 调后 scroll_pos 更新");
         // animated=1 启 tween
-        loomgui_stage_set_scroll_pos(h, 0, 0.0, 80.0, 1);
-        let st = handle.stage.scene.as_ref().unwrap().scroll.get(NodeId(0)).unwrap();
+        loomgui_stage_set_scroll_pos(h, root_id.0, 0.0, 80.0, 1);
+        let st = handle.stage.scene.as_ref().unwrap().scroll.get(root_id).unwrap();
         assert_eq!(st.tweening, 1, "animated=1 启 tween");
         loomgui_stage_free(h);
     }

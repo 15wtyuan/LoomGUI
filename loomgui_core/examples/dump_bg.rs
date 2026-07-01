@@ -16,8 +16,10 @@ fn main() {
     let want = ["bg-demo", "cf-demo", "ns-demo", "br-demo"];
     for rn in &frame.nodes {
         let nid = rn.node_id as usize;
-        if nid >= scene.nodes.len() { continue; }
-        let n = &scene.nodes[nid];
+        let n = match scene.get(loomgui_core::scene::node::NodeId(rn.node_id)) {
+            Some(n) => n,
+            None => continue,
+        };
         let is_img = matches!(n.kind, loomgui_core::scene::node::NodeKind::Image { .. });
         if !is_img && !want.iter().any(|c| n.classes.iter().any(|cl| cl == c)) { continue; }
         let r = n.layout_rect;

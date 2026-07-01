@@ -12,6 +12,10 @@ unicode-linebreak = "0.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 bincode = "1"
+# slotmap 1.1.1 已在 Cargo.lock（taffy 间接依赖）。Scene.nodes 用 SlotMap<DefaultKey, Node>：
+# 应用层 NodeId(pub u32)（20bit index + 12bit gen，FFI/C# 透明）经 from_ffi/as_ffi 桥接到
+# slotmap DefaultKey（详见 scene/node.rs NodeId impl 与 Scene::key_for）。
+slotmap = { version = "1.1", features = [] }
 
 [dev-dependencies]
 insta = "1"
