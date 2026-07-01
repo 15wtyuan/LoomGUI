@@ -227,6 +227,9 @@ pub fn remove_node(scene: &mut Scene, tweens: &mut TweenManager, id: NodeId) {
     if scene.focused_node == Some(id) {
         scene.focused_node = None;
     }
+    // 3c. PointerState（Stage 层）的 down_node/hovered_chain/drag_target 等不在此清：
+    //     消费点（input.rs）全有 scene.get None-check 兜底，悬空 NodeId 仅向已删节点发 stale 事件
+    //     （RollOut/DRAG_MOVE），无 panic；强清需把 pointer_state 传进 remove_node（改签名），YAGNI。
     // 4. slotmap remove（gen++，旧 NodeId 失效，槽位可复用）。
     //    经 key_for(NodeId) 桥接到 DefaultKey（T2）。
     scene.nodes.remove(scene.key_for(id));

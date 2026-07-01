@@ -321,26 +321,28 @@ namespace LoomGUI
         }
 
         // 动态加载 bin：切到邮件界面（运行时 load_package 整体替换 scene）。
-        // 切后 EventHandler 清 listener（旧 NodeId 失效）——邮件界面无 showcase 按钮，不重订阅。
+        // 先 load 成功再 Clear listener——load 失败则保留旧 listener，UI 不卡死。
+        // 邮件界面无 showcase 按钮，不重订阅。
         void OnDynLoadMail(EventContext ctx)
         {
             if (_dynLoadCurrent == MailPkg) return;
-            _stage.EventHandler.Clear();
             if (_stage.LoadPackageFile(MailPkg))
             {
+                _stage.EventHandler.Clear();
                 _dynLoadCurrent = MailPkg;
                 Debug.Log("[Showcase] 切到邮件界面（load_package）");
             }
         }
 
         // 切回 showcase：load_package + 重新 SubscribeAll（scene 重建，事件重订阅）。
+        // 先 load 成功再 Clear + 重订阅——load 失败则保留邮件界面 listener，不卡死。
         void OnDynLoadShowcase(EventContext ctx)
         {
             if (_dynLoadCurrent == ShowcasePkg) return;
-            _stage.EventHandler.Clear();
-            _dynPanels.Clear();   // 旧 panel NodeId 全失效
             if (_stage.LoadPackageFile(ShowcasePkg))
             {
+                _stage.EventHandler.Clear();
+                _dynPanels.Clear();   // 旧 panel NodeId 全失效
                 _dynLoadCurrent = ShowcasePkg;
                 SubscribeAll();   // 重新订阅 showcase 事件
                 Debug.Log("[Showcase] 切回 showcase（load_package + 重订阅）");
