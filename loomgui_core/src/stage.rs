@@ -241,12 +241,14 @@ impl Stage {
     /// ①tween ②focus_request ③solve ④refresh_content_sizes
     /// ⑤process（仲裁+拖拽跟手写 scroll_pos；hit_test 读上帧 world_transforms，1 帧延迟
     ///   已认） ⑥scroll update（消费 pending_wheel + inertia/bounce advance）
-    /// ⑦process_keys ⑧compute_world_transforms（移 process 后：读 scroll_pos 同帧
+    /// ⑦process_keys ⑧compute_world_transforms（process/scroll 后：读 scroll_pos 同帧
     ///   进 world matrix，零拖拽延迟） ⑨rematch_pseudo_classes ⑩build_render_nodes
     ///
-    /// **首帧 guard**：process 前若 world_transforms 未计算，solve 后即时算一次。
-    /// **1 帧延迟语义**：hit_test 用上帧 world_transforms。仲裁在 Down 未滚动前不影响；
-    /// clip 门控用 viewport 固定主导，不依赖每帧变换精度。
+    /// **compute_world_transforms 时机**：process/scroll 之后、render 之前，每帧 1 次
+    /// （不再"末尾 + 首帧 guard"）。scroll_pos 同帧进 world matrix（spec §9.3）。
+    /// **1 帧延迟语义**：hit_test 用上帧 world_transforms。首帧 world_transforms 为空，
+    /// hit_test bounds guard 拦截（越界返 None → 未命中，零回归安全）。仲裁在 Down 未滚动前
+    /// 不影响；clip 门控用 viewport 固定主导，不依赖每帧变换精度。
     pub fn tick_and_render(&mut self) -> FrameData {
         let scene = self.scene.as_mut().expect("load first");
         let mut out: Vec<EventRecord> = Vec::new();
@@ -263,13 +265,9 @@ impl Stage {
         solve(scene, &self.font, self.root_size, &self.textures);
         // 2. content_size 填充（solve 后 content_size/viewport/overlap）
         crate::scroll::refresh_content_sizes(scene);
-        // compute_world_transforms 移到 process 后（读 scroll_pos 同帧进 world matrix）。
-        // 首帧 guard：hit_test 需有效 world_transforms，solve 后即时算一次。
-        // 后续 tick process 读上帧 world_transforms（1 帧延迟，已认）。
-        if scene.world_transforms.is_empty() {
-            crate::scene::transform::compute_world_transforms(scene);
-        }
         // 3. process（仲裁 + 拖拽跟手写 scroll_pos）
+        // hit_test 读上帧 world_transforms（1 帧延迟，已认）——首帧 world_transforms 为空，
+        // hit_test bounds guard 拦截（越界返 None → 未命中，零回归安全）。
         // 借用冲突解：process 借 &mut scene + &input——scene 与 pending_input 都是 self 字段，
         // 同时借 self 冲突。先 take 出 input（离开 self 借用），process 返回后 drop。
         let input = std::mem::take(&mut self.pending_input);
@@ -355,6 +353,9 @@ mod tests {
         let pkg = crate::asset::write_package(&scene, (200.0, 100.0), &crate::asset::AtlasSection::default(), &dynamic);
         let mut s2 = Stage::new(font_path, (200.0, 100.0)).unwrap();
         s2.load_package(&pkg).unwrap();
+        // 预热 tick：compute_world_transforms 在 process/scroll 后跑，hit_test 读上帧 world_transforms
+        // （1 帧延迟语义，T4）。首帧 world_transforms 空 → 首帧 hit_test 全 None，故输入前先 warmup。
+        s2.tick_and_render();
         // 输入：Move 到按钮 (50,25)（按钮在 (0,0,100,50)）
         s2.set_input(&[crate::input::PointerEvent { kind: crate::input::PointerKind::Move, x: 50.0, y: 25.0, button: 0, pad: [0, 0], touch_id: -1 }]);
         s2.tick_and_render();
@@ -526,5 +527,41 @@ mod tests {
         let content_id = scene.get(scene.roots[0]).unwrap().children[0];
         let (_x, y) = scene.world_transforms[content_id.index()].apply_point(0.0, 0.0);
         assert!(y != 0.0, "拖拽同帧进 world matrix：y={}", y);
+    }
+
+    /// T4：compute_world_transforms 在 render 前每帧跑（不再"末尾+首帧 guard"）。
+    /// tick 后 world_transforms 应非空——证明 compute 在 render 前执行过。
+    #[cfg(feature = "parse")]
+    #[test]
+    fn tick_computes_world_transforms_before_render() {
+        let font_path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/DejaVuSans.ttf");
+        let mut s = Stage::new(font_path, (200.0, 200.0)).unwrap();
+        s.load_inline(r#"<div class="c"></div>"#, ".c{width:100px;height:50px;}").unwrap();
+        s.tick_and_render();
+        // tick 后 world_transforms 应非空（compute 在 render 前跑过）
+        assert!(!s.scene.as_ref().unwrap().world_transforms.is_empty(),
+            "compute_world_transforms 在 render 前跑过");
+    }
+
+    /// T4：hit_test 在 world_transforms 空/未对齐时不 panic（bounds guard 拦截）。
+    /// 结构变更帧新增节点本帧 world_transforms 未算 → 未命中（1 帧延迟语义），不越界 panic。
+    #[test]
+    fn hit_test_bounds_guard_no_panic_on_empty_worlds() {
+        let font_path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/DejaVuSans.ttf");
+        let mut s = Stage::new(font_path, (200.0, 200.0)).unwrap();
+        // 手搓 scene：1 个 touchable 节点（root，覆盖点 50,50）但 world_transforms 空。
+        // hit_subtree 走到 bounds guard（id.index() >= world_transforms.len()）→ 返 None，不 panic。
+        use crate::scene::node::{Node, NodeKind, Rect, Scene};
+        use crate::style::resolved::ResolvedStyle;
+        let mut root = Node::default();
+        root.kind = NodeKind::Container;
+        root.style = ResolvedStyle::default();
+        root.layout_rect = Rect { x: 0.0, y: 0.0, w: 200.0, h: 200.0 };
+        root.touchable = true;
+        let scene = Scene::from_nodes(vec![root], vec![]);
+        s.scene = Some(scene);
+        // world_transforms 空（未 compute）→ hit_test bounds guard 应拦截，不 panic，返 None
+        let hit = crate::hit::hit_test(s.scene.as_ref().unwrap(), (50.0, 50.0));
+        assert_eq!(hit, None, "world_transforms 空 → bounds guard 返 None（未命中，1 帧延迟语义）");
     }
 }

@@ -78,13 +78,15 @@ fn hit_subtree(scene: &Scene, id: NodeId, point: (f32, f32)) -> Option<NodeId> {
     // 子都不命中 → 自身 fallback：touchable + 点经 world matrix 逆投到本地 box
     // world_to_local：点经 world matrix 逆投到本地，判本地 box (0,0,w,h)
     if node.touchable {
-        // bounds guard：world_transforms 可能未对齐（T4 前移时机后统一保证）
-        let wm = if id.index() < scene.world_transforms.len() {
-            &scene.world_transforms[id.index()]
-        } else {
-            &crate::transform::IDENTITY
+        // bounds guard：world_transforms 可能未对齐（结构变更帧新增节点本帧 world_transforms
+        // 未算，或首帧 world_transforms 空）→ 越界返 None（1 帧延迟语义：本帧未命中）。
+        // sentinel id（thumb flag）不会进 hit_subtree（hit_test 在 hit_scrollbar_grip 命中后
+        // 早 return），故此处 id 必为 live 节点 NodeId，index() 不会因 flag bit 失真。
+        let wm = match scene.world_transforms.get(id.index()) {
+            Some(wm) => *wm,
+            None => return None,
         };
-        let inv = crate::transform::inverse(wm);
+        let inv = crate::transform::inverse(&wm);
         let (lx, ly) = crate::transform::apply_point(&inv, point.0, point.1);
         let lr = node.layout_rect;
         if lx >= 0.0 && lx <= lr.w && ly >= 0.0 && ly <= lr.h {

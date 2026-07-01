@@ -719,6 +719,9 @@ mod abi_tests {
         let html = std::ffi::CString::new(r#"<div class="root"><button class="btn">OK</button></div>"#).unwrap();
         let css = std::ffi::CString::new(r#".btn { width: 100px; height: 50px; }"#).unwrap();
         loomgui_stage_load_html(h, html.as_ptr() as *const u8, html.as_bytes().len(), css.as_ptr() as *const u8, css.as_bytes().len());
+        // warmup tick：compute_world_transforms 在 process/scroll 后跑，hit_test 读上帧 world_transforms
+        // （1 帧延迟语义，T4）。首帧 world_transforms 空 → 首帧 hit_test 全 None，故输入前先 warmup。
+        loomgui_stage_tick(h, 0.0);
         // set_input：Move 到按钮 (50,25)
         let ev = PointerEvent { kind: PointerKind::Move, x: 50.0, y: 25.0, button: 0, pad: [0, 0], touch_id: -1 };
         loomgui_stage_set_input(h, &ev, 1);
@@ -802,6 +805,8 @@ mod abi_tests {
         let html = std::ffi::CString::new(r#"<div class="root"><button class="btn">OK</button></div>"#).unwrap();
         let css = std::ffi::CString::new(r#".btn { width: 100px; height: 50px; }"#).unwrap();
         loomgui_stage_load_html(h, html.as_ptr() as *const u8, html.as_bytes().len(), css.as_ptr() as *const u8, css.as_bytes().len());
+        // warmup tick：hit_test 读上帧 world_transforms（1 帧延迟，T4），输入前先 warmup。
+        loomgui_stage_tick(h, 0.0);
         // 触摸 touch_id=3 Down 在 btn (50,25)
         let ev = PointerEvent { kind: PointerKind::Down, x: 50.0, y: 25.0, button: 0, pad: [0, 0], touch_id: 3 };
         loomgui_stage_set_input(h, &ev, 1);
@@ -1018,6 +1023,9 @@ mod abi_tests {
         assert_eq!(loomgui_core::input::EVT_DRAG_END, 8);
         assert_eq!(loomgui_core::input::EVT_LONG_PRESS, 9);
         // Down@btn + Move dx=5>mouse阈值2 → DragStart
+        // warmup tick：compute_world_transforms 在 process/scroll 后跑，hit_test 读上帧 world_transforms
+        // （1 帧延迟语义，T4）。首帧 world_transforms 空 → 首帧 hit_test 全 None，故输入前先 warmup。
+        loomgui_stage_tick(h, 0.0);
         loomgui_stage_set_input(h, [
             PointerEvent { kind: PointerKind::Down, x: 50.0, y: 25.0, button: 0, pad: [0, 0], touch_id: -1 },
             PointerEvent { kind: PointerKind::Move, x: 55.0, y: 25.0, button: 0, pad: [0, 0], touch_id: -1 },
@@ -1041,6 +1049,8 @@ mod abi_tests {
         let html = b"<button class=\"btn\">OK</button>";
         let css = b".btn{width:100px;height:50px;}";
         loomgui_stage_load_html(h, html.as_ptr() as *const u8, html.len(), css.as_ptr() as *const u8, css.len());
+        // warmup tick：hit_test 读上帧 world_transforms（1 帧延迟，T4），输入前先 warmup。
+        loomgui_stage_tick(h, 0.0);
         // frame1: Down@btn（tick dt=0）
         loomgui_stage_set_input(h, [PointerEvent { kind: PointerKind::Down, x: 50.0, y: 25.0, button: 0, pad: [0, 0], touch_id: -1 }].as_ptr(), 1);
         loomgui_stage_tick(h, 0.0);
@@ -1085,6 +1095,8 @@ mod abi_tests {
         let html = b"<button class=\"btn\" tabindex=\"0\">OK</button>";
         let css = b".btn{width:100px;height:50px;}";
         loomgui_stage_load_html(h, html.as_ptr() as *const u8, html.len(), css.as_ptr() as *const u8, css.len());
+        // warmup tick：hit_test 读上帧 world_transforms（1 帧延迟，T4），输入前先 warmup。
+        loomgui_stage_tick(h, 0.0);
         // click-to-focus：Down@btn → tick → 焦点 btn
         use loomgui_core::input::{PointerEvent, PointerKind};
         loomgui_stage_set_input(h, [PointerEvent { kind: PointerKind::Down, x: 50.0, y: 25.0, button: 0, pad: [0, 0], touch_id: -1 }].as_ptr(), 1);
