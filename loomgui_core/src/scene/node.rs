@@ -390,7 +390,7 @@ fn gather_rec(
     let el = &tree.nodes[el_id.0 as usize];
     let style = &styles[el_id.0 as usize];
     // tag→NodeKind 复用 runtime 的 `kind_from_tag`（dynamic.rs，不依赖 parse feature），
-    // 消除两处 tag 白名单重复。parse 层已保证 tag 在围栏白名单内（div/span/img/button/l-container），
+    // 消除两处 tag 白名单重复。parse 层已保证 tag 在围栏白名单内（div/span/img/button），
     // 故 kind_from_tag 在此必 Ok——Err 走 unreachable（parse/白名单契约破坏）。
     // kind_from_tag 对 img/span 返空 src/content（动态建树语义）；parse 路径需从元素属性/文本回填。
     // img 的 src 从属性取（`<img src="...">`），不是元素文本；
