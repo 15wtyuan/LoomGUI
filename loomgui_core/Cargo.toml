@@ -30,7 +30,3 @@ parse = ["dep:scraper", "dep:cssparser"]
 [[test]]
 name = "snapshot"
 required-features = ["parse"]
-
-[[example]]
-name = "v0_snapshot"
-required-features = ["parse"]
