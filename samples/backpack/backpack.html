@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>背包</title>
+<link rel="stylesheet" href="backpack.css">
+<style>
+  /* LoomGUI 预览对齐 polyfill（div 永远 flex column + border-box + body 贴边） */
+  div { display: flex; flex-direction: column; }
+  * { box-sizing: border-box; }
+  body { margin: 0; }
+</style>
+</head>
+<body>
+<div class="root">
+
+  <!-- 顶部信息条 -->
+  <div class="topbar">
+    <div class="coins">
+      <img src="../v1-showcase/icons/zap.png" class="ico-sm">
+      <span class="num">12,480</span>
+    </div>
+    <div class="gems">
+      <img src="../v1-showcase/icons/skin.png" class="ico-sm">
+      <span class="num">328</span>
+    </div>
+    <div class="lvl">
+      <span class="lvtag">Lv.42</span>
+    </div>
+  </div>
+
+  <!-- 标题 -->
+  <div class="title-row">
+    <span class="title">背包</span>
+    <span class="cap">36 / 60</span>
+  </div>
+
+  <!-- 分类 Tab -->
+  <div class="tabs">
+    <button class="tab tab-on">全部</button>
+    <button class="tab">装备</button>
+    <button class="tab">消耗</button>
+    <button class="tab">材料</button>
+    <button class="tab">任务</button>
+  </div>
+
+  <!-- 物品网格 -->
+  <div class="grid" id="grid">
+    <!-- 16 格 -->
+    <div class="cell rare">
+      <img src="../v1-showcase/icons/zap.png" class="item-ico">
+      <span class="qty">x1</span>
+    </div>
+    <div class="cell epic">
+      <img src="../v1-showcase/icons/skin.png" class="item-ico">
+      <span class="qty">x3</span>
+    </div>
+    <div class="cell common">
+      <img src="../v1-showcase/icons/box.png" class="item-ico">
+      <span class="qty">x12</span>
+    </div>
+    <div class="cell rare">
+      <img src="../v1-showcase/icons/cpu.png" class="item-ico">
+      <span class="qty">x2</span>
+    </div>
+    <div class="cell common">
+      <img src="../v1-showcase/icons/eye.png" class="item-ico">
+      <span class="qty">x5</span>
+    </div>
+    <div class="cell common">
+      <img src="../v1-showcase/icons/hand.png" class="item-ico">
+      <span class="qty">x8</span>
+    </div>
+    <div class="cell epic">
+      <img src="../v1-showcase/icons/palette.png" class="item-ico">
+      <span class="qty">x1</span>
+    </div>
+    <div class="cell common">
+      <img src="../v1-showcase/icons/image.png" class="item-ico">
+      <span class="qty">x4</span>
+    </div>
+    <div class="cell common">
+      <img src="../v1-showcase/icons/type.png" class="item-ico">
+      <span class="qty">x20</span>
+    </div>
+    <div class="cell rare">
+      <img src="../v1-showcase/icons/rotate-cw.png" class="item-ico">
+      <span class="qty">x1</span>
+    </div>
+    <div class="cell empty"></div>
+    <div class="cell empty"></div>
+    <div class="cell empty"></div>
+    <div class="cell empty"></div>
+    <div class="cell empty"></div>
+    <div class="cell empty"></div>
+  </div>
+
+  <!-- 选中物品详情 -->
+  <div class="detail">
+    <div class="detail-head">
+      <div class="detail-ico epic">
+        <img src="../v1-showcase/icons/skin.png" class="item-ico-lg">
+      </div>
+      <div class="detail-name-col">
+        <span class="detail-name">幻彩披风</span>
+        <span class="detail-tag">史诗 · 防具</span>
+      </div>
+      <div class="detail-qty-col">
+        <span class="detail-qty">x3</span>
+      </div>
+    </div>
+    <span class="detail-desc">流转着变幻色彩的可穿戴披风，穿戴后提升 12% 移动速度与 8% 闪避率。</span>
+    <div class="detail-stats">
+      <div class="stat">
+        <span class="stat-k">移速</span>
+        <span class="stat-v">+12%</span>
+      </div>
+      <div class="stat">
+        <span class="stat-k">闪避</span>
+        <span class="stat-v">+8%</span>
+      </div>
+      <div class="stat">
+        <span class="stat-k">耐久</span>
+        <span class="stat-v">240/240</span>
+      </div>
+    </div>
+    <div class="detail-actions">
+      <button class="btn-use">使用</button>
+      <button class="btn-ghost">分解</button>
+      <button class="btn-ghost">出售</button>
+    </div>
+  </div>
+
+</div>
+</body>
+</html>
