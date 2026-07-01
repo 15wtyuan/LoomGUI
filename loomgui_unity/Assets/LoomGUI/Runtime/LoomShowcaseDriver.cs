@@ -25,6 +25,13 @@ namespace LoomGUI
         static readonly Ease[] _allEase = { Ease.Linear, Ease.QuadIn, Ease.QuadOut, Ease.QuadInOut, Ease.CubicIn, Ease.CubicOut, Ease.CubicInOut, Ease.BackIn, Ease.BackOut, Ease.BackInOut };
         const uint TagComplete = 7;   // complete 回调用 tag
 
+        // === 动态树演示（§3.10）===
+        // dyn-anchor 是 pkg 里的空容器；点击 dyn-add 运行时 create_node 建 panel+title+icon 挂到 anchor。
+        // _dynPanels 记已建 panel NodeId 栈，dyn-del remove 最后一个。
+        uint _dynAnchor = uint.MaxValue;
+        readonly System.Collections.Generic.List<uint> _dynPanels = new();
+        int _dynSeq;
+
         void Awake()
         {
             if (_stage == null) _stage = GetComponent<LoomStage>();
@@ -48,6 +55,7 @@ namespace LoomGUI
             StaggeredEntrance();
             SubscribeLampEvents();
             SubscribeTweenDemos();
+            SubscribeDynamicTree();
             // 绑外部 GO 到 model-slot（每帧 Sync 自动同步 wrapper TRS；GO 自身 scale 保留）。
             if (_nativeModel != null)
             {
@@ -221,6 +229,51 @@ namespace LoomGUI
         // kill 冻结当前角（停在末值）；clear 清所有 anim 回 CSS 初始。
         void OnKill(EventContext ctx) { _stage.KillTween(_stage.FindNodeById("kill-target"), TweenProp.Rotation); }
         void OnClear(EventContext ctx) { _stage.ClearAnim(_stage.FindNodeById("kill-target")); }
+
+        // === 动态树演示（§3.10）===
+        // 订阅 dyn-add/dyn-del 按钮。dyn-anchor 是 pkg 里的空容器（运行时挂载点）。
+        void SubscribeDynamicTree()
+        {
+            _dynAnchor = _stage.FindNodeById("dyn-anchor");
+            SubscribeLamp("dyn-add", EventType.Click, OnDynAdd);
+            SubscribeLamp("dyn-del", EventType.Click, OnDynDel);
+            Debug.Log($"[Showcase] §3.10 动态树订阅完成（anchor={_dynAnchor}）");
+        }
+
+        // 点 dyn-add：create_node 建 panel(div) + title(span) + icon(img)，append 到 anchor。
+        // 演示运行时建子树 + set_text/set_src + set_style。panel 用内联 CSS（create_node 的 css 参数）。
+        void OnDynAdd(EventContext ctx)
+        {
+            if (_dynAnchor == uint.MaxValue) return;
+            _dynSeq++;
+            // panel：白底圆角 + flex column，固定宽高
+            uint panel = _stage.CreateNode("div", "width:120px;height:90px;background:#2a2f45;border-radius:8px;flex-direction:column;gap:4px;padding:6px");
+            if (panel == uint.MaxValue) { Debug.LogError("[Showcase] create_node panel 失败"); return; }
+            _stage.AppendChild(_dynAnchor, panel);
+
+            // title：span 文本 "item-N"
+            uint title = _stage.CreateNode("span", "font-size:14px;color:#e6e6e0");
+            _stage.AppendChild(panel, title);
+            _stage.SetText(title, "item-" + _dynSeq);
+
+            // icon：img，src 设图标名（demo 未绑 atlas → 白占位，验 set_src 调用通即可）
+            uint icon = _stage.CreateNode("img", "width:40px;height:40px");
+            _stage.AppendChild(panel, icon);
+            _stage.SetSrc(icon, "icons/skin.png");
+
+            _dynPanels.Add(panel);
+            Debug.Log($"[Showcase] 动态建 panel#{_dynSeq} = {panel}（anchor 下共 {_dynPanels.Count} 个）");
+        }
+
+        // 点 dyn-del：remove_node 最后建的 panel（联动清子 + anim/scroll/tween）。
+        void OnDynDel(EventContext ctx)
+        {
+            if (_dynPanels.Count == 0) return;
+            uint last = _dynPanels[_dynPanels.Count - 1];
+            _dynPanels.RemoveAt(_dynPanels.Count - 1);
+            _stage.RemoveNode(last);
+            Debug.Log($"[Showcase] 删 panel {last}（剩 {_dynPanels.Count} 个）");
+        }
 
         // 0-255 RGB → 归一化 [0,1] RGBA float[4]（alpha=1）。Rust tween 直接写 anim 通道，须与 style 归一化一致。
         static float[] Rgba(int r, int g, int b) => new float[] { r / 255f, g / 255f, b / 255f, 1f };
