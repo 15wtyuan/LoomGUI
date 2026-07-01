@@ -30,7 +30,6 @@
 | `span` | Text（内容取 `el.text`） | scene/node.rs:283 |
 | `img` | Image（src 取 `el.attrs["src"]`） | scene/node.rs:280 |
 | `button` | Button | scene/node.rs:279 |
-| `l-container` | Container（与 div 同） | scene/node.rs:278 |
 
 **围栏外标签**：一律**报错**（不降级、不静默忽略）。parse/dom.rs:63-68。
 - 【实证】`rejects_fence_out_element`（dom.rs:203）：`<video>`/`<input>`/`<b>` 等被拒。
