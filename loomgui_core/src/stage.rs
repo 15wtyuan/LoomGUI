@@ -241,6 +241,80 @@ impl Stage {
         }
     }
 
+    // ---- T6 动态建树 API（转调 scene::dynamic） ----
+
+    /// 建根节点：create_node + roots.push(id)。返回新 NodeId。
+    pub fn create_root(&mut self, kind: &str, css: &str) -> Result<NodeId, String> {
+        let scene = self.scene.as_mut().ok_or("no scene")?;
+        crate::scene::dynamic::create_root(scene, kind, css)
+    }
+
+    /// 建节点（不挂父）：kind_from_tag + apply_css 填 base_style + slotmap insert。
+    /// 返回新 NodeId，需配合 append_child/insert_before 挂到树。
+    pub fn create_node(&mut self, kind: &str, css: &str) -> Result<NodeId, String> {
+        let scene = self.scene.as_mut().ok_or("no scene")?;
+        crate::scene::dynamic::create_node(scene, kind, css)
+    }
+
+    /// 挂子到 parent 末尾。child 必须当前无父。
+    pub fn append_child(&mut self, parent: NodeId, child: NodeId) -> Result<(), String> {
+        crate::scene::dynamic::append_child(self.scene.as_mut().ok_or("no scene")?, parent, child)
+    }
+
+    /// 在 parent.children 中 ref_id 之前插 child。ref_id=INVALID → 末尾追加。
+    pub fn insert_before(
+        &mut self,
+        parent: NodeId,
+        child: NodeId,
+        ref_id: NodeId,
+    ) -> Result<(), String> {
+        crate::scene::dynamic::insert_before(
+            self.scene.as_mut().ok_or("no scene")?,
+            parent,
+            child,
+            ref_id,
+        )
+    }
+
+    /// 摘子（不删节点）：从 parent.children 移除 + child.parent=None。节点仍 live 可重挂。
+    pub fn remove_child(&mut self, parent: NodeId, child: NodeId) -> Result<(), String> {
+        crate::scene::dynamic::remove_child(self.scene.as_mut().ok_or("no scene")?, parent, child)
+    }
+
+    /// 改 Text 节点 content + 标 dirty_text。
+    pub fn set_text(&mut self, node: NodeId, text: &str) -> Result<(), String> {
+        crate::scene::dynamic::set_text(self.scene.as_mut().ok_or("no scene")?, node, text)
+    }
+
+    /// 改 Image 节点 src + 标 dirty_mesh。
+    pub fn set_src(&mut self, node: NodeId, src: &str) -> Result<(), String> {
+        crate::scene::dynamic::set_src(self.scene.as_mut().ok_or("no scene")?, node, src)
+    }
+
+    /// 改 base_style（apply_css）+ 标 dirty_mesh。下帧 rematch 从 base 重算 style。
+    pub fn set_style(&mut self, node: NodeId, css: &str) -> Result<(), String> {
+        crate::scene::dynamic::set_style(self.scene.as_mut().ok_or("no scene")?, node, css)
+    }
+
+    /// 测试 helper：建空 scene 的 Stage（不依赖 parse feature）。
+    /// 供 T6 动态建树 API 测试用——用 create_root/create_node 返回的 NodeId，不硬编码值。
+    #[cfg(test)]
+    pub fn new_for_test() -> Self {
+        let font_path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/DejaVuSans.ttf");
+        let mut s = Stage::new(font_path, (200.0, 200.0)).unwrap();
+        s.scene = Some(crate::scene::node::Scene {
+            roots: vec![],
+            nodes: slotmap::SlotMap::with_key(),
+            dynamic_rules: Default::default(),
+            focused_node: None,
+            world_transforms: Vec::new(),
+            anim: Default::default(),
+            scroll: Default::default(),
+            text_layouts: Vec::new(),
+        });
+        s
+    }
+
     /// 本帧产出的事件（tick 后读；FFI borrow_events 用）。
     pub fn last_events(&self) -> &[EventRecord] {
         &self.last_events
@@ -618,5 +692,126 @@ mod tests {
         assert!(scene.get(div_kids[2]).is_some(), "c 仍 live（高 idx，间隙后仍可索引）");
         // 再 tick 一帧确认稳定（world_transforms 已按新容量重算）
         s.tick_and_render();
+    }
+}
+
+/// T6 动态建树 API 测试（不依赖 parse feature——runtime API 可用性门）。
+/// 用 Stage::new_for_test() 建空 scene，用 create_root/create_node 返回的 NodeId，不硬编码值。
+#[cfg(test)]
+mod dynamic_tests {
+    use super::*;
+    use crate::scene::node::NodeKind;
+
+    #[test]
+    fn create_node_and_append_builds_tree() {
+        let mut s = Stage::new_for_test();
+        let root = s.create_root("div", "width:100px;height:100px").unwrap();
+        let child = s.create_node("div", "width:50px;height:50px").unwrap();
+        s.append_child(root, child).unwrap();
+        let sc = s.scene.as_ref().unwrap();
+        assert_eq!(sc.roots, vec![root]);
+        assert_eq!(sc.get(root).unwrap().children, vec![child]);
+        assert_eq!(sc.get(child).unwrap().parent, Some(root));
+        // CSS 应用生效：base_style width 100px
+        use taffy::style::Dimension;
+        assert!(matches!(
+            sc.get(root).unwrap().base_style.taffy_style.size.width,
+            Dimension::Length(100.0)
+        ));
+    }
+
+    #[test]
+    fn set_text_changes_content_and_marks_dirty() {
+        let mut s = Stage::new_for_test();
+        let t = s.create_node("span", "").unwrap();
+        // create_node 时 Text 节点 dirty_text=true，先清掉验 set_text 重标
+        s.scene.as_mut().unwrap().get_mut(t).unwrap().dirty_text = false;
+        s.set_text(t, "hello").unwrap();
+        let sc = s.scene.as_ref().unwrap();
+        assert!(sc.get(t).unwrap().dirty_text);
+        match &sc.get(t).unwrap().kind {
+            NodeKind::Text { content } => assert_eq!(content, "hello"),
+            _ => panic!("expected Text"),
+        }
+    }
+
+    #[test]
+    fn set_style_changes_base_style() {
+        let mut s = Stage::new_for_test();
+        let n = s.create_node("div", "").unwrap();
+        s.set_style(n, "background-color:#ff0000").unwrap();
+        let bg = s.scene.as_ref().unwrap().get(n).unwrap().base_style.background_color;
+        assert_eq!(bg, Some([1.0, 0.0, 0.0, 1.0]));
+    }
+
+    #[test]
+    fn remove_child_detaches_but_keeps_node() {
+        let mut s = Stage::new_for_test();
+        let root = s.create_root("div", "").unwrap();
+        let child = s.create_node("div", "").unwrap();
+        s.append_child(root, child).unwrap();
+        s.remove_child(root, child).unwrap();
+        let sc = s.scene.as_ref().unwrap();
+        assert!(sc.get(root).unwrap().children.is_empty());
+        assert!(
+            sc.get(child).unwrap().parent.is_none(),
+            "child 变孤立但仍存活"
+        );
+        assert!(sc.get(child).is_some());
+    }
+
+    /// 动态建树后 tick_and_render 正确渲染（layout solve 每帧从零建 taffy 树，自动跟进结构变更）。
+    /// 核心不变量：动态建的树经完整管线（solve+compute+render）不 panic，frame 产出。
+    /// 注：merge_meshes 会把同 DrawState 的 Mesh 节点合并 → frame.nodes.len() 可小于节点数，
+    /// 故只断言 frame 非空 + 至少一个 Mesh 含几何（证明渲染吃到动态建的树）。
+    #[test]
+    fn dynamic_tree_tick_and_render_does_not_panic() {
+        let mut s = Stage::new_for_test();
+        let root = s.create_root("div", "width:200px;height:200px").unwrap();
+        let child = s.create_node("div", "width:100px;height:100px;background-color:#00ff00").unwrap();
+        s.append_child(root, child).unwrap();
+        // 完整管线跑一遍：solve 建 taffy 树 + compute_world_transforms + render
+        let frame = s.tick_and_render();
+        // frame 非空 + 至少一个 Mesh 含顶点（root/child 合并后仍应有几何）
+        assert!(!frame.nodes.is_empty(), "动态建的树应渲染出节点");
+        let has_mesh = frame.nodes.iter().any(|rn| {
+            matches!(&rn.payload, crate::render::node::NodePayload::Mesh { verts, .. } if !verts.is_empty())
+        });
+        assert!(has_mesh, "应有含几何的 Mesh 节点（动态树渲染产出）");
+        // 再 tick 一帧（dirty 标志清后稳定，仍不 panic）
+        s.tick_and_render();
+    }
+
+    /// set_text 后 tick_and_render 重算文本（dirty_text → render 重测）。
+    #[test]
+    fn set_text_then_tick_renders() {
+        let mut s = Stage::new_for_test();
+        let t = s.create_node("span", "width:100px;height:20px").unwrap();
+        s.set_text(t, "hi").unwrap();
+        let frame = s.tick_and_render();
+        // span 节点应进 frame
+        assert!(frame.nodes.len() >= 1);
+    }
+
+    /// create_node 拒绝未知 tag。
+    #[test]
+    fn create_node_rejects_unknown_tag() {
+        let mut s = Stage::new_for_test();
+        assert!(s.create_node("ul", "").is_err());
+    }
+
+    /// insert_before 中间插入经 Stage API。
+    #[test]
+    fn stage_insert_before_middle() {
+        let mut s = Stage::new_for_test();
+        let root = s.create_root("div", "").unwrap();
+        let a = s.create_node("div", "").unwrap();
+        let b = s.create_node("div", "").unwrap();
+        let c = s.create_node("div", "").unwrap();
+        s.append_child(root, a).unwrap();
+        s.append_child(root, b).unwrap();
+        s.insert_before(root, c, a).unwrap();
+        let sc = s.scene.as_ref().unwrap();
+        assert_eq!(sc.get(root).unwrap().children, vec![c, a, b]);
     }
 }
