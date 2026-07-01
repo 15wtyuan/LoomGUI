@@ -136,8 +136,9 @@ namespace LoomGUI
                         m[1, 0] = blob.Mb(i); m[1, 1] = blob.Md(i);
                         SetObjectMatrix(ro, m);
                     }
-                    // v1.3 ColorFilter（program=3）：矩阵 20 float 拆 5 Vector MPB SetVector。
-                    if (blob.Program(i) == 3)
+                    // v1.3 ColorFilter（program=3=filter 无图 / 4=filter+bg-image 双 keyword）：
+                    // 矩阵 20 float 拆 5 Vector MPB SetVector。漏 program=4 → cf-demo 滤镜不生效（全青色，验收坑）。
+                    if (blob.Program(i) == 3 || blob.Program(i) == 4)
                     {
                         SetColorFilterMatrix(ro, blob.ColorMatrix(i));
                     }

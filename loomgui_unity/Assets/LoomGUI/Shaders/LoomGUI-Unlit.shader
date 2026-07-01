@@ -98,20 +98,28 @@ Shader "LoomGUI/Unlit"
                 // text（program:1）：font atlas 是 alpha-mask（glyph 在 alpha，rgb 黑）→ rgb 用 vcol，alpha = vcol.a * tex.a。
                 half4 col = half4(vcol.rgb, vcol.a * tex.a);
                 #elif defined(BG_COMPOSITE)
-                // Container+bg-image（program:2，坑 79）：CSS background 合成。
-                // 图不透明区显图（tex.rgb），透明区显 bg-color（vcol.rgb）；整体 alpha 由 bg-color 决定。
-                // tex.rgb 与 vcol.rgb 均已 linear（tex sRGB 自动转，vcol 上方手动转），合成在 linear 空间正确。
-                half4 col = half4(tex.rgb * tex.a + vcol.rgb * (1.0 - tex.a), vcol.a);
+                // Container+bg-image（program:2/4）：CSS background 合成 = 图(tex) over 底色(vcol)，结果直通配合 SrcAlpha blend。
+                // 旧 col.a=vcol.a：无 bg-color(vcol.a=0)时全透明丢图（验收 §3.6第4/§3.7/§3.9 图消失）。
+                // 标准 source-over：a=tex.a+vcol.a·(1−tex.a)；rgb 直通=预乘/a（max 防除零；a=0 像素 Blend 不贡献，rgb 无关）。
+                // 有底色不透明(vcol.a=1)：a=1, rgb=图叠底色（与旧公式完全一致，零回归）。
+                // 无底色(vcol.a=0)：a=tex.a, rgb=tex.rgb（等价 program:0 图直通，图显透明区透下层）。
+                float bgA = tex.a + vcol.a * (1.0 - tex.a);
+                float3 bgRgb = ((float3)tex.rgb * tex.a + (float3)vcol.rgb * vcol.a * (1.0 - tex.a)) / max(bgA, 1e-6);
+                half4 col = half4(bgRgb, bgA);
                 #else
                 // image/mesh（program:0）：彩色 texture → tex.rgb × vcol。
                 half4 col = tex * vcol;
                 #endif
                 #if defined(COLOR_FILTER)
-                // ColorFilter（program=3）：4×5 矩阵后处理（照搬 fgui UpdateMatrix）。
-                // matrix × col.rgb + offset；alpha 行恒 (0,0,0,1,0) → alpha 不变。
+                // CSS filter 定义在 sRGB 空间（矩阵 offset 如 contrast -0.25 = sRGB 中点 0.5 的偏移）。
+                // col.rgb 当前 linear → linear→sRGB → 矩阵 → sRGB→linear，中点/色相才与浏览器对齐。
+                // max(.,0) 防 pow 负底数 NaN（矩阵可出负值或超 1，最终 Blend 输出时再裁）。cfs 避免与上方 sc 重名。
+                half3 cfs = col.rgb;
+                cfs = (cfs <= 0.0031308) ? cfs * 12.92 : 1.055 * pow(max(cfs, 0.0), 1.0 / 2.4) - 0.055;
                 float4x4 cfM = float4x4(_CF0, _CF1, _CF2, _CF3);
-                col.rgb = mul(cfM, float4(col.rgb, 1.0)).rgb + _CFOff.rgb;
-                // col.a 不变（fgui alpha 行 (0,0,0,1,0)）
+                cfs = mul(cfM, float4(cfs, 1.0)).rgb + _CFOff.rgb;
+                cfs = (cfs <= 0.04045) ? cfs / 12.92 : pow(max((cfs + 0.055) / 1.055, 0.0), 2.4);
+                col.rgb = cfs;
                 #endif
                 #ifdef CLIPPED
                 float2 f = abs(i.clipPos);

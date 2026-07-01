@@ -155,12 +155,21 @@ pub fn build_render_nodes(
                 // v 翻转（同 Image 分支：design y-down 配 Unity y-up；
                 // 交换 uv v 传给 mesh 函数，所有 mesh 函数同样处理）
                 let has_slice = n.style.border_image_slice.is_some();
+                // contain 缩 geometry（左上 CSS position 0% 0%）；slice+contain 不组合（showcase 无）。
+                let draw_rect = if !has_slice
+                    && matches!(n.style.background_size, crate::style::resolved::BackgroundSize::Contain)
+                {
+                    let s = (rect.w / src_w.max(1.0)).min(rect.h / src_h.max(1.0));
+                    crate::scene::node::Rect { x: rect.x, y: rect.y, w: src_w.max(1.0) * s, h: src_h.max(1.0) * s }
+                } else {
+                    *rect
+                };
                 let (v, uvc, col, idx) = match (has_slice, all_zero) {
                     (false, true)  => crate::render::mesh::quad(
-                        rect, color, [u_min[0], u_max[1]], [u_max[0], u_min[1]],
+                        &draw_rect, color, [u_min[0], u_max[1]], [u_max[0], u_min[1]],
                     ),
                     (false, false) => crate::render::mesh::rounded_rect(
-                        rect, color, &radii,
+                        &draw_rect, color, &radii,
                         [u_min[0], u_max[1]], [u_max[0], u_min[1]],
                     ),
                     (true,  true)  => crate::render::mesh::nine_slice(
@@ -286,19 +295,19 @@ fn fit_uv(size: crate::style::resolved::BackgroundSize, rect: &Rect, meta: &TexM
     let (uv_min, uv_max) = (meta.uv_min, meta.uv_max);
     if iw <= 0.0 || ih <= 0.0 { return (uv_min, uv_max); }
     let (auw, auh) = (uv_max[0] - uv_min[0], uv_max[1] - uv_min[1]);
-    let (cu, cv) = ((uv_min[0] + uv_max[0]) / 2.0, (uv_min[1] + uv_max[1]) / 2.0);
     match size {
-        BackgroundSize::Stretch => (uv_min, uv_max),
-        BackgroundSize::Cover | BackgroundSize::Contain => {
-            let s = match size {
-                BackgroundSize::Cover => (rw / iw).max(rh / ih),
-                BackgroundSize::Contain => (rw / iw).min(rh / ih),
-                _ => unreachable!(),
-            };
+        // Stretch/Contain：UV 整子区。Contain 由 build_render_nodes 缩 geometry（左上子矩形），
+        // UV 配合用整 [0,1]；Stretch 整子区拉伸填满。
+        BackgroundSize::Stretch | BackgroundSize::Contain => (uv_min, uv_max),
+        BackgroundSize::Cover => {
+            // cover 左上 CSS 0% 0%：图顶对齐容器顶、图左对齐容器左，右下溢出裁切。
+            // design 顶 ↔ texture 子区顶（v 大，Unity v=1=图顶）；v 取子区顶 [uv_max[1]-v_span, uv_max[1]]。
+            // u 取子区左 [uv_min[0], uv_min[0]+u_span]。
+            let s = (rw / iw).max(rh / ih);
             let u_span = auw * rw / (iw * s);
             let v_span = auh * rh / (ih * s);
-            ([cu - u_span / 2.0, cv - v_span / 2.0],
-             [cu + u_span / 2.0, cv + v_span / 2.0])
+            ([uv_min[0], uv_max[1] - v_span],
+             [uv_min[0] + u_span, uv_max[1]])
         }
     }
 }
@@ -979,33 +988,28 @@ mod tests {
     }
 
     #[test]
-    fn fit_uv_cover_insets_to_visible_center() {
+    fn fit_uv_cover_insets_to_top_left() {
         // 正方图 100×100，长方容器 200×50：scale=max(200/100,50/100)=2，
-        // 可见图占图原始 100×25（容器比例），居中 → UV 内收。
+        // 图左上对齐容器（CSS position 0% 0%），右下溢出裁切 → UV 从 uv_min 起。
         let meta = TexMeta { tex_id: 1, uv_min: [0.0, 0.0], uv_max: [1.0, 1.0], width: 100, height: 100 };
         let rect = Rect { x: 0.0, y: 0.0, w: 200.0, h: 50.0 };
         let (a, b) = fit_uv(BackgroundSize::Cover, &rect, &meta);
-        // u_span = 1.0 * 200/(100*2) = 1.0（宽方向图填满，不裁）
-        // v_span = 1.0 * 50/(100*2) = 0.25（高方向内收，中央 0.375..0.625）
+        // u_span = 1.0（宽填满），v_span = 0.25（高内收）；v 取子区顶 0.75..1.0（图顶对齐容器顶）。
         assert!((a[0] - 0.0).abs() < 1e-5, "Cover u_min=0");
         assert!((b[0] - 1.0).abs() < 1e-5, "Cover u_max=1（宽填满）");
-        assert!((a[1] - 0.375).abs() < 1e-5, "Cover v_min=0.375（中央可见区顶）");
-        assert!((b[1] - 0.625).abs() < 1e-5, "Cover v_max=0.625（中央可见区底）");
+        assert!((a[1] - 0.75).abs() < 1e-5, "Cover v_min=0.75（子区顶起）");
+        assert!((b[1] - 1.0).abs() < 1e-5, "Cover v_max=1.0（子区顶，图顶对齐容器顶）");
     }
 
     #[test]
-    fn fit_uv_contain_outsets_to_leave_margins() {
-        // 正方图 100×100，长方容器 200×50：scale=min(200/100,50/100)=0.5，
-        // 图缩放后 200×50 恰填满 → 无留白。换容器 100×200 验外扩：
-        // scale=min(100/100,200/100)=1.0，图 100×100 居中放 100×200 → 高方向留白。
+    fn fit_uv_contain_returns_full_subregion() {
+        // contain 由 build_render_nodes 缩 geometry（左上子矩形），fit_uv 只返整子区 UV。
+        // 100×100 图，100×200 容器：geometry 缩到 100×100（左上），UV 整 [0,1]。
         let meta = TexMeta { tex_id: 1, uv_min: [0.0, 0.0], uv_max: [1.0, 1.0], width: 100, height: 100 };
         let rect = Rect { x: 0.0, y: 0.0, w: 100.0, h: 200.0 };
         let (a, b) = fit_uv(BackgroundSize::Contain, &rect, &meta);
-        // s=1.0；u_span=1*100/(100*1)=1.0（宽填满）；v_span=1*200/(100*1)=2.0（外扩到 -0.5..1.5）
-        assert!((a[0] - 0.0).abs() < 1e-5, "Contain u_min=0（宽填满）");
-        assert!((b[0] - 1.0).abs() < 1e-5, "Contain u_max=1");
-        assert!((a[1] - (-0.5)).abs() < 1e-5, "Contain v_min=-0.5（外扩，子区外留白）");
-        assert!((b[1] - 1.5).abs() < 1e-5, "Contain v_max=1.5");
+        assert_eq!(a, [0.0, 0.0], "Contain u_min/v_min=0（整子区）");
+        assert_eq!(b, [1.0, 1.0], "Contain u_max/v_max=1（整子区，geometry 缩在 build_render_nodes）");
     }
 
     #[test]
@@ -1041,14 +1045,40 @@ mod tests {
         match &frame.nodes[0].payload {
             NodePayload::Mesh { texture, uvs, colors, .. } => {
                 assert_eq!(*texture, 1, "带图 Container texture=tex_id(1)");
-                // cover v_span=0.25 中央 0.375..0.625，v 翻转后 TL=(0, 0.625)
+                // cover v 取子区顶 0.75..1.0（图顶对齐容器顶），v 翻转后 TL=(0, 1.0)
                 assert!((uvs[0][0] - 0.0).abs() < 1e-5, "TL u=0");
-                assert!((uvs[0][1] - 0.625).abs() < 1e-5, "TL v=0.625（cover 中央 + v 翻转）");
+                assert!((uvs[0][1] - 1.0).abs() < 1e-5, "TL v=1.0（cover 图顶对齐容器顶 + v 翻转）");
                 // 无 background-color → 顶点色透明（图独立显示）
                 assert_eq!(*colors.first().unwrap(), [0.0, 0.0, 0.0, 0.0], "无底色 → 透明顶点色");
             }
             _ => panic!("expected Mesh"),
         }
+    }
+
+    #[test]
+    fn build_container_bg_image_contain_shrinks_geometry() {
+        // contain：图完整放入，geometry 缩到子矩形（左上 CSS position 0% 0%），右下留白。
+        // 100×100 图，200×100 容器：s=min(2,1)=1，子矩形 100×100 左上 → verts xmax=100（右留白 100）。
+        let mut scene = Scene {
+            roots: vec![NodeId(0)], nodes: vec![],
+            dynamic_rules: Default::default(), focused_node: None,
+            world_transforms: Vec::new(), anim: Default::default(),
+            scroll: Default::default(), text_layouts: Vec::new(),
+        };
+        let mut n = container_node(0, None, Rect { x: 0.0, y: 0.0, w: 200.0, h: 100.0 }, None);
+        n.style.background_image = Some("a.png".into());
+        n.style.background_size = BackgroundSize::Contain;
+        scene.nodes.push(n);
+
+        let font = test_font().expect("need font");
+        let mut tex = TextureRegistry::default();
+        tex.insert("a.png", TexMeta { tex_id: 1, uv_min: [0.0, 0.0], uv_max: [1.0, 1.0], width: 100, height: 100 });
+        crate::scene::transform::compute_world_transforms(&mut scene);
+        let (frame, _) = build_render_nodes(&scene, &font, &tex, &[]);
+        if let NodePayload::Mesh { verts, .. } = &frame.nodes[0].payload {
+            let xmax = verts.iter().map(|v| v[0]).fold(f32::MIN, f32::max);
+            assert!((xmax - 100.0).abs() < 1e-2, "contain 子矩形 xmax=100（图缩放宽，右留白），got {}", xmax);
+        } else { panic!("expected Mesh"); }
     }
 
     #[test]

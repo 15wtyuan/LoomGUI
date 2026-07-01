@@ -70,8 +70,11 @@ pub fn build_registry(section: &AtlasSection) -> crate::asset::texture::TextureR
     let aw = atlas.width as f32;
     let ah = atlas.height as f32;
     for spr in &section.sprites {
-        let uv_min = [spr.x as f32 / aw, spr.y as f32 / ah];
-        let uv_max = [(spr.x + spr.w) as f32 / aw, (spr.y + spr.h) as f32 / ah];
+        // UV 存 Unity 约定（v=0 底 / v=1 顶）：PNG y=0 顶 ↔ Unity v=1，故 v 翻转。
+        // 旧用 PNG y-down（uv_min[1]=spr.y/ah），sprite 不占整高时 design 顶↔PNG 底（上下错位）；
+        // v1.3 加 108px skin.png 打破 atlas 高度（icon 不再占满高）首次暴露。
+        let uv_min = [spr.x as f32 / aw, (ah - (spr.y + spr.h) as f32) / ah];
+        let uv_max = [(spr.x + spr.w) as f32 / aw, (ah - spr.y as f32) / ah];
         reg.insert(
             &spr.src,
             crate::asset::texture::TexMeta {
@@ -579,13 +582,16 @@ mod tests {
         let reg = build_registry(&section);
         let m1 = reg.get("s1.png").expect("s1 registered");
         assert_eq!(m1.tex_id, 1, "atlas[0] → tex_id 1");
-        assert_eq!(m1.uv_min, [0.0, 0.0]);
-        assert_eq!(m1.uv_max, [64.0 / 512.0, 32.0 / 256.0]);
+        // v flip（Unity 约定 v=0 底）：m1 spr(0,0,64,32) atlas 512×256 →
+        // uv_min=[0, (256-32)/256], uv_max=[64/512, (256-0)/256=1.0]
+        assert_eq!(m1.uv_min, [0.0, (256.0 - 32.0) / 256.0]);
+        assert_eq!(m1.uv_max, [64.0 / 512.0, (256.0 - 0.0) / 256.0]);
         assert_eq!((m1.width, m1.height), (64, 32));
         let m2 = reg.get("s2.png").expect("s2 registered");
         assert_eq!(m2.tex_id, 1, "同图集 sprite 共享 tex_id");
-        assert_eq!(m2.uv_min, [64.0 / 512.0, 32.0 / 256.0]);
-        assert_eq!(m2.uv_max, [(64.0 + 100.0) / 512.0, (32.0 + 200.0) / 256.0]);
+        // m2 spr(64,32,100,200) → uv_min=[64/512, (256-232)/256], uv_max=[164/512, (256-32)/256]
+        assert_eq!(m2.uv_min, [64.0 / 512.0, (256.0 - 232.0) / 256.0]);
+        assert_eq!(m2.uv_max, [(64.0 + 100.0) / 512.0, (256.0 - 32.0) / 256.0]);
     }
 
     #[test]

@@ -909,9 +909,10 @@ mod tests {
         let mut s = ResolvedStyle::default();
         assert!(apply_decl(&mut s, "filter", "grayscale(1) brightness(1.2)"));
         let m = s.color_filter.expect("multi filter");
-        // 应 = concat(grayscale, brightness(1.2))：grayscale 行 0 offset +0.2
-        assert!((m[4] - 0.2).abs() < 1e-4, "brightness offset 叠加到 grayscale");
-        assert!((m[0] - 0.299).abs() < 1e-4, "仍含 grayscale luma");
+        // concat(grayscale, brightness(1.2))：brightness 改乘法（对角 1.2，无 offset）。
+        // m[0] = grayscale luma(0.299) × 1.2 = 0.3588；m[4] offset = 0（两者都无 offset）。
+        assert!(m[4].abs() < 1e-4, "brightness 乘法无 offset → m[4]=0");
+        assert!((m[0] - 0.3588).abs() < 1e-4, "m[0] = grayscale luma × brightness = 0.299×1.2");
     }
 
     /// 多函数 filter 串联顺序与 CSS/fgui 一致（I2 回归）。

@@ -278,14 +278,29 @@ pub fn nine_slice_rounded(
     let mut colors: Vec<[f32; 4]> = Vec::new();
     let mut indices: Vec<u32> = Vec::new();
 
-    // push 一个 rect-space (px,py) 顶点，UV 按源图像素 1:1 映射
-    // （pos - rect.xy 对应源图像素 (px-rect.x, py-rect.y)）。
+    // rect 局部 px → UV，按 slice 分段（左角区 1:1 从左、中拉伸、右角区 1:1 从右钉 umax）。
+    // 修复：旧全局线性 umin+(px-rect.x)*sxf 在 rect.w>src_w 时右角区 UV 超 umax（采相邻图失真）。
+    let mid_span_x = (w - sl_l - sl_r).max(1e-6);
+    let mid_span_y = (h - sl_t - sl_b).max(1e-6);
+    let u_of = |px: f32| -> f32 {
+        let lx = px - rect.x;
+        if lx <= sl_l { umin + lx * sxf }
+        else if lx >= w - sl_r { umax - (w - lx) * sxf }
+        else { tx_l + (lx - sl_l) / mid_span_x * (tx_r - tx_l) }
+    };
+    let v_of = |py: f32| -> f32 {
+        let ly = py - rect.y;
+        if ly <= sl_t { vmin + ly * syf }
+        else if ly >= h - sl_b { vmax - (h - ly) * syf }
+        else { ty_t + (ly - sl_t) / mid_span_y * (ty_b - ty_t) }
+    };
+    // push 一个 rect-space (px,py) 顶点，UV 按 slice 分段映射（角区 1:1，中间拉伸）。
     let push_rect_uv = |vs: &mut Vec<[f32; 2]>,
                         us: &mut Vec<[f32; 2]>,
                         cs: &mut Vec<[f32; 4]>,
                         px: f32, py: f32| {
         vs.push([px, py]);
-        us.push([umin + (px - rect.x) * sxf, vmin + (py - rect.y) * syf]);
+        us.push([u_of(px), v_of(py)]);
         cs.push(color);
     };
     // push 一个 quad（4 顶点 + 2 三角形）。UV 由调用方算好传。
@@ -303,18 +318,12 @@ pub fn nine_slice_rounded(
         ix.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
     };
 
-    // 发一个角区 quad（角区不拉伸，UV 1:1 映射源角像素）。
-    // (x0,y0)-(x1,y1) 是 rect 空间子格；角区 UV 用源图像素坐标算。
     let corner_quad = |vs: &mut Vec<[f32; 2]>,
                        us: &mut Vec<[f32; 2]>,
                        cs: &mut Vec<[f32; 4]>,
                        ix: &mut Vec<u32>,
                        x0: f32, x1: f32, y0: f32, y1: f32| {
-        let u0 = umin + (x0 - rect.x) * sxf;
-        let u1 = umin + (x1 - rect.x) * sxf;
-        let v0 = vmin + (y0 - rect.y) * syf;
-        let v1 = vmin + (y1 - rect.y) * syf;
-        push_quad_uv(vs, us, cs, ix, x0, x1, y0, y1, u0, u1, v0, v1);
+        push_quad_uv(vs, us, cs, ix, x0, x1, y0, y1, u_of(x0), u_of(x1), v_of(y0), v_of(y1));
     };
 
     // ---- 四角：四分之一圆弧扇形（纯几何圆角）----
