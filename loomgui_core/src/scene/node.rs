@@ -389,24 +389,26 @@ fn gather_rec(
 ) -> usize {
     let el = &tree.nodes[el_id.0 as usize];
     let style = &styles[el_id.0 as usize];
-    // parse 层已保证 tag 在围栏白名单内（div/span/img/button/l-container），
-    // 故此处显式 match 无 fallback；若来未识别 tag 是 parse/白名单的 bug。
+    // tag→NodeKind 复用 runtime 的 `kind_from_tag`（dynamic.rs，不依赖 parse feature），
+    // 消除两处 tag 白名单重复。parse 层已保证 tag 在围栏白名单内（div/span/img/button/l-container），
+    // 故 kind_from_tag 在此必 Ok——Err 走 unreachable（parse/白名单契约破坏）。
+    // kind_from_tag 对 img/span 返空 src/content（动态建树语义）；parse 路径需从元素属性/文本回填。
     // img 的 src 从属性取（`<img src="...">`），不是元素文本；
     // span 的文本是其自身 content（Text 叶子，无子节点）。
-    let kind = match el.tag.as_str() {
-        "div" | "l-container" => NodeKind::Container,
-        "button" => NodeKind::Button,
-        "img" => NodeKind::Image {
-            src: el.attrs.get("src").cloned().unwrap_or_default(),
-        },
-        "span" => NodeKind::Text {
-            content: el.text.clone().unwrap_or_default(),
-        },
-        _ => unreachable!(
+    let mut kind = crate::scene::dynamic::kind_from_tag(&el.tag)
+        .unwrap_or_else(|_| unreachable!(
             "parse 层白名单已挡围栏外 tag，scene 不应见到 <{}>；这是 parse/scene 契约破坏",
             el.tag
-        ),
-    };
+        ));
+    match &mut kind {
+        NodeKind::Image { src } => {
+            *src = el.attrs.get("src").cloned().unwrap_or_default();
+        }
+        NodeKind::Text { content } => {
+            *content = el.text.clone().unwrap_or_default();
+        }
+        _ => {}
+    }
     // draggable="true" → Node.draggable（HTML 原生属性）。
     // 非 "true" 一律 false（draggable="false"/缺省/任意值 → false，照 HTML truthy 语义简化）。
     let draggable = el.attrs.get("draggable").map(|v| v == "true").unwrap_or(false);

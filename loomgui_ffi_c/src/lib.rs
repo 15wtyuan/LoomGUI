@@ -532,6 +532,184 @@ pub extern "C" fn loomgui_stage_clear_anim_prop(h: *mut StageHandle, node_id: u3
     }
 }
 
+// ===== T7 动态树 API FFI（§7.2）：create_root/create_node/append_child/insert_before/
+// remove_child/remove_node/set_text/set_src/set_style。转调 Stage 方法（T5/T6）。
+// 错误语义：create_root/create_node 返 u32 NodeId（0xFFFF_FFFF = 失败）；
+// 其余返 i32（0=ok，-1=err）。null 句柄 → 失败/sentinel（不 panic）。
+
+/// 建根节点并设为 roots[0]。kind/css = UTF-8 字节。返 NodeId；0xFFFF_FFFF = 失败。
+///
+/// **常驻（不 gate）：**runtime 稳定入口，`--no-default-features` 构建的 .dll 仍有本函数。
+#[no_mangle]
+pub extern "C" fn loomgui_stage_create_root(
+    h: *mut StageHandle,
+    kind: *const u8,
+    kind_len: usize,
+    css: *const u8,
+    css_len: usize,
+) -> u32 {
+    const FAIL: u32 = 0xFFFF_FFFF;
+    if h.is_null() {
+        return FAIL;
+    }
+    let sh = unsafe { &mut *h };
+    let kind = std::str::from_utf8(unsafe { std::slice::from_raw_parts(kind, kind_len) }).unwrap_or("");
+    let css = std::str::from_utf8(unsafe { std::slice::from_raw_parts(css, css_len) }).unwrap_or("");
+    match sh.stage.create_root(kind, css) {
+        Ok(id) => id.0,
+        Err(_) => FAIL,
+    }
+}
+
+/// 建节点（不挂父）。kind/css = UTF-8 字节。返 NodeId；0xFFFF_FFFF = 失败。
+/// 需配合 append_child/insert_before 挂到树。
+///
+/// **常驻（不 gate）。**
+#[no_mangle]
+pub extern "C" fn loomgui_stage_create_node(
+    h: *mut StageHandle,
+    kind: *const u8,
+    kind_len: usize,
+    css: *const u8,
+    css_len: usize,
+) -> u32 {
+    const FAIL: u32 = 0xFFFF_FFFF;
+    if h.is_null() {
+        return FAIL;
+    }
+    let sh = unsafe { &mut *h };
+    let kind = std::str::from_utf8(unsafe { std::slice::from_raw_parts(kind, kind_len) }).unwrap_or("");
+    let css = std::str::from_utf8(unsafe { std::slice::from_raw_parts(css, css_len) }).unwrap_or("");
+    match sh.stage.create_node(kind, css) {
+        Ok(id) => id.0,
+        Err(_) => FAIL,
+    }
+}
+
+/// 挂子到 parent 末尾。child 必须当前无父。0=ok，-1=err。null 句柄 → -1。
+///
+/// **常驻（不 gate）。**
+#[no_mangle]
+pub extern "C" fn loomgui_stage_append_child(h: *mut StageHandle, parent: u32, child: u32) -> i32 {
+    if h.is_null() {
+        return -1;
+    }
+    let sh = unsafe { &mut *h };
+    sh.stage
+        .append_child(NodeId(parent), NodeId(child))
+        .map(|_| 0)
+        .unwrap_or(-1)
+}
+
+/// 在 parent.children 中 ref_id 之前插 child。ref_id=0xFFFF_FFFF（INVALID）→ 末尾追加。
+/// 0=ok，-1=err。null 句柄 → -1。
+///
+/// **常驻（不 gate）。**
+#[no_mangle]
+pub extern "C" fn loomgui_stage_insert_before(
+    h: *mut StageHandle,
+    parent: u32,
+    child: u32,
+    ref_id: u32,
+) -> i32 {
+    if h.is_null() {
+        return -1;
+    }
+    let sh = unsafe { &mut *h };
+    sh.stage
+        .insert_before(NodeId(parent), NodeId(child), NodeId(ref_id))
+        .map(|_| 0)
+        .unwrap_or(-1)
+}
+
+/// 摘子（不删节点）：从 parent.children 移除 + child.parent=None。节点仍 live 可重挂。
+/// 0=ok，-1=err。null 句柄 → -1。
+///
+/// **常驻（不 gate）。**
+#[no_mangle]
+pub extern "C" fn loomgui_stage_remove_child(h: *mut StageHandle, parent: u32, child: u32) -> i32 {
+    if h.is_null() {
+        return -1;
+    }
+    let sh = unsafe { &mut *h };
+    sh.stage
+        .remove_child(NodeId(parent), NodeId(child))
+        .map(|_| 0)
+        .unwrap_or(-1)
+}
+
+/// 删节点（递归删子 + 联动清 anim/scroll/tween + slotmap remove）。
+/// 旧 NodeId 此后失效（gen++）。无 scene / 已删节点 → no-op。返 0（恒成功，no-op 语义）。
+/// null 句柄 → 0（no-op，不 panic）。
+///
+/// **常驻（不 gate）。**
+#[no_mangle]
+pub extern "C" fn loomgui_stage_remove_node(h: *mut StageHandle, node: u32) -> i32 {
+    if h.is_null() {
+        return 0;
+    }
+    let sh = unsafe { &mut *h };
+    sh.stage.remove_node(NodeId(node));
+    0
+}
+
+/// 改 Text 节点 content + 标 dirty_text。text = UTF-8 字节。0=ok，-1=err。
+/// 非 Text 节点 → -1（Stage::set_text Err）。null 句柄 → -1。
+///
+/// **常驻（不 gate）。**
+#[no_mangle]
+pub extern "C" fn loomgui_stage_set_text(
+    h: *mut StageHandle,
+    node: u32,
+    text: *const u8,
+    len: usize,
+) -> i32 {
+    if h.is_null() {
+        return -1;
+    }
+    let sh = unsafe { &mut *h };
+    let text = std::str::from_utf8(unsafe { std::slice::from_raw_parts(text, len) }).unwrap_or("");
+    sh.stage.set_text(NodeId(node), text).map(|_| 0).unwrap_or(-1)
+}
+
+/// 改 Image 节点 src + 标 dirty_mesh。src = UTF-8 字节。0=ok，-1=err。
+/// 非 Image 节点 → -1。null 句柄 → -1。
+///
+/// **常驻（不 gate）。**
+#[no_mangle]
+pub extern "C" fn loomgui_stage_set_src(
+    h: *mut StageHandle,
+    node: u32,
+    src: *const u8,
+    len: usize,
+) -> i32 {
+    if h.is_null() {
+        return -1;
+    }
+    let sh = unsafe { &mut *h };
+    let src = std::str::from_utf8(unsafe { std::slice::from_raw_parts(src, len) }).unwrap_or("");
+    sh.stage.set_src(NodeId(node), src).map(|_| 0).unwrap_or(-1)
+}
+
+/// 改 base_style（apply_css）+ 标 dirty_mesh。css = UTF-8 字节。0=ok，-1=err。
+/// 下帧 rematch 从 base 重算 style。null 句柄 → -1。
+///
+/// **常驻（不 gate）。**
+#[no_mangle]
+pub extern "C" fn loomgui_stage_set_style(
+    h: *mut StageHandle,
+    node: u32,
+    css: *const u8,
+    len: usize,
+) -> i32 {
+    if h.is_null() {
+        return -1;
+    }
+    let sh = unsafe { &mut *h };
+    let css = std::str::from_utf8(unsafe { std::slice::from_raw_parts(css, len) }).unwrap_or("");
+    sh.stage.set_style(NodeId(node), css).map(|_| 0).unwrap_or(-1)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1303,5 +1481,79 @@ mod abi_tests {
     #[test]
     fn wheel_event_is_16_bytes() {
         assert_eq!(std::mem::size_of::<loomgui_core::scroll::WheelEvent>(), 16);
+    }
+
+    /// T7 动态树 API FFI round-trip——9 函数经 FFI 调用建/改/删节点。
+    /// 不走 parse（load_package 手搓包建初始 scene），验证常驻路径下动态 API 可用。
+    /// 流程：create_root(div) → create_node(button/img/span) → append_child ×3 →
+    ///       set_text/set_src/set_style 改属性 → insert_before 插序 →
+    ///       remove_child 摘子 → remove_node 删根。每步断言返回值契约。
+    #[test]
+    fn dynamic_tree_api_ffi_round_trip() {
+        use loomgui_core::asset::{write_package, AtlasSection};
+        use loomgui_core::scene::{NodeKind, Scene};
+        use loomgui_core::style::{resolved::ResolvedStyle, dynamic::DynamicRuleTable};
+        let (fp, fplen) = font_path();
+        // 初始 scene：单根 Container（load_package 建初始 scene，供后续动态 API 操作）
+        let entries: Vec<(Option<usize>, NodeKind, ResolvedStyle, Vec<String>, Option<String>, bool, Option<i32>)> = vec![
+            (None, NodeKind::Container, ResolvedStyle::default(), Vec::new(), None, false, None),
+        ];
+        let pkg = write_package(&Scene::build(&entries), (200.0, 100.0), &AtlasSection::default(), &DynamicRuleTable::default());
+        let h = loomgui_stage_new(fp.as_ptr() as *const u8, fplen, 200.0, 100.0);
+        assert!(!h.is_null());
+        assert_eq!(loomgui_stage_load_package(h, pkg.as_ptr(), pkg.len()), 0);
+
+        // create_root：建第二个根（div）。返非 sentinel NodeId。
+        let root2 = loomgui_stage_create_root(h, b"div".as_ptr(), 3, b"".as_ptr(), 0);
+        assert_ne!(root2, 0xFFFF_FFFF, "create_root 返有效 NodeId");
+
+        // create_node：建 button/img/span 三个游离节点。
+        let btn = loomgui_stage_create_node(h, b"button".as_ptr(), 6, b"".as_ptr(), 0);
+        let img = loomgui_stage_create_node(h, b"img".as_ptr(), 3, b"".as_ptr(), 0);
+        let txt = loomgui_stage_create_node(h, b"span".as_ptr(), 4, b"".as_ptr(), 0);
+        assert_ne!(btn, 0xFFFF_FFFF);
+        assert_ne!(img, 0xFFFF_FFFF);
+        assert_ne!(txt, 0xFFFF_FFFF);
+
+        // append_child：挂 btn/img 到 root2。0=ok。
+        assert_eq!(loomgui_stage_append_child(h, root2, btn), 0, "append_child btn");
+        assert_eq!(loomgui_stage_append_child(h, root2, img), 0, "append_child img");
+
+        // set_text/set_src/set_style：改属性。0=ok。
+        assert_eq!(loomgui_stage_set_text(h, txt, b"hi".as_ptr(), 2), 0, "set_text on span");
+        assert_eq!(loomgui_stage_set_src(h, img, b"icon.png".as_ptr(), 8), 0, "set_src on img");
+        assert_eq!(loomgui_stage_set_style(h, btn, b"width:100px".as_ptr(), 10), 0, "set_style on button");
+
+        // set_text on 非 Text 节点 → -1（Stage::set_text Err）。
+        assert_eq!(loomgui_stage_set_text(h, btn, b"x".as_ptr(), 1), -1, "set_text on button → err");
+
+        // insert_before：txt 插到 btn 前（ref_id=btn）。0=ok。
+        assert_eq!(loomgui_stage_insert_before(h, root2, txt, btn), 0, "insert_before txt before btn");
+
+        // 验证子序：root2.children == [txt, btn, img]
+        let handle = unsafe { &*h };
+        let scene = handle.stage.scene.as_ref().unwrap();
+        let children: Vec<u32> = scene.get(loomgui_core::scene::NodeId(root2)).unwrap()
+            .children.iter().map(|c| c.0).collect();
+        assert_eq!(children, vec![txt, btn, img], "insert_before 后子序 [txt, btn, img]");
+
+        // remove_child：摘 btn（不删）。0=ok。子序 → [txt, img]。
+        assert_eq!(loomgui_stage_remove_child(h, root2, btn), 0, "remove_child btn");
+        let children: Vec<u32> = scene.get(loomgui_core::scene::NodeId(root2)).unwrap()
+            .children.iter().map(|c| c.0).collect();
+        assert_eq!(children, vec![txt, img], "remove_child 后子序 [txt, img]");
+
+        // remove_node：删 root2（递归删子 txt/img）。返 0（no-op 语义恒成功）。
+        assert_eq!(loomgui_stage_remove_node(h, root2), 0, "remove_node root2");
+        // root2 此后失效（slotmap gen++）——node_parent 返 sentinel。
+        assert_eq!(loomgui_node_parent(h, root2), 0xFFFF_FFFF, "remove_node 后 root2 失效");
+
+        // null 句柄契约：create_root → sentinel；append_child/set_text/remove_node → -1/0。
+        assert_eq!(loomgui_stage_create_root(std::ptr::null_mut(), b"x".as_ptr(), 1, b"".as_ptr(), 0), 0xFFFF_FFFF);
+        assert_eq!(loomgui_stage_append_child(std::ptr::null_mut(), 0, 0), -1);
+        assert_eq!(loomgui_stage_set_text(std::ptr::null_mut(), 0, b"x".as_ptr(), 1), -1);
+        assert_eq!(loomgui_stage_remove_node(std::ptr::null_mut(), 0), 0, "remove_node null → no-op 0");
+
+        loomgui_stage_free(h);
     }
 }
