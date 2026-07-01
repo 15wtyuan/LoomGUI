@@ -1,0 +1,51 @@
+.root {
+  width: 600px;
+  height: 800px;
+  background-color: #1a1d2e;
+  flex-direction: column;
+  padding: 16px;
+  gap: 12px;
+}
+.header {
+  flex-direction: row;
+  justify-content: space-between;
+  align-items: center;
+  padding-bottom: 8px;
+  border-width: 0 0 1px 0;
+  border-color: #3a3f55;
+}
+.title { color: #e6e6e0; font-size: 28px; font-weight: 700; }
+.count { color: #5fb2c4; font-size: 16px; }
+.list { flex-direction: column; gap: 8px; flex: 1; }
+.mail-item {
+  flex-direction: row;
+  gap: 12px;
+  padding: 12px;
+  background-color: #2a2f45;
+  border-radius: 8px;
+  align-items: center;
+}
+.mail-icon {
+  width: 40px;
+  height: 40px;
+  border-radius: 20px;
+  color: #ffffff;
+  font-size: 18px;
+  font-weight: 700;
+  justify-content: center;
+  align-items: center;
+}
+.mail-body { flex-direction: column; gap: 4px; flex: 1; }
+.mail-from { color: #e6e6e0; font-size: 16px; font-weight: 600; }
+.mail-sub { color: #8a8fa3; font-size: 14px; }
+.footer { flex-direction: row; justify-content: center; padding-top: 8px; }
+.btn {
+  background-color: #5fb2c4;
+  color: #ffffff;
+  font-size: 18px;
+  font-weight: 600;
+  padding: 10px 32px;
+  border-radius: 6px;
+}
+.btn:hover { background-color: #6fc2d4; }
+.btn:active { background-color: #4fa2b4; }

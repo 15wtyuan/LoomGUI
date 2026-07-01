@@ -44,6 +44,19 @@ namespace LoomGUI
         void Start()
         {
             ConfigureCameraBackground();
+            SubscribeAll();
+            // 绑外部 GO 到 model-slot（每帧 Sync 自动同步 wrapper TRS；GO 自身 scale 保留）。
+            if (_nativeModel != null)
+            {
+                _stage.BindNativeHost("model-slot", _nativeModel);
+                _nativeModel.transform.localScale = _nativeScale;  // demo 放大填 slot
+            }
+        }
+
+        // 订阅所有 showcase 事件（nav + 各 sec + 动态树）。
+        // Start 调一次；切回 showcase pkg 后重调（scene 重建，旧 NodeId 失效，须重新订阅）。
+        void SubscribeAll()
+        {
             _scrollNode = _stage.FindNodeById("main-scroll");
             for (int i = 0; i < 8; i++)
             {
@@ -56,12 +69,6 @@ namespace LoomGUI
             SubscribeLampEvents();
             SubscribeTweenDemos();
             SubscribeDynamicTree();
-            // 绑外部 GO 到 model-slot（每帧 Sync 自动同步 wrapper TRS；GO 自身 scale 保留）。
-            if (_nativeModel != null)
-            {
-                _stage.BindNativeHost("model-slot", _nativeModel);
-                _nativeModel.transform.localScale = _nativeScale;  // demo 放大填 slot
-            }
         }
 
         // 启动错峰入场：各 sec 卡 tween opacity 0→1 + delay 递增。
@@ -231,48 +238,113 @@ namespace LoomGUI
         void OnClear(EventContext ctx) { _stage.ClearAnim(_stage.FindNodeById("kill-target")); }
 
         // === 动态树演示（§3.10）===
-        // 订阅 dyn-add/dyn-del 按钮。dyn-anchor 是 pkg 里的空容器（运行时挂载点）。
+        // 四用例：建/删子树、批量建 20、set_style toggle、动态加载 bin 切界面。
+        const string ShowcasePkg = "loom_showcase.pkg.bin";
+        const string MailPkg = "loom_mail.pkg.bin";
+        bool _dynStyleToggled;   // toggle 末个 panel 样式状态
+        string _dynLoadCurrent;  // 当前加载的 pkg（showcase/mail）
+
         void SubscribeDynamicTree()
         {
             _dynAnchor = _stage.FindNodeById("dyn-anchor");
             SubscribeLamp("dyn-add", EventType.Click, OnDynAdd);
+            SubscribeLamp("dyn-add20", EventType.Click, OnDynAdd20);
             SubscribeLamp("dyn-del", EventType.Click, OnDynDel);
+            SubscribeLamp("dyn-clear", EventType.Click, OnDynClear);
+            SubscribeLamp("dyn-style", EventType.Click, OnDynStyle);
+            SubscribeLamp("dyn-load-mail", EventType.Click, OnDynLoadMail);
+            SubscribeLamp("dyn-load-showcase", EventType.Click, OnDynLoadShowcase);
+            _dynLoadCurrent = ShowcasePkg;
             Debug.Log($"[Showcase] §3.10 动态树订阅完成（anchor={_dynAnchor}）");
         }
 
-        // 点 dyn-add：create_node 建 panel(div) + title(span) + icon(img)，append 到 anchor。
-        // 演示运行时建子树 + set_text/set_src + set_style。panel 用内联 CSS（create_node 的 css 参数）。
-        void OnDynAdd(EventContext ctx)
+        // 建 1 个 panel（panel+title+icon 子树）。返回 panel NodeId。
+        uint CreateDynPanel()
         {
-            if (_dynAnchor == uint.MaxValue) return;
+            if (_dynAnchor == uint.MaxValue) return uint.MaxValue;
             _dynSeq++;
-            // panel：白底圆角 + flex column，固定宽高
             uint panel = _stage.CreateNode("div", "width:120px;height:90px;background:#2a2f45;border-radius:8px;flex-direction:column;gap:4px;padding:6px");
-            if (panel == uint.MaxValue) { Debug.LogError("[Showcase] create_node panel 失败"); return; }
+            if (panel == uint.MaxValue) return uint.MaxValue;
             _stage.AppendChild(_dynAnchor, panel);
-
-            // title：span 文本 "item-N"
             uint title = _stage.CreateNode("span", "font-size:14px;color:#e6e6e0");
             _stage.AppendChild(panel, title);
             _stage.SetText(title, "item-" + _dynSeq);
-
-            // icon：img，src 设图标名（demo 未绑 atlas → 白占位，验 set_src 调用通即可）
             uint icon = _stage.CreateNode("img", "width:40px;height:40px");
             _stage.AppendChild(panel, icon);
             _stage.SetSrc(icon, "icons/skin.png");
-
-            _dynPanels.Add(panel);
-            Debug.Log($"[Showcase] 动态建 panel#{_dynSeq} = {panel}（anchor 下共 {_dynPanels.Count} 个）");
+            return panel;
         }
 
-        // 点 dyn-del：remove_node 最后建的 panel（联动清子 + anim/scroll/tween）。
+        void OnDynAdd(EventContext ctx)
+        {
+            uint panel = CreateDynPanel();
+            if (panel != uint.MaxValue) _dynPanels.Add(panel);
+        }
+
+        // 批量建 20 个（测动态建树性能 + 大量子树）。
+        void OnDynAdd20(EventContext ctx)
+        {
+            for (int i = 0; i < 20; i++)
+            {
+                uint panel = CreateDynPanel();
+                if (panel != uint.MaxValue) _dynPanels.Add(panel);
+            }
+            Debug.Log($"[Showcase] 批量建 20，anchor 下共 {_dynPanels.Count} 个");
+        }
+
+        // 删最后（remove_node 联动清子 + anim/scroll/tween）。
         void OnDynDel(EventContext ctx)
         {
             if (_dynPanels.Count == 0) return;
             uint last = _dynPanels[_dynPanels.Count - 1];
             _dynPanels.RemoveAt(_dynPanels.Count - 1);
             _stage.RemoveNode(last);
-            Debug.Log($"[Showcase] 删 panel {last}（剩 {_dynPanels.Count} 个）");
+        }
+
+        // 清空所有动态建的 panel。
+        void OnDynClear(EventContext ctx)
+        {
+            foreach (uint p in _dynPanels) _stage.RemoveNode(p);
+            _dynPanels.Clear();
+        }
+
+        // toggle 末个 panel 样式（set_style 增量改 base_style + 下帧 rematch）。
+        void OnDynStyle(EventContext ctx)
+        {
+            if (_dynPanels.Count == 0) return;
+            uint last = _dynPanels[_dynPanels.Count - 1];
+            _dynStyleToggled = !_dynStyleToggled;
+            // 切背景色 + 尺寸 + 圆角，验 set_style 多字段增量改。
+            _stage.SetStyle(last, _dynStyleToggled
+                ? "background:#c2605a;width:160px;height:70px;border-radius:16px"
+                : "background:#2a2f45;width:120px;height:90px;border-radius:8px");
+        }
+
+        // 动态加载 bin：切到邮件界面（运行时 load_package 整体替换 scene）。
+        // 切后 EventHandler 清 listener（旧 NodeId 失效）——邮件界面无 showcase 按钮，不重订阅。
+        void OnDynLoadMail(EventContext ctx)
+        {
+            if (_dynLoadCurrent == MailPkg) return;
+            _stage.EventHandler.Clear();
+            if (_stage.LoadPackageFile(MailPkg))
+            {
+                _dynLoadCurrent = MailPkg;
+                Debug.Log("[Showcase] 切到邮件界面（load_package）");
+            }
+        }
+
+        // 切回 showcase：load_package + 重新 SubscribeAll（scene 重建，事件重订阅）。
+        void OnDynLoadShowcase(EventContext ctx)
+        {
+            if (_dynLoadCurrent == ShowcasePkg) return;
+            _stage.EventHandler.Clear();
+            _dynPanels.Clear();   // 旧 panel NodeId 全失效
+            if (_stage.LoadPackageFile(ShowcasePkg))
+            {
+                _dynLoadCurrent = ShowcasePkg;
+                SubscribeAll();   // 重新订阅 showcase 事件
+                Debug.Log("[Showcase] 切回 showcase（load_package + 重订阅）");
+            }
         }
 
         // 0-255 RGB → 归一化 [0,1] RGBA float[4]（alpha=1）。Rust tween 直接写 anim 通道，须与 style 归一化一致。

@@ -242,15 +242,26 @@ div { display:flex; flex-direction:column; }
           </div>
         </div>
       </div>
-      <!-- §3.10 动态树（运行时建/删节点） -->
+      <!-- §3.10 动态树（运行时建/删/改节点 + 动态加载 bin） -->
       <div class="sec" id="sec310">
-        <div class="sec-h">3.10 动态树（create_node / append_child / remove_node）</div>
+        <div class="sec-h">3.10 动态树（create_node / set_style / load_package）</div>
         <div class="card">
           <div class="card-h"><div class="card-t">运行时建子树</div><div class="card-x">宿主 API 驱动</div></div>
           <div class="card-b">
-            <button id="dyn-add">动态建 panel</button>
+            <button id="dyn-add">建 1 个 panel</button>
+            <button id="dyn-add20">建 20 个</button>
             <button id="dyn-del">删除最后</button>
+            <button id="dyn-clear">清空</button>
+            <button id="dyn-style">toggle 末个样式</button>
             <div id="dyn-anchor" style="flex-direction:row;flex-wrap:wrap;gap:8px;min-height:60px"></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-h"><div class="card-t">动态加载 bin（切界面）</div><div class="card-x">运行时 load_package</div></div>
+          <div class="card-b">
+            <button id="dyn-load-mail">加载邮件界面</button>
+            <button id="dyn-load-showcase">切回 showcase</button>
+            <div id="dyn-load-status" style="font-size:14px;color:#5fb2c4">当前：showcase</div>
           </div>
         </div>
       </div>

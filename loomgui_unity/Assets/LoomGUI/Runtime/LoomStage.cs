@@ -386,6 +386,25 @@ namespace LoomGUI
         }
 
         /// <summary>
+        /// 运行时切换 pkg.bin（动态加载 bin / 切界面）。
+        /// 改 _pkgFile → LoadPackage（重建 scene + 清 tween/scroll/hashes）→ 清旧 atlas/texMap →
+        /// 重 LoadAtlas（新 pkg 的 atlas）→ 清 MirrorPool（旧 RenderObj 全 stale，下帧重建）。
+        /// 返回 false = 文件不存在/load 失败（scene 已被清，UI 空白，调方应切回有效 pkg）。
+        /// </summary>
+        public bool LoadPackageFile(string pkgFile)
+        {
+            if (_stage == null) return false;
+            _pkgFile = pkgFile;
+            if (!LoadPackage()) return false;
+            // 旧 atlas/texMap 失效（新 pkg 的 tex_id 重新分配），清后重 collect。
+            _texMap.Clear();
+            LoadAtlas();
+            // 旧 RenderObj 指向旧 NodeId（scene 重建后 NodeId 复位），清池强制下帧全重建。
+            if (_pool != null) _pool.Clear();
+            return true;
+        }
+
+        /// <summary>
         /// 从 StreamingAssets/_pkgFile 读 .pkg.bin → loomgui_stage_load_package。
         /// 包是 Rust-internal，C# 只读文件透传 bytes（不解析）。editor/desktop 用 File.ReadAllBytes。
         /// load 成功后 SetHandle 清 handler._parentCache（scene 重建，parent 关系变）。
