@@ -43,7 +43,7 @@ fn pack_inner(
     // 1. 收集 Image src（DFS 先序去重）—— scene.nodes 已 DFS 先序。
     let mut srcs: Vec<String> = Vec::new();
     let mut seen = std::collections::HashSet::new();
-    for n in &scene.nodes {
+    for n in scene.nodes.values() {
         if let loomgui_core::scene::NodeKind::Image { src } = &n.kind {
             if seen.insert(src.as_str()) {
                 srcs.push(src.clone());
@@ -51,7 +51,7 @@ fn pack_inner(
         }
     }
     // 1b. 收集 CSS background-image url（同 srcs/seen 去重，img+bg 同 url 只入一次）。
-    for n in &scene.nodes {
+    for n in scene.nodes.values() {
         if let Some(url) = &n.style.background_image {
             if seen.insert(url.as_str()) {
                 srcs.push(url.clone());

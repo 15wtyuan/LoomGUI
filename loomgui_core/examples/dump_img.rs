@@ -18,7 +18,7 @@ fn main() {
     s.tick_and_render();
     let scene = s.scene.as_ref().unwrap();
     println!("{:<22} {:<18} {:<16} {:<16} {:>8} {:>8} {:>10}", "id", "src", "css.w", "css.h", "rect.w", "rect.h", "tex(iw,ih)");
-    for n in &scene.nodes {
+    for n in scene.nodes.values() {
         let src = match &n.kind { NodeKind::Image { src } => src.clone(), _ => continue };
         let st = &n.style.taffy_style;
         let css_w = format!("{:?}", st.size.width);

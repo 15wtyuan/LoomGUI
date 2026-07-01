@@ -18,7 +18,7 @@ fn pack_produces_valid_package_roundtrips() {
     assert!(p.atlas_png.is_empty(), "无图 → atlas_png 空");
     assert!(p.atlas_filename.is_empty());
     assert!(scene.roots.len() >= 1);
-    let has_text = scene.nodes.iter().any(|n| matches!(&n.kind,
+    let has_text = scene.nodes.values().any(|n| matches!(&n.kind,
         loomgui_core::scene::NodeKind::Text { content } if content == "hi"));
     assert!(has_text);
 }

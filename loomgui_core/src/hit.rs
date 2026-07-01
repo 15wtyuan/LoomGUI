@@ -14,17 +14,17 @@ pub(crate) fn point_in_rect(point: (f32, f32), r: Rect) -> bool {
 /// 实现：先反转 children（让后者靠前），再按 `-order` 稳定排——stable 保反转后序，
 /// 即同 order 下后者先测，与 hit_test"顶层优先"一致。
 fn effective_draw_order(scene: &Scene, parent: NodeId) -> Vec<NodeId> {
-    let mut kids: Vec<NodeId> = scene.nodes[parent.0 as usize].children.clone();
+    let mut kids: Vec<NodeId> = scene.get(parent).expect("live node").children.clone();
     kids.reverse();
-    kids.sort_by_key(|&c| -scene.nodes[c.0 as usize].style.order); // 负号=降序
+    kids.sort_by_key(|&c| -scene.get(c).expect("live node").style.order); // 负号=降序
     kids
 }
 
 /// 命中合成 scrollbar thumb → (container_id, axis: 0=v 1=h)。None 不命中。
 /// scrollbar 最上层——遍历所有容器 check v/h thumb rect。
 pub fn hit_scrollbar_grip(scene: &Scene, point: (f32, f32)) -> Option<(NodeId, u8)> {
-    for id in 0..scene.nodes.len() {
-        let nid = NodeId(id as u32);
+    for (_key, n) in &scene.nodes {
+        let nid = n.id;
         if let Some(r) = crate::scroll::v_thumb_rect(scene, nid) {
             if point_in_rect(point, r) {
                 return Some((nid, 0));
@@ -62,7 +62,7 @@ pub fn hit_test(scene: &Scene, point: (f32, f32)) -> Option<NodeId> {
 
 /// 递归测某子树。先测子（逆等效序，顶层先），子命中返回子的；子都不命中→自身 fallback。
 fn hit_subtree(scene: &Scene, id: NodeId, point: (f32, f32)) -> Option<NodeId> {
-    let node = &scene.nodes[id.0 as usize];
+    let node = scene.get(id).expect("live node");
     // clip 门控：有 clip_rect 且点不在 clip 内 → 整个子树不命中
     if let Some(clip) = node.clip_rect {
         if !point_in_rect(point, clip) {
@@ -78,8 +78,13 @@ fn hit_subtree(scene: &Scene, id: NodeId, point: (f32, f32)) -> Option<NodeId> {
     // 子都不命中 → 自身 fallback：touchable + 点经 world matrix 逆投到本地 box
     // world_to_local：点经 world matrix 逆投到本地，判本地 box (0,0,w,h)
     if node.touchable {
-        let wm = scene.world_transforms[id.0 as usize];
-        let inv = crate::transform::inverse(&wm);
+        // bounds guard：world_transforms 可能未对齐（T4 前移时机后统一保证）
+        let wm = if id.index() < scene.world_transforms.len() {
+            &scene.world_transforms[id.index()]
+        } else {
+            &crate::transform::IDENTITY
+        };
+        let inv = crate::transform::inverse(wm);
         let (lx, ly) = crate::transform::apply_point(&inv, point.0, point.1);
         let lr = node.layout_rect;
         if lx >= 0.0 && lx <= lr.w && ly >= 0.0 && ly <= lr.h {
@@ -103,35 +108,28 @@ mod tests {
     /// children 顺序 [a, b] → 等效序 b 顶层（后绘制）。
     fn overlap_scene() -> Scene {
         let mut root = Node::default();
-        root.id = NodeId(0);
         root.layout_rect = Rect { x: 0.0, y: 0.0, w: 200.0, h: 200.0 };
         let mut a = Node::default();
-        a.id = NodeId(1);
-        a.parent = Some(NodeId(0));
         a.layout_rect = Rect { x: 0.0, y: 0.0, w: 100.0, h: 100.0 };
         let mut b = Node::default();
-        b.id = NodeId(2);
-        b.parent = Some(NodeId(0));
         b.layout_rect = Rect { x: 50.0, y: 50.0, w: 100.0, h: 100.0 };
-        root.children = vec![NodeId(1), NodeId(2)];
-        Scene {
-            roots: vec![NodeId(0)],
-            nodes: vec![root, a, b],
-            dynamic_rules: Default::default(),
-            focused_node: None,
-            world_transforms: Vec::new(), anim: Default::default(), scroll: Default::default(), text_layouts: Vec::new(),
-        }
+        // edges: (0,1)=root→a, (0,2)=root→b；root parent=None 自动成 root。
+        let s = Scene::from_nodes(vec![root, a, b], vec![(0, 1), (0, 2)]);
+        // 返回前 node id 由 slotmap 分配（首节点 = NodeId((1<<12)|1)）。
+        s
+    }
+
+    /// 返回 overlap_scene 的 id 三元组 (root_id, a_id, b_id)。
+    fn overlap_ids(s: &Scene) -> (NodeId, NodeId, NodeId) {
+        let root_id = s.roots[0];
+        let a_id = s.get(root_id).unwrap().children[0];
+        let b_id = s.get(root_id).unwrap().children[1];
+        (root_id, a_id, b_id)
     }
 
     #[test]
     fn hit_test_returns_none_on_empty_scene() {
-        let mut s = Scene {
-            roots: vec![],
-            nodes: vec![],
-            dynamic_rules: Default::default(),
-            focused_node: None,
-            world_transforms: Vec::new(), anim: Default::default(), scroll: Default::default(), text_layouts: Vec::new(),
-        };
+        let mut s = Scene::from_nodes(vec![], vec![]);
         compute_world_transforms(&mut s);
         assert_eq!(hit_test(&s, (10.0, 10.0)), None);
     }
@@ -140,26 +138,29 @@ mod tests {
     fn hit_test_hits_topmost_child() {
         let mut s = overlap_scene();
         compute_world_transforms(&mut s);
+        let (_root, _a, b) = overlap_ids(&s);
         // 点 (75,75) 在 a 和 b 重叠区——b 顶层（后绘制）应命中
-        assert_eq!(hit_test(&s, (75.0, 75.0)), Some(NodeId(2)));
+        assert_eq!(hit_test(&s, (75.0, 75.0)), Some(b));
     }
 
     #[test]
     fn hit_test_hits_only_child_when_no_overlap() {
         let mut s = overlap_scene();
         compute_world_transforms(&mut s);
+        let (_root, a, _b) = overlap_ids(&s);
         // 点 (10,10) 只在 a 内
-        assert_eq!(hit_test(&s, (10.0, 10.0)), Some(NodeId(1)));
+        assert_eq!(hit_test(&s, (10.0, 10.0)), Some(a));
     }
 
     #[test]
     fn hit_test_skips_pointer_events_none_but_tests_children() {
         let mut s = overlap_scene();
         compute_world_transforms(&mut s);
+        let (root, a, _b) = overlap_ids(&s);
         // root touchable=false，但子 a 仍应命中（CSS 语义：none 不挡子）
-        s.nodes[0].touchable = false;
+        s.get_mut(root).unwrap().touchable = false;
         // 点 (10,10) 在 a 内——root 不命中但子 a 命中
-        assert_eq!(hit_test(&s, (10.0, 10.0)), Some(NodeId(1)));
+        assert_eq!(hit_test(&s, (10.0, 10.0)), Some(a));
         // 点 (160,160) 在 root AABB 但不在 a/b（a=[0,100], b=[50,150]）
         // ——root touchable=false → None
         assert_eq!(hit_test(&s, (160.0, 160.0)), None);
@@ -169,23 +170,25 @@ mod tests {
     fn hit_test_clip_rect_excludes_subtree() {
         let mut s = overlap_scene();
         compute_world_transforms(&mut s);
+        let (root, _a, b) = overlap_ids(&s);
         // root 加 clip_rect (0,0,80,80)——点 (90,90) 在 root AABB 但 clip 外
-        s.nodes[0].clip_rect = Some(Rect { x: 0.0, y: 0.0, w: 80.0, h: 80.0 });
+        s.get_mut(root).unwrap().clip_rect = Some(Rect { x: 0.0, y: 0.0, w: 80.0, h: 80.0 });
         // 点 (90,90) 在 b 的 AABB (50,50,100,100) 但在 root clip 外 → 子树不命中
         assert_eq!(hit_test(&s, (90.0, 90.0)), None);
         // 点 (70,70) 在 clip 内 + 在 b 内 → 命中 b
-        assert_eq!(hit_test(&s, (70.0, 70.0)), Some(NodeId(2)));
+        assert_eq!(hit_test(&s, (70.0, 70.0)), Some(b));
     }
 
     #[test]
     fn hit_test_respects_order() {
         let mut s = overlap_scene();
         compute_world_transforms(&mut s);
+        let (_root, a, b) = overlap_ids(&s);
         // a 设 order=2（顶层），b order=0——等效序 a 在前
-        s.nodes[1].style.order = 2;
-        s.nodes[2].style.order = 0;
+        s.get_mut(a).unwrap().style.order = 2;
+        s.get_mut(b).unwrap().style.order = 0;
         // 点 (75,75) 重叠区——a 顶层应命中
-        assert_eq!(hit_test(&s, (75.0, 75.0)), Some(NodeId(1)));
+        assert_eq!(hit_test(&s, (75.0, 75.0)), Some(a));
     }
 
     #[test]
@@ -193,9 +196,10 @@ mod tests {
         // disabled 仍参与命中（active/click 抑制在状态机层，hit_test 只返回几何命中）
         let mut s = overlap_scene();
         compute_world_transforms(&mut s);
-        s.nodes[2].disabled = true; // b disabled
+        let (_root, _a, b) = overlap_ids(&s);
+        s.get_mut(b).unwrap().disabled = true; // b disabled
         // 点 (75,75) 在 b 内——b 仍命中（disabled 不跳过）
-        assert_eq!(hit_test(&s, (75.0, 75.0)), Some(NodeId(2)));
+        assert_eq!(hit_test(&s, (75.0, 75.0)), Some(b));
     }
 
     #[test]
@@ -205,28 +209,26 @@ mod tests {
         // 命中点取 child 旋转后的中心附近。
         let mut s = overlap_scene_rotated();
         compute_world_transforms(&mut s);
+        let root_id = s.roots[0];
+        let parent_id = s.get(root_id).unwrap().children[0];
+        let child_id = s.get(parent_id).unwrap().children[0];
         // child world == parent world（identity 子继承）。parent 旋转后 child box 在新位置。
         // 用 child box center 经 parent.world 变换得世界中心，命中应返 child。
-        let child_wm = s.world_transforms[2];
+        let child_wm = s.world_transforms[child_id.index()];
         let (cx, cy) = child_wm.apply_point(5.0, 5.0); // child 本地中心
-        assert_eq!(hit_test(&s, (cx, cy)), Some(NodeId(2)), "点在旋转后 child 上 → 命中 child");
+        assert_eq!(hit_test(&s, (cx, cy)), Some(child_id), "点在旋转后 child 上 → 命中 child");
     }
 
     fn overlap_scene_rotated() -> Scene {
         let mut root = Node::default();
-        root.id = NodeId(0);
         root.layout_rect = Rect { x: 0.0, y: 0.0, w: 200.0, h: 200.0 };
         let mut parent = Node::default();
-        parent.id = NodeId(1); parent.parent = Some(NodeId(0));
         parent.layout_rect = Rect { x: 0.0, y: 0.0, w: 100.0, h: 100.0 };
         parent.style.transform = LocalTransform { matrix: transform::from_rotate(std::f32::consts::FRAC_PI_2) };
         let mut child = Node::default();
-        child.id = NodeId(2); child.parent = Some(NodeId(1));
         child.layout_rect = Rect { x: 0.0, y: 0.0, w: 10.0, h: 10.0 };
-        root.children = vec![NodeId(1)];
-        parent.children = vec![NodeId(2)];
-        Scene { roots: vec![NodeId(0)], nodes: vec![root, parent, child],
-                dynamic_rules: Default::default(), focused_node: None, world_transforms: Vec::new(), anim: Default::default(), scroll: Default::default(), text_layouts: Vec::new() }
+        // edges: root→parent, parent→child
+        Scene::from_nodes(vec![root, parent, child], vec![(0, 1), (1, 2)])
     }
 
     // ── hit_scrollbar_grip ─────────────────────────────────
@@ -249,9 +251,13 @@ mod tests {
             (Some(0), NodeKind::Container, ResolvedStyle::default(), vec![], None, false, None),
         ];
         let mut s = Scene::build(&entries);
-        s.nodes[0].layout_rect = Rect { x: 0.0, y: 0.0, w: 100.0, h: 100.0 };
-        s.nodes[1].layout_rect = Rect { x: 0.0, y: 0.0, w: 40.0, h: 40.0 };
-        s.nodes[2].layout_rect = Rect { x: 0.0, y: 0.0, w: 30.0, h: 200.0 }; // content_y=200 > viewport=100
+        // build 按 entries 插入序分配 id：roots[0]=容器，其 children=[entry1, entry2]。
+        let container_id = s.roots[0];
+        let inner_id = s.get(container_id).unwrap().children[0];
+        let content_id = s.get(container_id).unwrap().children[1];
+        s.get_mut(container_id).unwrap().layout_rect = Rect { x: 0.0, y: 0.0, w: 100.0, h: 100.0 };
+        s.get_mut(inner_id).unwrap().layout_rect = Rect { x: 0.0, y: 0.0, w: 40.0, h: 40.0 };
+        s.get_mut(content_id).unwrap().layout_rect = Rect { x: 0.0, y: 0.0, w: 30.0, h: 200.0 }; // content_y=200 > viewport=100
         crate::scroll::refresh_content_sizes(&mut s);
         compute_world_transforms(&mut s);
         s
@@ -260,11 +266,12 @@ mod tests {
     #[test]
     fn hit_scrollbar_grip_returns_container() {
         let s = scroll_scene_with_thumb();
+        let container_id = s.roots[0];
         // thumb 右边缘 (x=92..100, y=0..50)，取 center (96, 25)
         let result = hit_scrollbar_grip(&s, (96.0, 25.0));
         assert!(result.is_some(), "thumb 内一点应命中");
         let (container, axis) = result.unwrap();
-        assert_eq!(container, NodeId(0), "返容器 NodeId(0)");
+        assert_eq!(container, container_id, "返容器 id（slotmap 分配）");
         assert_eq!(axis, 0, "垂直 thumb axis=0");
     }
 
@@ -285,12 +292,13 @@ mod tests {
     #[test]
     fn hit_test_returns_sentinel_for_thumb() {
         let s = scroll_scene_with_thumb();
+        let container_id = s.roots[0];
         // thumb 内一点 → hit_test 应返 sentinel（含 V_THUMB_FLAG）
         let hit = hit_test(&s, (96.0, 25.0));
         assert!(hit.is_some(), "thumb 区 hit_test 命中");
         let raw = hit.unwrap().0 as u32;
         assert!(raw & crate::scroll::V_THUMB_FLAG != 0, "sentinel 含 V_THUMB_FLAG");
-        // 去掉 flag 应得 container id
-        assert_eq!(raw & !crate::scroll::V_THUMB_FLAG, 0u32, "flag off → container 0");
+        // 去掉 flag 应得 container id（packed u32）
+        assert_eq!(raw & !crate::scroll::V_THUMB_FLAG, container_id.0, "flag off → container id");
     }
 }

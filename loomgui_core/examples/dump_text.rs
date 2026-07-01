@@ -29,13 +29,13 @@ fn main() {
     println!("{:<22} {:>8} {:>9} {:>8} {:>8} {:>8}  content", "id", "rect.w", "none.tw", "none.ln", "before", "after");
     // before = measure(rect.w).lines（用 rect.w 重测）；after = scene.text_layouts.lines（render 复用 layout 结果）。
     let mut flagged = 0;
-    for n in &scene.nodes {
+    for n in scene.nodes.values() {
         let content = match &n.kind { NodeKind::Text { content } => content.clone(), _ => continue };
         let st = &n.style;
         let rect_w = n.layout_rect.w;
         let m_none = measure_text(&content, st.font_size, st.line_height, st.letter_spacing, st.text_align, st.white_space_nowrap, None, font);
         let before = measure_text(&content, st.font_size, st.line_height, st.letter_spacing, st.text_align, st.white_space_nowrap, Some(rect_w), font).lines.len();
-        let after = scene.text_layouts.get(n.id.0 as usize).cloned().flatten().map(|l| l.lines.len()).unwrap_or(0);
+        let after = scene.text_layouts.get(n.id.index()).cloned().flatten().map(|l| l.lines.len()).unwrap_or(0);
         let id = n.id_attr.clone().unwrap_or_default();
         let flag = before != after;
         if flag { flagged += 1; }

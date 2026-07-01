@@ -114,11 +114,11 @@ impl Stage {
         self.pending_input.extend_from_slice(events);
     }
 
-    /// 业务设节点 disabled（伪类源 + active/click 抑制）。NodeId.0 越界静默跳过。
+    /// 业务设节点 disabled（伪类源 + active/click 抑制）。悬空 NodeId 静默跳过。
     pub fn set_node_disabled(&mut self, node_id: NodeId, disabled: bool) {
         if let Some(scene) = self.scene.as_mut() {
-            if (node_id.0 as usize) < scene.nodes.len() {
-                scene.nodes[node_id.0 as usize].disabled = disabled;
+            if let Some(n) = scene.get_mut(node_id) {
+                n.disabled = disabled;
             }
         }
     }
@@ -173,7 +173,7 @@ impl Stage {
     /// animated=false 直接 snap+clamp；true 启 cubic-out tween（调 set_pos）。
     pub fn set_scroll_pos(&mut self, node: NodeId, x: f32, y: f32, animated: bool) {
         if let Some(scene) = self.scene.as_mut() {
-            if (node.0 as usize) < scene.nodes.len() {
+            if scene.get(node).is_some() {
                 if let Some(s) = scene.scroll.get_mut(node) {
                     s.set_pos((x, y), animated);
                 }
@@ -186,11 +186,10 @@ impl Stage {
     /// disabled 拒 / 越界跳过。记 pending_focus_request，下 tick 最前消费（不直接写 last_events）。
     pub fn request_focus(&mut self, node_id: NodeId) {
         if let Some(scene) = self.scene.as_ref() {
-            if (node_id.0 as usize) >= scene.nodes.len() {
-                return;
-            }
-            if scene.nodes[node_id.0 as usize].disabled {
-                return; // disabled 拒
+            match scene.get(node_id) {
+                None => return,
+                Some(n) if n.disabled => return, // disabled 拒
+                _ => {}
             }
         } else {
             return;
@@ -363,7 +362,9 @@ mod tests {
         assert!(events.iter().any(|e| e.event_type == crate::input::EVT_ROLL_OVER), "Move 到按钮 → RollOver");
         assert!(s2.is_pointer_on_ui(), "命中按钮 → is_pointer_on_ui=true");
         // hover 后 rematch：btn style.background_color 应变蓝（dynamic 规则 .btn:hover）
-        let btn = &s2.scene.as_ref().unwrap().nodes[1];
+        let scene = s2.scene.as_ref().unwrap();
+        let btn_id = scene.get(scene.roots[0]).unwrap().children[0];
+        let btn = scene.get(btn_id).unwrap();
         assert_eq!(btn.style.background_color, Some([0.0, 0.0, 1.0, 1.0]), ":hover 伪类重匹配 → 蓝");
     }
 
@@ -379,7 +380,12 @@ mod tests {
         let pkg = crate::asset::write_package(&scene, (200.0, 100.0), &crate::asset::AtlasSection::default(), &crate::style::dynamic::DynamicRuleTable::default());
         let mut s2 = Stage::new(font_path, (200.0, 100.0)).unwrap();
         s2.load_package(&pkg).unwrap();
-        s2.set_node_disabled(crate::scene::node::NodeId(1), true);
+        // btn = root 的首个子（root=Container, btn=Button, btn 的 Text 子）
+        let btn_id = {
+            let sc = s2.scene.as_ref().unwrap();
+            sc.get(sc.roots[0]).unwrap().children[0]
+        };
+        s2.set_node_disabled(btn_id, true);
         // Down + Up 在按钮上——disabled 不产 Click
         s2.set_input(&[
             crate::input::PointerEvent { kind: crate::input::PointerKind::Down, x: 50.0, y: 25.0, button: 0, pad: [0, 0], touch_id: -1 },
@@ -395,8 +401,14 @@ mod tests {
         // 空 scene / 命中根外 → false。手搓 Stage（不走 parse）
         let font_path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/DejaVuSans.ttf");
         let mut s = Stage::new(font_path, (200.0, 100.0)).unwrap();
-        // 手搓空 scene
-        s.scene = Some(crate::scene::node::Scene { roots: vec![], nodes: vec![], dynamic_rules: Default::default(), focused_node: None, world_transforms: Vec::new(), anim: Default::default(), scroll: Default::default(), text_layouts: Vec::new() });
+        // 手搓空 scene（SlotMap::with_key()）
+        s.scene = Some(crate::scene::node::Scene {
+            roots: vec![],
+            nodes: slotmap::SlotMap::with_key(),
+            dynamic_rules: Default::default(),
+            focused_node: None,
+            world_transforms: Vec::new(), anim: Default::default(), scroll: Default::default(), text_layouts: Vec::new(),
+        });
         s.set_input(&[crate::input::PointerEvent { kind: crate::input::PointerKind::Move, x: 50.0, y: 50.0, button: 0, pad: [0, 0], touch_id: -1 }]);
         s.tick_and_render();
         assert!(!s.is_pointer_on_ui(), "空 scene → false");
@@ -412,16 +424,17 @@ mod tests {
         let css = ".c{width:200px;height:100px;overflow:scroll;}";
         let mut s = Stage::new(font_path, (200.0, 100.0)).unwrap();
         s.load_inline(html, css).unwrap();
+        let root_id = s.scene.as_ref().unwrap().roots[0];
         // 手动塞 scroll_pos，模拟上一会话残留
-        s.scene.as_mut().unwrap().scroll.ensure(NodeId(0)).scroll_pos = (50.0, 50.0);
+        s.scene.as_mut().unwrap().scroll.ensure(root_id).scroll_pos = (50.0, 50.0);
         // reload → scroll 表应被清
         s.load_inline(html, css).unwrap();
-        assert!(s.scene.as_ref().unwrap().scroll.get(NodeId(0)).is_none(),
+        assert!(s.scene.as_ref().unwrap().scroll.get(root_id).is_none(),
             "reload 后 scroll 表清空，旧 NodeId 槽不存在");
     }
 
     /// tween 经 Stage 公共 API 注册 → advance_time stash dt → tick update 写 anim + 产 complete。
-    /// 注：.b 是 CSS class 不是 id 属性，find_node_by_id("b") 返 None。div.b 在 build 序为 NodeId(0)。
+    /// 注：.b 是 CSS class 不是 id 属性，find_node_by_id("b") 返 None。div.b 是唯一根节点。
     #[test]
     fn stage_tween_advances_opacity_and_emits_complete() {
         let font_path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/DejaVuSans.ttf");
@@ -429,13 +442,14 @@ mod tests {
         let css = ".b{width:100px;height:50px;}";
         let mut s = Stage::new(font_path, (200.0, 100.0)).unwrap();
         s.load_inline(html, css).unwrap();
-        // div.b 是 node 0（仅一个元素）；opacity 0→1，1s Linear，tag=99
-        s.tween(crate::scene::node::NodeId(0), crate::tween::TweenProp::Opacity,
+        let rid = s.scene.as_ref().unwrap().roots[0];
+        // opacity 0→1，1s Linear，tag=99
+        s.tween(rid, crate::tween::TweenProp::Opacity,
                 [0.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0],
                 crate::tween::Ease::Linear, 0.0, 1.0, 99);
         s.advance_time(0.5);
         s.tick_and_render();
-        let op = s.scene.as_ref().unwrap().anim.0[0].opacity;
+        let op = s.scene.as_ref().unwrap().anim.0[rid.index()].opacity;
         assert!((op.unwrap() - 0.5).abs() < 1e-4, "半程 opacity=0.5");
         assert!(s.last_events().iter().all(|e| e.event_type != crate::input::EVT_TWEEN_COMPLETE), "未结束");
         s.advance_time(0.5);
@@ -452,12 +466,13 @@ mod tests {
         let font_path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/DejaVuSans.ttf");
         let mut s = Stage::new(font_path, (200.0, 100.0)).unwrap();
         s.load_inline(r#"<div class="b"></div>"#, ".b{width:100px;height:50px;}").unwrap();
+        let rid = s.scene.as_ref().unwrap().roots[0];
         // delay=1.0：dt=0 时 elapsed=0 < delay → 不 apply（若用 delay=0，update 会写 start 值）
-        s.tween(crate::scene::node::NodeId(0), crate::tween::TweenProp::Opacity,
+        s.tween(rid, crate::tween::TweenProp::Opacity,
                 [0.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0],
                 crate::tween::Ease::Linear, 1.0, 1.0, 0);
         s.tick_and_render();   // 无 advance_time → dt=0 → elapsed < delay → 不推进
-        assert!(s.scene.as_ref().unwrap().anim.0[0].opacity.is_none(), "dt=0 不写 override");
+        assert!(s.scene.as_ref().unwrap().anim.0[rid.index()].opacity.is_none(), "dt=0 不写 override");
     }
 
     /// 拖拽滚动容器 → 同 tick world_transforms 已含 scroll_pos（零延迟）。
@@ -483,8 +498,9 @@ mod tests {
         s.tick_and_render();
         // 子节点 world.apply 反映 scroll_pos（非 0）
         let scene = s.scene.as_ref().unwrap();
-        // content 子=NodeId(1)；drag 下拖 → scroll_pos.y 减（越界打折负值）→ world y 反映（≠0）
-        let (_x, y) = scene.world_transforms[1].apply_point(0.0, 0.0);
+        // content 子 = root 的首个子；drag 下拖 → scroll_pos.y 减（越界打折负值）→ world y 反映（≠0）
+        let content_id = scene.get(scene.roots[0]).unwrap().children[0];
+        let (_x, y) = scene.world_transforms[content_id.index()].apply_point(0.0, 0.0);
         assert!(y != 0.0, "拖拽同帧进 world matrix：y={}", y);
     }
 }

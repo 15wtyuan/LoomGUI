@@ -169,10 +169,11 @@ impl TweenManager {
             return;
         }
         let n = scene.nodes.len();
-        let anim = scene.anim.ensure(n);
-        // 先在 anim 上 apply（按 node 索引），再单独收集 complete 事件。
+        // slotmap idx 从 1 起（idx 0 是 sentinel），anim Vec 长度 = n+1 容纳 idx=n。
+        let anim = scene.anim.ensure(n + 1);
+        // 先在 anim 上 apply（按 node.index 索引），再单独收集 complete 事件。
         for t in &mut self.tweens {
-            if t.killed || (t.node.0 as usize) >= n {
+            if t.killed || t.node.index() >= n + 1 {
                 continue;
             }
             t.elapsed += dt;
@@ -202,7 +203,7 @@ impl TweenManager {
 
 /// 逐分量 lerp start→end 写入 anim 对应通道（n=已算的 normalized）。
 fn apply(anim: &mut [NodeAnim], node: NodeId, prop: TweenProp, start: [f32; 4], end: [f32; 4], n: f32) {
-    let a = &mut anim[node.0 as usize];
+    let a = &mut anim[node.index()];
     let lerp = |i: usize| start[i] + (end[i] - start[i]) * n;
     match prop {
         TweenProp::Opacity => a.opacity = Some(lerp(0)),
@@ -278,43 +279,37 @@ mod tests {
 
     // ===== TweenManager 测 =====
 
-    use crate::scene::node::{AnimTable, Node, NodeKind, Rect};
+    use crate::scene::node::{Node, NodeKind, Rect};
     use crate::input::EVT_TWEEN_COMPLETE;
 
-    fn one_node_scene() -> Scene {
+    fn one_node_scene() -> (Scene, NodeId) {
+        // 返 (scene, node_id)——NodeId 由 slotmap 分配（首节点 idx=1, version=1）。
         let mut n = Node::default();
-        n.id = NodeId(0);
         n.kind = NodeKind::Container;
         n.layout_rect = Rect { x: 0.0, y: 0.0, w: 10.0, h: 10.0 };
-        Scene {
-            roots: vec![NodeId(0)],
-            nodes: vec![n],
-            dynamic_rules: Default::default(),
-            focused_node: None,
-            world_transforms: Vec::new(),
-            anim: AnimTable::default(),
-            scroll: Default::default(), text_layouts: Vec::new(),
-        }
+        let scene = Scene::from_nodes(vec![n], vec![]);
+        let id = scene.roots[0];
+        (scene, id)
     }
 
     #[test]
     fn update_writes_opacity_override_per_tick() {
-        let mut s = one_node_scene();
+        let (mut s, nid) = one_node_scene();
         let mut mgr = TweenManager::new();
-        mgr.tween(NodeId(0), TweenProp::Opacity, [0.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0],
+        mgr.tween(nid, TweenProp::Opacity, [0.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0],
                   Ease::Linear, 0.0, 1.0, 42);
         let mut out = Vec::new();
         // dt=0.5 → norm=0.5 → opacity=0.5
         mgr.update(0.5, &mut s, &mut out);
-        assert!((s.anim.0[0].opacity.unwrap() - 0.5).abs() < 1e-5, "半程 opacity=0.5");
+        assert!((s.anim.0[nid.index()].opacity.unwrap() - 0.5).abs() < 1e-5, "半程 opacity=0.5");
         assert!(out.is_empty(), "未结束 → 无 complete 事件");
     }
 
     #[test]
     fn update_emits_complete_with_tag_and_prop() {
-        let mut s = one_node_scene();
+        let (mut s, nid) = one_node_scene();
         let mut mgr = TweenManager::new();
-        mgr.tween(NodeId(0), TweenProp::Scale, [1.0, 1.0, 0.0, 0.0], [2.0, 3.0, 0.0, 0.0],
+        mgr.tween(nid, TweenProp::Scale, [1.0, 1.0, 0.0, 0.0], [2.0, 3.0, 0.0, 0.0],
                   Ease::Linear, 0.0, 1.0, 7);
         let mut out = Vec::new();
         mgr.update(1.0, &mut s, &mut out);   // 恰好结束
@@ -323,7 +318,7 @@ mod tests {
         assert_eq!(out[0].click_count, TweenProp::Scale as u8, "click_count 复用装 prop");
         assert_eq!(out[0].touch_id, 7, "touch_id 复用装 tag");
         // 末值 = scale(2,3)
-        let m = s.anim.0[0].transform.unwrap();
+        let m = s.anim.0[nid.index()].transform.unwrap();
         assert!((m[0] - 2.0).abs() < 1e-5 && (m[3] - 3.0).abs() < 1e-5, "末值 scale(2,3)");
         // 完成后 tween 移除
         let mut out2 = Vec::new();
@@ -333,41 +328,43 @@ mod tests {
 
     #[test]
     fn update_delay_gates_apply() {
-        let mut s = one_node_scene();
+        let (mut s, nid) = one_node_scene();
         let mut mgr = TweenManager::new();
-        mgr.tween(NodeId(0), TweenProp::Opacity, [0.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0],
+        mgr.tween(nid, TweenProp::Opacity, [0.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0],
                   Ease::Linear, 1.0, 1.0, 0);  // delay=1
         let mut out = Vec::new();
         mgr.update(0.5, &mut s, &mut out);   // elapsed 0.5 < delay 1 → 不写
-        assert!(s.anim.0[0].opacity.is_none(), "delay 内不写 override");
+        assert!(s.anim.0[nid.index()].opacity.is_none(), "delay 内不写 override");
         assert!(out.is_empty());
         mgr.update(1.0, &mut s, &mut out);   // elapsed 1.5，tt=0.5 → norm=0.5
-        assert!((s.anim.0[0].opacity.unwrap() - 0.5).abs() < 1e-5, "越过 delay 后按 tt 插值");
+        assert!((s.anim.0[nid.index()].opacity.unwrap() - 0.5).abs() < 1e-5, "越过 delay 后按 tt 插值");
     }
 
     #[test]
     fn kill_stops_update_keeps_override() {
-        let mut s = one_node_scene();
+        let (mut s, nid) = one_node_scene();
         let mut mgr = TweenManager::new();
-        mgr.tween(NodeId(0), TweenProp::Opacity, [0.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0],
+        mgr.tween(nid, TweenProp::Opacity, [0.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0],
                   Ease::Linear, 0.0, 1.0, 0);
         let mut out = Vec::new();
         mgr.update(0.3, &mut s, &mut out);
-        let v = s.anim.0[0].opacity.unwrap();
-        mgr.kill(NodeId(0), TweenProp::Opacity);
+        let v = s.anim.0[nid.index()].opacity.unwrap();
+        mgr.kill(nid, TweenProp::Opacity);
         mgr.update(0.5, &mut s, &mut out);   // kill 后不再推进
-        assert_eq!(s.anim.0[0].opacity.unwrap(), v, "kill 后 override 保留末值不变");
+        assert_eq!(s.anim.0[nid.index()].opacity.unwrap(), v, "kill 后 override 保留末值不变");
         assert!(out.is_empty(), "kill 不产 complete");
     }
 
     #[test]
     fn update_skips_out_of_range_node() {
-        let mut s = one_node_scene();   // 仅 node 0
+        let (mut s, _nid) = one_node_scene();   // 仅 1 节点
         let mut mgr = TweenManager::new();
-        mgr.tween(NodeId(5), TweenProp::Opacity, [0.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0],
+        // 构造一个 index 越界的 NodeId：idx=99（远超 nodes.len()=1+1=2）
+        let oob = NodeId((99u32 << 12) | 1);
+        mgr.tween(oob, TweenProp::Opacity, [0.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0],
                   Ease::Linear, 0.0, 1.0, 0);
         let mut out = Vec::new();
-        mgr.update(1.0, &mut s, &mut out);   // node 5 越界 → 跳过
+        mgr.update(1.0, &mut s, &mut out);   // index 99 越界 → 跳过
         assert!(out.is_empty(), "越界 node 不产事件");
     }
 }

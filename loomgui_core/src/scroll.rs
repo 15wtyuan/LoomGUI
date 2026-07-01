@@ -97,17 +97,17 @@ pub struct ScrollTable(pub Vec<Option<ScrollPaneState>>);
 
 impl ScrollTable {
     pub fn get(&self, id: NodeId) -> Option<&ScrollPaneState> {
-        self.0.get(id.0 as usize).and_then(|o| o.as_ref())
+        self.0.get(id.index()).and_then(|o| o.as_ref())
     }
     pub fn get_mut(&mut self, id: NodeId) -> Option<&mut ScrollPaneState> {
-        self.0.get_mut(id.0 as usize).and_then(|o| o.as_mut())
+        self.0.get_mut(id.index()).and_then(|o| o.as_mut())
     }
     /// 增长到含 id 的长度（缺省填 None），返回该节点可变状态（缺则插 default）。
     pub fn ensure(&mut self, id: NodeId) -> &mut ScrollPaneState {
-        if (id.0 as usize) >= self.0.len() {
-            self.0.resize(id.0 as usize + 1, None);
+        if id.index() >= self.0.len() {
+            self.0.resize(id.index() + 1, None);
         }
-        self.0[id.0 as usize].get_or_insert_with(ScrollPaneState::default)
+        self.0[id.index()].get_or_insert_with(ScrollPaneState::default)
     }
     pub fn clear(&mut self) {
         self.0.clear();
@@ -409,7 +409,7 @@ pub fn v_thumb_rect(scene: &Scene, id: NodeId) -> Option<Rect> {
     if s.overlap.1 <= 0.0 {
         return None;
     }
-    let lr = scene.nodes[id.0 as usize].layout_rect;
+    let lr = scene.get(id).expect("live node").layout_rect;
     let track_w = SCROLLBAR_TRACK_THICKNESS;
     let track_h = lr.h;
     let thumb_h = (s.viewport_size.1 * (s.viewport_size.1 / s.content_size.1))
@@ -435,7 +435,7 @@ pub fn h_thumb_rect(scene: &Scene, id: NodeId) -> Option<Rect> {
     if s.overlap.0 <= 0.0 {
         return None;
     }
-    let lr = scene.nodes[id.0 as usize].layout_rect;
+    let lr = scene.get(id).expect("live node").layout_rect;
     let track_h = SCROLLBAR_TRACK_THICKNESS;
     let track_w = lr.w;
     let thumb_w = (s.viewport_size.0 * (s.viewport_size.0 / s.content_size.0))
@@ -459,23 +459,23 @@ pub fn h_thumb_rect(scene: &Scene, id: NodeId) -> Option<Rect> {
 /// 遍历节点：任一轴 overflow != Visible 即视为滚动容器，ensure 后写几何。
 /// children clone 避借用冲突（遍历子 layout_rect 时也要借 scene.nodes）。
 pub fn refresh_content_sizes(scene: &mut Scene) {
-    let ids: Vec<usize> = (0..scene.nodes.len()).collect();
-    for id in ids {
-        let nid = NodeId(id as u32);
-        let is_scroll = {
-            let n = &scene.nodes[id];
-            n.style.overflow_x != OverflowMode::Visible
-                || n.style.overflow_y != OverflowMode::Visible
-        };
-        if !is_scroll {
-            continue;
+    // 收集 (nid, kids, viewport) 避免在借 scene.scroll 时再借 scene.nodes。
+    let mut work: Vec<(NodeId, Vec<NodeId>, (f32, f32))> = Vec::new();
+    for n in scene.nodes.values() {
+        if n.style.overflow_x != OverflowMode::Visible
+            || n.style.overflow_y != OverflowMode::Visible
+        {
+            let kids = n.children.clone();
+            let viewport = content_box_size(n);
+            work.push((n.id, kids, viewport));
         }
+    }
+    for (nid, kids, viewport) in work {
         // content_size = 直接子节点 layout_rect AABB。
-        let kids = scene.nodes[id].children.clone();
         let (mut min_x, mut min_y) = (f32::MAX, f32::MAX);
         let (mut max_x, mut max_y) = (f32::MIN, f32::MIN);
         for c in &kids {
-            let r = scene.nodes[c.0 as usize].layout_rect;
+            let r = scene.get(*c).expect("live node").layout_rect;
             min_x = min_x.min(r.x);
             min_y = min_y.min(r.y);
             max_x = max_x.max(r.x + r.w);
@@ -486,7 +486,6 @@ pub fn refresh_content_sizes(scene: &mut Scene) {
         } else {
             ((max_x - min_x).max(0.0), (max_y - min_y).max(0.0))
         };
-        let viewport = content_box_size(&scene.nodes[id]);
         let st = scene.scroll.ensure(nid);
         st.content_size_dirty = st.content_size != content;
         st.content_size = content;
@@ -529,8 +528,7 @@ pub fn apply_wheel_to_hit(scene: &mut Scene, w: WheelEvent) {
         // sentinel thumb_id → decode container_id（thumb covers container edge,
         // wheel on thumb = wheel on container）
         let id = if id.0 & 0x6000_0000 != 0 { NodeId(id.0 & !0x6000_0000) } else { id };
-        if (id.0 as usize) < scene.nodes.len() {
-            let n = &scene.nodes[id.0 as usize];
+        if let Some(n) = scene.get(id) {
             let eff_y = effective(
                 n.style.overflow_y,
                 scene.scroll.get(id).map_or(0.0, |s| s.content_size.1),
@@ -551,7 +549,7 @@ pub fn apply_wheel_to_hit(scene: &mut Scene, w: WheelEvent) {
             // defensive: invalid node id (shouldn't happen after sentinel decode)
             break;
         }
-        pane = scene.nodes[id.0 as usize].parent;
+        pane = scene.get(id).expect("live node").parent;
     }
 }
 
@@ -575,10 +573,10 @@ mod tests {
     use crate::style::resolved::ResolvedStyle;
 
     /// 构造滚动测试场景：
-    ///   node 0 = scroll 容器（overflow_y=Scroll），layout_rect (0,0,100,100)
-    ///   node 1 = 子，layout_rect (0,0,40,40)
-    ///   node 2 = 子，layout_rect (0,50,30,30)
-    ///   node 3 = 非 scroll（overflow 双轴 Visible）
+    ///   root0 = scroll 容器（overflow_y=Scroll），layout_rect (0,0,100,100)
+    ///   child1 = root0 子，layout_rect (0,0,40,40)
+    ///   child2 = root0 子，layout_rect (0,50,30,30)
+    ///   root1 = 非 scroll（overflow 双轴 Visible），layout_rect (0,0,50,50)
     /// content AABB = (max_right 40, max_bottom 80)。
     fn build_scroll_scene() -> Scene {
         let mut scroll_style = ResolvedStyle::default();
@@ -598,18 +596,40 @@ mod tests {
             (None, NodeKind::Container, ResolvedStyle::default(), vec![], None, false, None),
         ];
         let mut s = Scene::build(&entries);
-        s.nodes[0].layout_rect = Rect { x: 0.0, y: 0.0, w: 100.0, h: 100.0 };
-        s.nodes[1].layout_rect = Rect { x: 0.0, y: 0.0, w: 40.0, h: 40.0 };
-        s.nodes[2].layout_rect = Rect { x: 0.0, y: 50.0, w: 30.0, h: 30.0 };
-        s.nodes[3].layout_rect = Rect { x: 0.0, y: 0.0, w: 50.0, h: 50.0 };
+        // root0 = scroll 容器（roots[0]）；root1 = 非 scroll（roots[1]）。
+        let root0 = s.roots[0];
+        let root1 = s.roots[1];
+        let (c0, c1) = {
+            let n = s.get(root0).unwrap();
+            (n.children[0], n.children[1])
+        };
+        s.get_mut(root0).unwrap().layout_rect = Rect { x: 0.0, y: 0.0, w: 100.0, h: 100.0 };
+        s.get_mut(c0).unwrap().layout_rect = Rect { x: 0.0, y: 0.0, w: 40.0, h: 40.0 };
+        s.get_mut(c1).unwrap().layout_rect = Rect { x: 0.0, y: 50.0, w: 30.0, h: 30.0 };
+        s.get_mut(root1).unwrap().layout_rect = Rect { x: 0.0, y: 0.0, w: 50.0, h: 50.0 };
         s
+    }
+
+    /// 取 scroll 容器 id（= roots[0]）。
+    fn scroll_container_id(s: &Scene) -> NodeId {
+        s.roots[0]
+    }
+    /// 取 root0 的两个子 id。
+    fn child_ids(s: &Scene) -> (NodeId, NodeId) {
+        let n = s.get(s.roots[0]).unwrap();
+        (n.children[0], n.children[1])
+    }
+    /// 取非 scroll 节点 id（= roots[1]）。
+    fn non_scroll_id(s: &Scene) -> NodeId {
+        s.roots[1]
     }
 
     #[test]
     fn content_size_is_children_aabb() {
         let mut s = build_scroll_scene();
+        let root0 = scroll_container_id(&s);
         refresh_content_sizes(&mut s);
-        let st = s.scroll.get(NodeId(0)).expect("scroll 容器有 state");
+        let st = s.scroll.get(root0).expect("scroll 容器有 state");
         assert!(
             (st.content_size.0 - 40.0).abs() < 1e-3 && (st.content_size.1 - 80.0).abs() < 1e-3,
             "content_size = (40, 80)，got {:?}",
@@ -620,8 +640,9 @@ mod tests {
     #[test]
     fn viewport_and_overlap_from_geometry() {
         let mut s = build_scroll_scene();
+        let root0 = scroll_container_id(&s);
         refresh_content_sizes(&mut s);
-        let st = s.scroll.get(NodeId(0)).unwrap();
+        let st = s.scroll.get(root0).unwrap();
         // viewport = layout_rect border box = (100, 100)
         assert!((st.viewport_size.0 - 100.0).abs() < 1e-3);
         assert!((st.viewport_size.1 - 100.0).abs() < 1e-3);
@@ -634,8 +655,9 @@ mod tests {
     fn overlap_clamps_negative_to_zero() {
         // content < viewport → overlap 0（与上一测同场景，显式命名）
         let mut s = build_scroll_scene();
+        let root0 = scroll_container_id(&s);
         refresh_content_sizes(&mut s);
-        let st = s.scroll.get(NodeId(0)).unwrap();
+        let st = s.scroll.get(root0).unwrap();
         assert_eq!(st.overlap, (0.0, 0.0));
     }
 
@@ -643,10 +665,12 @@ mod tests {
     fn overlap_positive_when_content_exceeds_viewport() {
         // 改子 layout_rect 让 content > viewport y 轴
         let mut s = build_scroll_scene();
-        s.nodes[1].layout_rect = Rect { x: 0.0, y: 0.0, w: 40.0, h: 40.0 };
-        s.nodes[2].layout_rect = Rect { x: 0.0, y: 0.0, w: 30.0, h: 200.0 };
+        let root0 = scroll_container_id(&s);
+        let (c0, c1) = child_ids(&s);
+        s.get_mut(c0).unwrap().layout_rect = Rect { x: 0.0, y: 0.0, w: 40.0, h: 40.0 };
+        s.get_mut(c1).unwrap().layout_rect = Rect { x: 0.0, y: 0.0, w: 30.0, h: 200.0 };
         refresh_content_sizes(&mut s);
-        let st = s.scroll.get(NodeId(0)).unwrap();
+        let st = s.scroll.get(root0).unwrap();
         // content = (40, 200)；viewport = (100,100) → overlap = (0, 100)
         assert!(
             (st.overlap.0 - 0.0).abs() < 1e-3 && (st.overlap.1 - 100.0).abs() < 1e-3,
@@ -658,9 +682,10 @@ mod tests {
     #[test]
     fn non_scroll_node_has_no_state() {
         let mut s = build_scroll_scene();
+        let root1 = non_scroll_id(&s);
         refresh_content_sizes(&mut s);
-        // node 3 双轴 Visible → 非 scroll 容器 → scroll.get 返 None
-        assert!(s.scroll.get(NodeId(3)).is_none(), "非 scroll 节点无 state");
+        // root1 双轴 Visible → 非 scroll 容器 → scroll.get 返 None
+        assert!(s.scroll.get(root1).is_none(), "非 scroll 节点无 state");
     }
 
     #[test]
@@ -679,22 +704,25 @@ mod tests {
 
     #[test]
     fn scrolltable_get_mut_ensure_clear() {
+        // ScrollTable 按 id.index() 索引（slotmap idx，从 1 起；此单元测试不经过 Scene，
+        // 直接造带已知 index 的 NodeId：NodeId((idx<<12)|1)）。
+        let mk = |idx: u32| NodeId((idx << 12) | 1);
         let mut t = ScrollTable::default();
-        assert!(t.get(NodeId(0)).is_none(), "空表 get → None");
+        assert!(t.get(mk(0)).is_none(), "空表 get → None");
         // ensure 增长并插 default
-        let st = t.ensure(NodeId(2));
+        let st = t.ensure(mk(2));
         st.scroll_pos = (5.0, 7.0);
-        assert_eq!(t.0.len(), 3, "ensure(2) 增长到 len 3");
-        let got = t.get(NodeId(2)).unwrap();
+        assert_eq!(t.0.len(), 3, "ensure(idx=2) 增长到 len 3");
+        let got = t.get(mk(2)).unwrap();
         assert_eq!(got.scroll_pos, (5.0, 7.0));
         // get_mut
         {
-            let m = t.get_mut(NodeId(2)).unwrap();
+            let m = t.get_mut(mk(2)).unwrap();
             m.scroll_pos = (1.0, 2.0);
         }
-        assert_eq!(t.get(NodeId(2)).unwrap().scroll_pos, (1.0, 2.0));
+        assert_eq!(t.get(mk(2)).unwrap().scroll_pos, (1.0, 2.0));
         // ensure 同 id 二次返同槽（不重置）
-        let st2 = t.ensure(NodeId(2));
+        let st2 = t.ensure(mk(2));
         assert_eq!(st2.scroll_pos, (1.0, 2.0), "二次 ensure 不重置已有值");
         // clear
         t.clear();
@@ -704,18 +732,20 @@ mod tests {
     #[test]
     fn content_size_dirty_flag_when_changes() {
         let mut s = build_scroll_scene();
+        let root0 = scroll_container_id(&s);
         refresh_content_sizes(&mut s);
-        let st = s.scroll.get(NodeId(0)).unwrap();
+        let st = s.scroll.get(root0).unwrap();
         // 首次：原 default (0,0) → (40,80) → dirty true
         assert!(st.content_size_dirty, "首次填入非零 content → dirty");
         // 再 refresh 一次（content 不变）→ dirty false
         refresh_content_sizes(&mut s);
-        let st2 = s.scroll.get(NodeId(0)).unwrap();
+        let st2 = s.scroll.get(root0).unwrap();
         assert!(!st2.content_size_dirty, "content 未变 → dirty false");
         // 改子尺寸 → dirty true
-        s.nodes[2].layout_rect = Rect { x: 0.0, y: 0.0, w: 30.0, h: 200.0 };
+        let (_, c1) = child_ids(&s);
+        s.get_mut(c1).unwrap().layout_rect = Rect { x: 0.0, y: 0.0, w: 30.0, h: 200.0 };
         refresh_content_sizes(&mut s);
-        let st3 = s.scroll.get(NodeId(0)).unwrap();
+        let st3 = s.scroll.get(root0).unwrap();
         assert!(st3.content_size_dirty, "content 变 → dirty true");
     }
 
@@ -728,9 +758,10 @@ mod tests {
             (None, NodeKind::Container, style, vec![], None, false, None),
         ];
         let mut s = Scene::build(&entries);
-        s.nodes[0].layout_rect = Rect { x: 0.0, y: 0.0, w: 100.0, h: 100.0 };
+        let root0 = s.roots[0];
+        s.get_mut(root0).unwrap().layout_rect = Rect { x: 0.0, y: 0.0, w: 100.0, h: 100.0 };
         refresh_content_sizes(&mut s);
-        let st = s.scroll.get(NodeId(0)).unwrap();
+        let st = s.scroll.get(root0).unwrap();
         assert_eq!(st.content_size, (0.0, 0.0), "无子 content = (0,0)");
         assert_eq!(st.overlap, (0.0, 0.0));
     }
@@ -882,16 +913,18 @@ mod tests {
         // 滚动到 pos=80（overlap=100），tweening≠0；然后 content 缩 → overlap 变 50
         // → scroll_pos 越界（80 > 50）→ refresh 应 clamp + tweening 归零
         let mut s = build_scroll_scene();
-        s.nodes[1].layout_rect = Rect { x: 0.0, y: 0.0, w: 40.0, h: 40.0 };
-        s.nodes[2].layout_rect = Rect { x: 0.0, y: 0.0, w: 30.0, h: 200.0 };
+        let root0 = scroll_container_id(&s);
+        let (c0, c1) = child_ids(&s);
+        s.get_mut(c0).unwrap().layout_rect = Rect { x: 0.0, y: 0.0, w: 40.0, h: 40.0 };
+        s.get_mut(c1).unwrap().layout_rect = Rect { x: 0.0, y: 0.0, w: 30.0, h: 200.0 };
         refresh_content_sizes(&mut s);
-        let st = s.scroll.get_mut(NodeId(0)).unwrap();
+        let st = s.scroll.get_mut(root0).unwrap();
         st.scroll_pos = (0.0, 80.0);
         st.tweening = 1; // 模拟 tween 进行中
                          // 缩 content：子 2 高度 200→100 → content_y=100，viewport=100 → overlap_y=0
-        s.nodes[2].layout_rect = Rect { x: 0.0, y: 0.0, w: 30.0, h: 100.0 };
+        s.get_mut(c1).unwrap().layout_rect = Rect { x: 0.0, y: 0.0, w: 30.0, h: 100.0 };
         refresh_content_sizes(&mut s);
-        let st2 = s.scroll.get(NodeId(0)).unwrap();
+        let st2 = s.scroll.get(root0).unwrap();
         assert_eq!(st2.overlap.1, 0.0, "content 缩后 overlap=0");
         assert_eq!(st2.scroll_pos.1, 0.0, "越界 pos 被 clamp 到新 overlap");
         assert_eq!(st2.tweening, 0, "content 变化时 tween 取消");
@@ -901,16 +934,18 @@ mod tests {
     fn content_size_change_in_range_keeps_tween() {
         // pos 在新 [0, overlap] 内 → 不打断 tween（最小补偿仅处理越界）
         let mut s = build_scroll_scene();
-        s.nodes[1].layout_rect = Rect { x: 0.0, y: 0.0, w: 40.0, h: 40.0 };
-        s.nodes[2].layout_rect = Rect { x: 0.0, y: 0.0, w: 30.0, h: 200.0 };
+        let root0 = scroll_container_id(&s);
+        let (c0, c1) = child_ids(&s);
+        s.get_mut(c0).unwrap().layout_rect = Rect { x: 0.0, y: 0.0, w: 40.0, h: 40.0 };
+        s.get_mut(c1).unwrap().layout_rect = Rect { x: 0.0, y: 0.0, w: 30.0, h: 200.0 };
         refresh_content_sizes(&mut s);
-        let st = s.scroll.get_mut(NodeId(0)).unwrap();
+        let st = s.scroll.get_mut(root0).unwrap();
         st.scroll_pos = (0.0, 10.0);
         st.tweening = 1;
         // content 略缩但 pos=10 仍在 [0, overlap]（新 overlap 仍 ≥ 10）
-        s.nodes[2].layout_rect = Rect { x: 0.0, y: 0.0, w: 30.0, h: 150.0 };
+        s.get_mut(c1).unwrap().layout_rect = Rect { x: 0.0, y: 0.0, w: 30.0, h: 150.0 };
         refresh_content_sizes(&mut s);
-        let st2 = s.scroll.get(NodeId(0)).unwrap();
+        let st2 = s.scroll.get(root0).unwrap();
         assert_eq!(st2.tweening, 1, "pos 在范围内不打断 tween");
     }
 
@@ -921,12 +956,14 @@ mod tests {
 
         // 构造 scene：overflow:scroll 容器 + content>viewport（effective_y=true）
         let mut s = build_scroll_scene();
+        let root0 = scroll_container_id(&s);
+        let (_, c1) = child_ids(&s);
         // 扩子节点使 content_size > viewport_size on y 轴
         // content AABB y = max(40, 250) = 250 > viewport=100 → overlap_y=150
-        s.nodes[2].layout_rect = Rect { x: 0.0, y: 0.0, w: 30.0, h: 250.0 };
+        s.get_mut(c1).unwrap().layout_rect = Rect { x: 0.0, y: 0.0, w: 30.0, h: 250.0 };
         // Scene::build 为 overflow node 设 clip_rect=Rect::default()（(0,0,0,0) 挡全部命中）；
         // 手填为 layout_rect 同尺寸让 hit_test 能命中。
-        s.nodes[0].clip_rect = Some(Rect { x: 0.0, y: 0.0, w: 100.0, h: 100.0 });
+        s.get_mut(root0).unwrap().clip_rect = Some(Rect { x: 0.0, y: 0.0, w: 100.0, h: 100.0 });
 
         // 填 scroll state（content_size/viewport/overlap）+ world transforms（hit_test 用）
         refresh_content_sizes(&mut s);
@@ -934,7 +971,7 @@ mod tests {
 
         // 核实场景生效
         {
-            let st = s.scroll.get(NodeId(0)).unwrap();
+            let st = s.scroll.get(root0).unwrap();
             assert!(st.overlap.1 > 0.0, "content 超出 viewport，overlap_y={}", st.overlap.1);
             assert_eq!(st.tweening, 0, "初始 tweening=0");
         }
@@ -946,7 +983,7 @@ mod tests {
             WheelEvent { x: 10.0, y: 10.0, delta_x: 0.0, delta_y: 1.0 },
         );
 
-        let st = s.scroll.get(NodeId(0)).unwrap();
+        let st = s.scroll.get(root0).unwrap();
         assert!(st.tweening != 0, "wheel 触发滚动 tween，tweening={}", st.tweening);
     }
 
@@ -957,15 +994,17 @@ mod tests {
         use crate::scene::transform::compute_world_transforms;
 
         let mut s = build_scroll_scene();
+        let root0 = scroll_container_id(&s);
+        let (_, c1) = child_ids(&s);
         // content_y=250 > viewport=100 → overlap_y=150
-        s.nodes[2].layout_rect = Rect { x: 0.0, y: 0.0, w: 30.0, h: 250.0 };
-        s.nodes[0].clip_rect = Some(Rect { x: 0.0, y: 0.0, w: 100.0, h: 100.0 });
+        s.get_mut(c1).unwrap().layout_rect = Rect { x: 0.0, y: 0.0, w: 30.0, h: 250.0 };
+        s.get_mut(root0).unwrap().clip_rect = Some(Rect { x: 0.0, y: 0.0, w: 100.0, h: 100.0 });
 
         refresh_content_sizes(&mut s);
         compute_world_transforms(&mut s);
 
         // 核实 scroll state
-        let st = s.scroll.get(NodeId(0)).unwrap();
+        let st = s.scroll.get(root0).unwrap();
         assert!(st.overlap.1 > 0.0, "overlap needed for thumb");
         assert_eq!(st.tweening, 0);
 
@@ -984,7 +1023,7 @@ mod tests {
             WheelEvent { x: 96.0, y: 20.0, delta_x: 0.0, delta_y: 1.0 },
         );
 
-        let st = s.scroll.get(NodeId(0)).unwrap();
+        let st = s.scroll.get(root0).unwrap();
         assert!(st.tweening != 0, "thumb wheel 应触发滚动，tweening={}", st.tweening);
     }
 
@@ -992,12 +1031,14 @@ mod tests {
     #[test]
     fn v_thumb_rect_is_right_edge_with_proportional_size() {
         let mut s = build_scroll_scene();
-        s.nodes[1].layout_rect = Rect { x: 0.0, y: 0.0, w: 40.0, h: 40.0 };
-        s.nodes[2].layout_rect = Rect { x: 0.0, y: 0.0, w: 30.0, h: 200.0 };
+        let root0 = scroll_container_id(&s);
+        let (c0, c1) = child_ids(&s);
+        s.get_mut(c0).unwrap().layout_rect = Rect { x: 0.0, y: 0.0, w: 40.0, h: 40.0 };
+        s.get_mut(c1).unwrap().layout_rect = Rect { x: 0.0, y: 0.0, w: 30.0, h: 200.0 };
         refresh_content_sizes(&mut s);
         // viewport=(100,100) content=(40,200) → overlap=(0,100)
         // thumb_h = 100*(100/200)=50, track_h=100, perc=0 → thumb_y = lr.y=0
-        let r = v_thumb_rect(&s, NodeId(0)).expect("overlap>0 → thumb");
+        let r = v_thumb_rect(&s, root0).expect("overlap>0 → thumb");
         assert_eq!(r.w, 8.0, "track_w=8");
         assert!((r.h - 50.0).abs() < 1e-2, "thumb_h = 100*(100/200)=50, got {}", r.h);
         assert_eq!(r.x, 92.0, "右边缘: x = lr.x(0) + lr.w(100) - track_w(8)");
@@ -1007,12 +1048,14 @@ mod tests {
     #[test]
     fn v_thumb_rect_moves_with_scroll_pos() {
         let mut s = build_scroll_scene();
-        s.nodes[1].layout_rect = Rect { x: 0.0, y: 0.0, w: 40.0, h: 40.0 };
-        s.nodes[2].layout_rect = Rect { x: 0.0, y: 0.0, w: 30.0, h: 200.0 };
+        let root0 = scroll_container_id(&s);
+        let (c0, c1) = child_ids(&s);
+        s.get_mut(c0).unwrap().layout_rect = Rect { x: 0.0, y: 0.0, w: 40.0, h: 40.0 };
+        s.get_mut(c1).unwrap().layout_rect = Rect { x: 0.0, y: 0.0, w: 30.0, h: 200.0 };
         refresh_content_sizes(&mut s);
-        let st = s.scroll.get_mut(NodeId(0)).unwrap();
+        let st = s.scroll.get_mut(root0).unwrap();
         st.scroll_pos.1 = 50.0; // 50% scrolled
-        let r = v_thumb_rect(&s, NodeId(0)).unwrap();
+        let r = v_thumb_rect(&s, root0).unwrap();
         // thumb_h=50, track_h=100, travel=50, perc=0.5 → thumb_y = 0 + 50*0.5 = 25
         assert!((r.y - 25.0).abs() < 1e-2, "50% scroll → thumb_y=25, got {}", r.y);
     }
@@ -1020,23 +1063,27 @@ mod tests {
     #[test]
     fn thumb_rect_returns_none_when_no_overlap() {
         let mut s = build_scroll_scene();
+        let root0 = scroll_container_id(&s);
+        let (c0, c1) = child_ids(&s);
         // content < viewport → overlap=(0,0)
-        s.nodes[1].layout_rect = Rect { x: 0.0, y: 0.0, w: 40.0, h: 40.0 };
-        s.nodes[2].layout_rect = Rect { x: 0.0, y: 50.0, w: 30.0, h: 30.0 };
+        s.get_mut(c0).unwrap().layout_rect = Rect { x: 0.0, y: 0.0, w: 40.0, h: 40.0 };
+        s.get_mut(c1).unwrap().layout_rect = Rect { x: 0.0, y: 50.0, w: 30.0, h: 30.0 };
         refresh_content_sizes(&mut s);
-        assert!(v_thumb_rect(&s, NodeId(0)).is_none(), "overlap=0 → 无 thumb");
-        assert!(h_thumb_rect(&s, NodeId(0)).is_none(), "overlap=0 → 无 thumb");
+        assert!(v_thumb_rect(&s, root0).is_none(), "overlap=0 → 无 thumb");
+        assert!(h_thumb_rect(&s, root0).is_none(), "overlap=0 → 无 thumb");
     }
 
     #[test]
     fn h_thumb_rect_is_bottom_edge() {
         let mut s = build_scroll_scene();
-        s.nodes[1].layout_rect = Rect { x: 0.0, y: 0.0, w: 200.0, h: 40.0 };
-        s.nodes[2].layout_rect = Rect { x: 0.0, y: 50.0, w: 30.0, h: 30.0 };
+        let root0 = scroll_container_id(&s);
+        let (c0, c1) = child_ids(&s);
+        s.get_mut(c0).unwrap().layout_rect = Rect { x: 0.0, y: 0.0, w: 200.0, h: 40.0 };
+        s.get_mut(c1).unwrap().layout_rect = Rect { x: 0.0, y: 50.0, w: 30.0, h: 30.0 };
         refresh_content_sizes(&mut s);
         // viewport=(100,100) content=(200,80) → overlap=(100,0)
         // h_thumb: track_h=8, track_w=100, thumb_w=100*(100/200)=50
-        let r = h_thumb_rect(&s, NodeId(0)).expect("overlap_x>0 → h_thumb");
+        let r = h_thumb_rect(&s, root0).expect("overlap_x>0 → h_thumb");
         assert_eq!(r.h, 8.0, "track_h=8");
         assert!((r.w - 50.0).abs() < 1e-1, "thumb_w = 100*(100/200)=50");
         assert_eq!(r.y, 92.0, "底边: y = lr.y(0) + lr.h(100) - track_h(8)");

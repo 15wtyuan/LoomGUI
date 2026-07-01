@@ -73,8 +73,8 @@ pub fn solve(scene: &mut Scene, font: &Font, root_size: (f32, f32), textures: &T
         return;
     }
     let mut taffy_tree: TaffyTree<MeasureContext> = TaffyTree::new();
-    // scene NodeId → taffy NodeId 映射（按 NodeId.0 索引）。
-    let mut taffy_ids: Vec<Option<taffy::NodeId>> = vec![None; scene.nodes.len()];
+    // scene NodeId → taffy NodeId 映射（按 NodeId.index() 索引，1 基故 len+1）。
+    let mut taffy_ids: Vec<Option<taffy::NodeId>> = vec![None; scene.nodes.len() + 1];
 
     fn build(
         scene: &Scene,
@@ -84,7 +84,7 @@ pub fn solve(scene: &mut Scene, font: &Font, root_size: (f32, f32), textures: &T
         textures: &TextureRegistry,
         parent_overflow: bool,
     ) -> taffy::NodeId {
-        let node = &scene.nodes[id.0 as usize];
+        let node = scene.get(id).expect("live node");
         let mut style = node.style.taffy_style.clone();
         // overflow != visible → 设 taffy overflow，让 flex automatic min-size=0（CSS flex §4.5）。
         // 不设则 taffy 默认 Visible → min-size=min-content → 容器被 content 撑开（viewport=content）
@@ -143,7 +143,7 @@ pub fn solve(scene: &mut Scene, font: &Font, root_size: (f32, f32), textures: &T
             // 容器：用 children 建。
             tree.new_with_children(style, &children_ids).unwrap()
         };
-        taffy_ids[id.0 as usize] = Some(tid);
+        taffy_ids[id.index()] = Some(tid);
         tid
     }
 
@@ -152,12 +152,12 @@ pub fn solve(scene: &mut Scene, font: &Font, root_size: (f32, f32), textures: &T
     // taffy NodeId → scene NodeId 反查，供 measure 闭包按 taffy nid 把 TextLayout
     // 存进 scene 索引的 text_layouts。render 复用，消除 layout/render 双测量不一致。
     let mut taffy_to_scene: HashMap<taffy::NodeId, NodeId> = HashMap::new();
-    for (scene_idx, tid) in taffy_ids.iter().enumerate() {
-        if let Some(tid) = tid {
-            taffy_to_scene.insert(*tid, NodeId(scene_idx as u32));
+    for n in scene.nodes.values() {
+        if let Some(tid) = taffy_ids[n.id.index()] {
+            taffy_to_scene.insert(tid, n.id);
         }
     }
-    let mut text_layouts: Vec<Option<TextLayout>> = vec![None; scene.nodes.len()];
+    let mut text_layouts: Vec<Option<TextLayout>> = vec![None; scene.nodes.len() + 1];
 
     // 设根 size：覆盖为调用方给的 root_size（viewport）。
     // Style.size 字段类型是 Size<Dimension>（不是 LengthPercentageAuto）。
@@ -223,7 +223,7 @@ pub fn solve(scene: &mut Scene, font: &Font, root_size: (f32, f32), textures: &T
                         // Some(available)（换行）。一旦存了 Some，后续 None 不覆盖（taffy 末尾
                         // 可能补测 None）。
                         if let Some(sid) = taffy_to_scene.get(&nid) {
-                            let slot = &mut text_layouts[sid.0 as usize];
+                            let slot = &mut text_layouts[sid.index()];
                             if slot.is_none() || known.width.is_some() {
                                 *slot = Some(layout.clone());
                             }
@@ -243,12 +243,12 @@ pub fn solve(scene: &mut Scene, font: &Font, root_size: (f32, f32), textures: &T
         id: NodeId,
         parent_origin: (f32, f32),
     ) {
-        let tid = taffy_ids[id.0 as usize].unwrap();
+        let tid = taffy_ids[id.index()].unwrap();
         let layout = tree.layout(tid).unwrap();
         let x = parent_origin.0 + layout.location.x;
         let y = parent_origin.1 + layout.location.y;
         let (w, h) = (layout.size.width, layout.size.height);
-        let node = &mut scene.nodes[id.0 as usize];
+        let node = scene.get_mut(id).expect("live node");
         node.layout_rect = Rect { x, y, w, h };
         // overflow:hidden 节点（build_scene 已建 Some 槽）：用自身 border 框填 clip。
         if node.clip_rect.is_some() {
@@ -290,9 +290,9 @@ mod tests {
         let mut scene = build_scene(&tree, &styles);
         let tex = TextureRegistry::default();
         solve(&mut scene, &font().expect("test needs a font"), (200.0, 200.0), &tex);
-        let root = &scene.nodes[scene.roots[0].0 as usize];
-        let a = &scene.nodes[root.children[0].0 as usize];
-        let b = &scene.nodes[root.children[1].0 as usize];
+        let root = scene.get(scene.roots[0]).unwrap();
+        let a = scene.get(root.children[0]).unwrap();
+        let b = scene.get(root.children[1]).unwrap();
         assert!((a.layout_rect.h - 50.0).abs() < 0.1);
         assert!((b.layout_rect.h - 30.0).abs() < 0.1);
         assert!((b.layout_rect.y - 50.0).abs() < 0.1); // 垂直堆叠
@@ -310,9 +310,9 @@ mod tests {
         let mut scene = build_scene(&tree, &styles);
         let tex = TextureRegistry::default();
         solve(&mut scene, &font().expect("test needs a font"), (200.0, 200.0), &tex);
-        let root = &scene.nodes[scene.roots[0].0 as usize];
-        let a = &scene.nodes[root.children[0].0 as usize];
-        let b = &scene.nodes[root.children[1].0 as usize];
+        let root = scene.get(scene.roots[0]).unwrap();
+        let a = scene.get(root.children[0]).unwrap();
+        let b = scene.get(root.children[1]).unwrap();
         // 垂直堆叠：b.y ≈ a.h（a 在上，b 在下）。
         // 若默认回退到 row，b.y 会 ≈ 0（横排），此断言失败。
         assert!(
@@ -347,7 +347,8 @@ mod tests {
         let mut tex = TextureRegistry::default();
         tex.insert("x.png", TexMeta { tex_id: 1, uv_min: [0.0, 0.0], uv_max: [1.0, 1.0], width: 200, height: 200 }); // 真实大于声明
         solve(&mut scene, &font().expect("need font"), (300.0, 300.0), &tex);
-        let r = &scene.nodes[1].layout_rect; // Image 在 idx 1
+        let img_id = scene.get(scene.roots[0]).unwrap().children[0];
+        let r = &scene.get(img_id).unwrap().layout_rect; // Image 是 root 唯一子
         assert!((r.w - 100.0).abs() < 0.1, "CSS length 赢：w=100，got {}", r.w);
         assert!((r.h - 50.0).abs() < 0.1, "CSS length 赢：h=50，got {}", r.h);
     }
@@ -367,7 +368,8 @@ mod tests {
         let mut tex = TextureRegistry::default();
         tex.insert("x.png", TexMeta { tex_id: 1, uv_min: [0.0, 0.0], uv_max: [1.0, 1.0], width: 200, height: 100 });
         solve(&mut scene, &font().expect("need font"), (300.0, 300.0), &tex);
-        let r = &scene.nodes[1].layout_rect; // Image 在 idx 1
+        let img_id = scene.get(scene.roots[0]).unwrap().children[0];
+        let r = &scene.get(img_id).unwrap().layout_rect; // Image 是 root 唯一子
         assert!((r.w - 200.0).abs() < 0.1, "真实像素：w=200，got {}", r.w);
         assert!((r.h - 100.0).abs() < 0.1, "真实像素：h=100，got {}", r.h);
     }
@@ -385,7 +387,8 @@ mod tests {
         let mut scene = Scene::build(&entries);
         let tex = TextureRegistry::default();
         solve(&mut scene, &font().expect("need font"), (300.0, 300.0), &tex);
-        let r = &scene.nodes[1].layout_rect; // Image 在 idx 1
+        let img_id = scene.get(scene.roots[0]).unwrap().children[0];
+        let r = &scene.get(img_id).unwrap().layout_rect; // Image 是 root 唯一子
         assert!((r.w - 64.0).abs() < 0.1, "兜底：w=64，got {}", r.w);
         assert!((r.h - 64.0).abs() < 0.1, "兜底：h=64，got {}", r.h);
     }
@@ -404,7 +407,8 @@ mod tests {
         let mut tex = TextureRegistry::default();
         tex.insert("x.png", TexMeta { tex_id: 1, uv_min: [0.0, 0.0], uv_max: [1.0, 1.0], width: 40, height: 20 });
         solve(&mut scene, &font().expect("need font"), (300.0, 300.0), &tex);
-        let r = &scene.nodes[1].layout_rect;
+        let img_id = scene.get(scene.roots[0]).unwrap().children[0];
+        let r = &scene.get(img_id).unwrap().layout_rect;
         assert!((r.w - 80.0).abs() < 0.1, "w=80 (CSS)");
         assert!((r.h - 40.0).abs() < 0.1, "h 等比=40（80×20/40），got {}", r.h);
     }
@@ -423,7 +427,8 @@ mod tests {
         let mut tex = TextureRegistry::default();
         tex.insert("x.png", TexMeta { tex_id: 1, uv_min: [0.0, 0.0], uv_max: [1.0, 1.0], width: 40, height: 20 });
         solve(&mut scene, &font().expect("need font"), (300.0, 300.0), &tex);
-        let r = &scene.nodes[1].layout_rect;
+        let img_id = scene.get(scene.roots[0]).unwrap().children[0];
+        let r = &scene.get(img_id).unwrap().layout_rect;
         assert!((r.h - 60.0).abs() < 0.1, "h=60 (CSS)");
         assert!((r.w - 120.0).abs() < 0.1, "w 等比=120（60×40/20），got {}", r.w);
     }

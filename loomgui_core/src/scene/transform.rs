@@ -7,7 +7,8 @@ use crate::transform::{self, Affine2};
 
 pub fn compute_world_transforms(scene: &mut Scene) {
     let n = scene.nodes.len();
-    let mut worlds: Vec<Affine2> = vec![transform::IDENTITY; n];
+    // worlds 1 基索引（id.index()，slotmap idx 1..=N），len=N+1，idx 0 占位。
+    let mut worlds: Vec<Affine2> = vec![transform::IDENTITY; n + 1];
     let roots = scene.roots.clone();
     for root in roots {
         rec(scene, &scene.anim, root, transform::IDENTITY, &mut worlds);
@@ -16,11 +17,14 @@ pub fn compute_world_transforms(scene: &mut Scene) {
 }
 
 fn rec(scene: &Scene, anim: &AnimTable, id: NodeId, parent_world: Affine2, worlds: &mut [Affine2]) {
-    let node = &scene.nodes[id.0 as usize];
+    let node = scene.get(id).expect("live node");
     let lr = node.layout_rect;
     let pivot = (lr.w / 2.0, lr.h / 2.0);
     let rel = match node.parent {
-        Some(p) => (lr.x - scene.nodes[p.0 as usize].layout_rect.x, lr.y - scene.nodes[p.0 as usize].layout_rect.y),
+        Some(p) => {
+            let plr = scene.get(p).expect("live parent").layout_rect;
+            (lr.x - plr.x, lr.y - plr.y)
+        }
         None => (lr.x, lr.y),
     };
     // transform 矩阵源 = anim.transform override（replace-override）unwrap css matrix。
@@ -46,7 +50,7 @@ fn rec(scene: &Scene, anim: &AnimTable, id: NodeId, parent_world: Affine2, world
         ),
         None => transform::mul(&parent_world, &local),
     };
-    worlds[id.0 as usize] = world;
+    worlds[id.index()] = world;
     let kids = node.children.clone();
     for c in kids {
         rec(scene, anim, c, world, worlds);
@@ -62,8 +66,8 @@ mod tests {
 
     fn node(id: usize, parent: Option<usize>, rect: Rect) -> Node {
         let mut n = Node::default();
-        n.id = NodeId(id as u32);
-        n.parent = parent.map(|p| NodeId(p as u32));
+        n.id = NodeId(id as u32); // from_nodes 覆写；仅占位
+        n.parent = parent.map(|p| NodeId(p as u32)); // from_nodes 覆写；仅用于 scene_with 推 edges
         n.layout_rect = rect;
         n
     }
@@ -75,9 +79,20 @@ mod tests {
         n
     }
 
+    // 从 Vec<Node> 建 Scene（parent 字段推 edges）。替代旧 nodes: vec![...] 字面量。
     fn scene_with(nodes: Vec<Node>) -> Scene {
-        let roots = nodes.iter().find(|n| n.parent.is_none()).map(|n| n.id).into_iter().collect();
-        Scene { roots, nodes, dynamic_rules: Default::default(), focused_node: None, world_transforms: Vec::new(), anim: Default::default(), scroll: Default::default(), text_layouts: Vec::new() }
+        let edges: Vec<(usize, usize)> = nodes
+            .iter()
+            .enumerate()
+            .filter_map(|(i, n)| n.parent.map(|p| (p.0 as usize, i)))
+            .filter(|(p, _)| *p < nodes.len())
+            .collect();
+        Scene::from_nodes(nodes, edges)
+    }
+
+    fn root_id(s: &Scene) -> NodeId { s.roots[0] }
+    fn child_id(s: &Scene, parent: NodeId, idx: usize) -> NodeId {
+        s.get(parent).unwrap().children[idx]
     }
 
     #[test]
@@ -87,12 +102,13 @@ mod tests {
             node(0, None, Rect { x: 10.0, y: 20.0, w: 100.0, h: 100.0 }),
             { let c = node(1, Some(0), Rect { x: 15.0, y: 25.0, w: 10.0, h: 10.0 }); c },
         ]);
-        s.nodes[0].children = vec![NodeId(1)];
+        let rid = root_id(&s);
+        let cid = child_id(&s, rid, 0);
         compute_world_transforms(&mut s);
         // child world = T(10,20) ∘ T(5,5) = T(15,25)；纯平移，apply(0,0)=(15,25)
-        let (x, y) = s.world_transforms[1].apply_point(0.0, 0.0);
+        let (x, y) = s.world_transforms[cid.index()].apply_point(0.0, 0.0);
         assert!((x - 15.0).abs() < 1e-4 && (y - 25.0).abs() < 1e-4);
-        assert!(s.world_transforms[1].is_pure_translation(), "identity 子树 world 纯平移");
+        assert!(s.world_transforms[cid.index()].is_pure_translation(), "identity 子树 world 纯平移");
     }
 
     #[test]
@@ -102,12 +118,13 @@ mod tests {
             node(0, None, Rect { x: 0.0, y: 0.0, w: 100.0, h: 100.0 }),
             node(1, Some(0), Rect { x: 0.0, y: 0.0, w: 10.0, h: 10.0 }),
         ]);
-        s.nodes[0].children = vec![NodeId(1)];
-        s.nodes[0].style.transform = LocalTransform { matrix: transform::from_rotate(std::f32::consts::FRAC_PI_2) };
+        let rid = root_id(&s);
+        let cid = child_id(&s, rid, 0);
+        s.get_mut(rid).unwrap().style.transform = LocalTransform { matrix: transform::from_rotate(std::f32::consts::FRAC_PI_2) };
         compute_world_transforms(&mut s);
         // child world == parent world（child identity local=identity）
-        assert_eq!(s.world_transforms[1], s.world_transforms[0], "identity 子继承父 world");
-        assert!(!s.world_transforms[0].is_pure_translation(), "父旋转 → world 非纯平移");
+        assert_eq!(s.world_transforms[cid.index()], s.world_transforms[rid.index()], "identity 子继承父 world");
+        assert!(!s.world_transforms[rid.index()].is_pure_translation(), "父旋转 → world 非纯平移");
     }
 
     #[test]
@@ -117,11 +134,12 @@ mod tests {
             node(0, None, Rect { x: 0.0, y: 0.0, w: 100.0, h: 100.0 }),
             node(1, Some(0), Rect { x: 0.0, y: 0.0, w: 10.0, h: 10.0 }),
         ]);
-        s.nodes[0].children = vec![NodeId(1)];
-        s.nodes[0].style.transform = LocalTransform { matrix: transform::from_scale(2.0, 1.0) };
-        s.nodes[1].style.transform = LocalTransform { matrix: transform::from_rotate(std::f32::consts::FRAC_PI_4) };
+        let rid = root_id(&s);
+        let cid = child_id(&s, rid, 0);
+        s.get_mut(rid).unwrap().style.transform = LocalTransform { matrix: transform::from_scale(2.0, 1.0) };
+        s.get_mut(cid).unwrap().style.transform = LocalTransform { matrix: transform::from_rotate(std::f32::consts::FRAC_PI_4) };
         compute_world_transforms(&mut s);
-        assert!(!s.world_transforms[1].is_pure_translation(), "父非均匀缩放+子旋转 → world 剪切（非纯平移）");
+        assert!(!s.world_transforms[cid.index()].is_pure_translation(), "父非均匀缩放+子旋转 → world 剪切（非纯平移）");
     }
 
     #[test]
@@ -132,10 +150,11 @@ mod tests {
             node(0, None, Rect { x: 0.0, y: 0.0, w: 100.0, h: 100.0 }),
             node(1, Some(0), Rect { x: 10.0, y: 0.0, w: 10.0, h: 10.0 }),
         ]);
-        s.nodes[0].children = vec![NodeId(1)];
-        s.nodes[1].style.transform = LocalTransform { matrix: transform::from_translate(5.0, 0.0) };
+        let rid = root_id(&s);
+        let cid = child_id(&s, rid, 0);
+        s.get_mut(cid).unwrap().style.transform = LocalTransform { matrix: transform::from_translate(5.0, 0.0) };
         compute_world_transforms(&mut s);
-        let (x, y) = s.world_transforms[1].apply_point(0.0, 0.0);
+        let (x, y) = s.world_transforms[cid.index()].apply_point(0.0, 0.0);
         assert!((x - 15.0).abs() < 1e-4 && y.abs() < 1e-4, "translate 叠 layout rel 不双计：rel(10)+t(5)=15");
     }
 
@@ -143,21 +162,23 @@ mod tests {
     fn anim_transform_override_replaces_css_matrix() {
         // node CSS transform=identity；anim.transform=scale(2,2) → world 非纯平移（吃 override）
         let mut s = scene_with(vec![ node(0, None, Rect { x: 0.0, y: 0.0, w: 10.0, h: 10.0 }) ]);
-        s.anim.ensure(1);
-        s.anim.0[0].transform = Some(transform::from_scale(2.0, 2.0));
+        let rid = root_id(&s);
+        s.anim.ensure(rid.0 as usize + 1);
+        s.anim.0[rid.0 as usize].transform = Some(transform::from_scale(2.0, 2.0));
         compute_world_transforms(&mut s);
-        assert!(!s.world_transforms[0].is_pure_translation(), "anim.transform override 生效（scale）");
+        assert!(!s.world_transforms[rid.index()].is_pure_translation(), "anim.transform override 生效（scale）");
     }
 
     #[test]
     fn no_anim_falls_back_to_css_matrix_zero_regression() {
         // anim 全 None → world == CSS（identity）纯平移到 layout 原点
         let mut s = scene_with(vec![ node(0, None, Rect { x: 5.0, y: 7.0, w: 10.0, h: 10.0 }) ]);
+        let rid = root_id(&s);
         // 不设 anim（全 None）
         compute_world_transforms(&mut s);
-        let (x, y) = s.world_transforms[0].apply_point(0.0, 0.0);
+        let (x, y) = s.world_transforms[rid.index()].apply_point(0.0, 0.0);
         assert!((x - 5.0).abs() < 1e-4 && (y - 7.0).abs() < 1e-4, "无 anim → CSS identity 纯平移");
-        assert!(s.world_transforms[0].is_pure_translation());
+        assert!(s.world_transforms[rid.index()].is_pure_translation());
     }
 
     // offset 注入——父 scroll_pos 影响 子 world，不影响容器自身。
@@ -168,14 +189,15 @@ mod tests {
             scroll_node(0, None, Rect { x: 0.0, y: 0.0, w: 100.0, h: 100.0 }),
             node(1, Some(0), Rect { x: 0.0, y: 0.0, w: 20.0, h: 20.0 }),
         ]);
-        s.nodes[0].children = vec![NodeId(1)];
-        s.scroll.ensure(NodeId(0)).scroll_pos = (0.0, 30.0);
+        let rid = root_id(&s);
+        let cid = child_id(&s, rid, 0);
+        s.scroll.ensure(rid).scroll_pos = (0.0, 30.0);
         compute_world_transforms(&mut s);
         // 容器自身 world.apply(0,0) = (0,0)（容器 world 不含自己 scroll_pos）
-        let (cx, cy) = s.world_transforms[0].apply_point(0.0, 0.0);
+        let (cx, cy) = s.world_transforms[rid.index()].apply_point(0.0, 0.0);
         assert!(cx.abs() < 1e-3 && cy.abs() < 1e-3, "容器自身 world 不吃自己 scroll_pos");
         // 子 world.apply(0,0) = (0, -30)（含 T(-scroll_pos)）
-        let (x, y) = s.world_transforms[1].apply_point(0.0, 0.0);
+        let (x, y) = s.world_transforms[cid.index()].apply_point(0.0, 0.0);
         assert!(x.abs() < 1e-3 && (y - (-30.0)).abs() < 1e-3, "子吃父 scroll offset：(0,30)→(0,-30)");
     }
 
@@ -187,10 +209,8 @@ mod tests {
             node(1, Some(0), Rect { x: 15.0, y: 25.0, w: 10.0, h: 10.0 }),
         ];
         let mut a = scene_with(nodes.clone());
-        a.nodes[0].children = vec![NodeId(1)];
-        a.scroll.ensure(NodeId(0)); // scroll_pos=(0,0)
         let mut b = scene_with(nodes);
-        b.nodes[0].children = vec![NodeId(1)]; // 无 scroll 表项
+        a.scroll.ensure(root_id(&a)); // scroll_pos=(0,0)
         compute_world_transforms(&mut a);
         compute_world_transforms(&mut b);
         assert_eq!(a.world_transforms, b.world_transforms, "scroll_pos=0 no-op：与无 scroll 表项等价");
@@ -206,12 +226,13 @@ mod tests {
             scroll_node(1, Some(0), Rect { x: 0.0, y: 0.0, w: 80.0, h: 80.0 }),
             node(2, Some(1), Rect { x: 0.0, y: 0.0, w: 10.0, h: 10.0 }),
         ]);
-        s.nodes[0].children = vec![NodeId(1)];
-        s.nodes[1].children = vec![NodeId(2)];
-        s.scroll.ensure(NodeId(0)).scroll_pos = (0.0, 10.0);
-        s.scroll.ensure(NodeId(1)).scroll_pos = (0.0, 20.0);
+        let a_id = root_id(&s);
+        let b_id = child_id(&s, a_id, 0);
+        let leaf_id = child_id(&s, b_id, 0);
+        s.scroll.ensure(a_id).scroll_pos = (0.0, 10.0);
+        s.scroll.ensure(b_id).scroll_pos = (0.0, 20.0);
         compute_world_transforms(&mut s);
-        let (x, y) = s.world_transforms[2].apply_point(0.0, 0.0);
+        let (x, y) = s.world_transforms[leaf_id.index()].apply_point(0.0, 0.0);
         assert!((x - 0.0).abs() < 1e-3 && (y - (-30.0)).abs() < 1e-3,
             "嵌套累积：A(-10) + B(-20) = -30");
     }

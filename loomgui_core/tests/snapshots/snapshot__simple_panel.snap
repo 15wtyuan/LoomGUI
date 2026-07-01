@@ -1,10 +1,11 @@
 ---
 source: loomgui_core/tests/snapshot.rs
+assertion_line: 42
 expression: json
 ---
 [
   {
-    "node_id": 0,
+    "node_id": 4097,
     "parent_id": null,
     "visible": true,
     "alpha": 1.0,
@@ -188,8 +189,8 @@ expression: json
     }
   },
   {
-    "node_id": 2,
-    "parent_id": 1,
+    "node_id": 12289,
+    "parent_id": 8193,
     "visible": true,
     "alpha": 1.0,
     "grayed": false,
@@ -283,8 +284,8 @@ expression: json
     }
   },
   {
-    "node_id": 3,
-    "parent_id": 0,
+    "node_id": 16385,
+    "parent_id": 4097,
     "visible": true,
     "alpha": 1.0,
     "grayed": false,
@@ -405,8 +406,8 @@ expression: json
     }
   },
   {
-    "node_id": 4,
-    "parent_id": 3,
+    "node_id": 20481,
+    "parent_id": 16385,
     "visible": true,
     "alpha": 1.0,
     "grayed": false,
