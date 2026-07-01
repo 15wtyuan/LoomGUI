@@ -121,6 +121,6 @@ let lr = match scene.get(pane) {
 
 ### commit
 
-- hash：`69866fb`（main 分支，未 push）。
+- hash：`bec773b`（main 分支，未 push；代码 fix commit）。本报告 hash 字段补丁在后续 doc commit 中同步。
 - msg：`fix(scene): remove_node 清 focused_node + grip-dragging 防 panic (final review)` + `Co-Authored-By: Claude`。
 - 不 push（final fix 一起 push 或等用户）。
