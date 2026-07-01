@@ -2,7 +2,7 @@
 name: loomgui-editor
 description: |
   Generate LoomGUI fence-compliant UI (HTML+CSS) for game dashboards/panels.
-  Uses flex-only layout, tag whitelist (div/span/img/button/l-container), no grid/absolute/margin-spacing.
+  Uses flex-only layout, tag whitelist (div/span/img/button), no grid/absolute/margin-spacing.
   After generating, run tools/pack.mjs to validate + pack into .pkg.bin for Unity.
 triggers:
   - "loomgui ui"

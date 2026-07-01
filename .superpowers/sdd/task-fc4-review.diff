@@ -1,0 +1,100 @@
+=== commits 9b69264..a6a392b ===
+a6a392b feat(editor): 严 polyfill 固化（preview-polyfill.html + SKILL 强制 + preview-trust 补）
+
+=== diff stat ===
+ editor/skill/loomgui-editor/SKILL.md                         | 3 ++-
+ editor/skill/loomgui-editor/references/preview-polyfill.html | 9 +++++++++
+ editor/skill/loomgui-editor/references/preview-trust.md      | 3 ++-
+ samples/design-systems/loomgui/components.html               | 4 ++++
+ 4 files changed, 17 insertions(+), 2 deletions(-)
+
+=== full diff ===
+diff --git a/editor/skill/loomgui-editor/SKILL.md b/editor/skill/loomgui-editor/SKILL.md
+index ae8e6a3..3f40555 100644
+--- a/editor/skill/loomgui-editor/SKILL.md
++++ b/editor/skill/loomgui-editor/SKILL.md
+@@ -15,20 +15,21 @@ triggers:
+ 
+ 生成 LoomGUI 围栏合规的游戏 UI（HTML+CSS），打包成 .pkg.bin 供 Unity 加载。
+ 
+ ## 工作流
+ 
+ 1. **读围栏规则**：读 `references/fence.md`（围栏硬约束）+ `references/preview-trust.md`（预览可信清单）。围栏是硬约束，违反会导致预览与 Unity 渲染不一致。
+ 
+ 2. **按设计师 prompt 生成 HTML+CSS**：
+-   - 元素只用 `div`/`span`/`img`/`button`/`l-container`。
++   - 元素只用 `div`/`span`/`img`/`button`。
+    - 布局用 flex + `gap`（子项间距用 gap 不用 margin）。
+    - 禁 grid/absolute/float/@media/skew 等（详见 fence.md）。
+    - 风格由设计师 prompt 决定（颜色/字号/字体自由，只要守围栏）。
++   - **HTML `<head>` 必须内联预览 polyfill**（从 `references/preview-polyfill.html` 抄整段 `<style>`）。LoomGUI 契约 div 永远 flex column，Chromium 默认 block 会让预览塌。polyfill 只在 head（预览用），设计师样式放外部 css 文件（跑 pack.mjs 传该 css，打包用）。pack.mjs 吃外部 css、忽略 head `<style>`，polyfill 不进 pkg。
+ 
+ 3. **生成完跑验证+打包**：
+    ```bash
+    node tools/pack.mjs <html路径> <css路径> -o <输出.pkg.bin> [-w 1080 -h 1920] [-a atlas.png]
+    ```
+    - **非零退出 = 围栏违规**（loomgui_pkg 报错）。读 stderr，自纠 HTML/CSS 后重跑。
+    - **零退出 = 合规**，.pkg.bin + atlas.png 已产出到指定目录。
+ 
+diff --git a/editor/skill/loomgui-editor/references/preview-polyfill.html b/editor/skill/loomgui-editor/references/preview-polyfill.html
+new file mode 100644
+index 0000000..01447f5
+--- /dev/null
++++ b/editor/skill/loomgui-editor/references/preview-polyfill.html
+@@ -0,0 +1,9 @@
++<style>
++  /* LoomGUI 预览对齐 polyfill（预览专用，打包器忽略 head 的 <style>，不影响 pkg.bin）。
++     LoomGUI 契约：div 永远 flex column（00-main-design.md §109）；taffy 默认 border-box。
++     Chromium 默认 div=block / content-box / body 有 8px margin → 预览失真，此 polyfill 对齐。
++     生成 HTML 时把这段 <style> 内联进 <head>。设计师样式放外部 css 文件（跑 pack.mjs 传该 css）。 */
++  div { display: flex; flex-direction: column; }
++  * { box-sizing: border-box; }
++  body { margin: 0; }
++</style>
+diff --git a/editor/skill/loomgui-editor/references/preview-trust.md b/editor/skill/loomgui-editor/references/preview-trust.md
+index bb32eb3..f44d22e 100644
+--- a/editor/skill/loomgui-editor/references/preview-trust.md
++++ b/editor/skill/loomgui-editor/references/preview-trust.md
+@@ -1,16 +1,17 @@
+ # 预览可信清单
+ 
+ open-design Chromium iframe 预览 ≠ taffy 渲染。AI 须分清：
+ 
+ ## 可信（Chrome ≈ LoomGUI）
+-flex 轴/方向、显式 `display:flex`、`gap` 间距、颜色、opacity、border、图片、px 尺寸、`background-image`/`background-size`（标准 CSS，Chrome 原生）。
++flex 轴/方向、显式 `display:flex`、`gap` 间距、颜色、opacity、border、图片、px 尺寸、`background-image`/`background-size`（标准 CSS，Chrome 原生）、**`overflow:scroll/auto`（v1d.5 ScrollPane 真交互滚动，预览也是真滚动）**。
+ 
+ ## 不可信（Chrome ≠ LoomGUI，别按预览调）
++- **`div` 默认 display**：Chromium 默认 div=block，LoomGUI 默认 div=flex column。**必须挂 preview-polyfill.html 对齐**（head 内联），否则 gap/flex-grow/align-items 全不生效、预览塌。挂了 polyfill 后 div 行为可信。
+ - **margin 控间距**：Chrome（block flow）折叠 margin、LoomGUI（flex）求和不折叠。**子项间距用 `gap`**，别用 margin。
+ - **文本换行/像素级**：Chrome 文本引擎 vs LoomGUI（unicode-linebreak），换行点/塞文本宽度会偏。
+ - **`position:absolute`**：Chrome 脱离流、LoomGUI 不脱离（围栏外静默忽略）。预览会骗 AI。
+ - **`display:grid`**：Chrome 渲染 grid、LoomGUI 落 Flex。预览会骗 AI。
+ - **`@media` 响应式**：Chrome 响应、LoomGUI 用参考分辨率缩放不响应 @media。
+ 
+ ## 口径
+ 不可信项"信围栏规则，别信预览"。
+diff --git a/samples/design-systems/loomgui/components.html b/samples/design-systems/loomgui/components.html
+index 68594fe..1132b42 100644
+--- a/samples/design-systems/loomgui/components.html
++++ b/samples/design-systems/loomgui/components.html
+@@ -1,15 +1,19 @@
+ <!doctype html>
+ <html lang="zh">
+ <head>
+ <meta charset="utf-8">
+ <meta name="viewport" content="width=device-width, initial-scale=1">
+ <title>LoomGUI Dashboard — 围栏组件样例</title>
+ <style>
++  /* LoomGUI 预览对齐 polyfill（div 永远 flex column + border-box + body 贴边） */
++  div { display: flex; flex-direction: column; }
++  * { box-sizing: border-box; }
++  body { margin: 0; }
+   /* 围栏正面教材：flex + gap，禁 grid/margin 间距/:focus/@media。
+      本文件本身也是 LoomGUI 围栏合规的 HTML/CSS 样例。 */
+   .root { width: 1080px; height: 1920px; background-color: #1a1d2e; display: flex; flex-direction: column; gap: 16px; padding: 24px; }
+   .header { background-color: #252839; border: 1px solid #3a3f55; padding: 20px; display: flex; flex-direction: row; gap: 14px; align-items: center; }
+   .title { color: #e0e0e0; font-size: 36px; font-weight: 700; }
+   .card { background-color: #252839; border: 1px solid #3a3f55; padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+   .card-t { color: #e0e0e0; font-size: 22px; font-weight: 700; }
+   .card-x { color: #9aa0b4; font-size: 14px; }
