@@ -166,13 +166,13 @@ impl NodeAnim {
     }
 }
 
-/// 每节点动画 override 表（index = NodeId.0）。运行时态，不进 pkg（同 world_transforms）。
+/// 每节点动画 override 表（index = NodeId.index()，slotmap 槽位号）。运行时态，不进 pkg（同 world_transforms）。
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct AnimTable(pub Vec<NodeAnim>);
 
 impl AnimTable {
     pub fn get(&self, node: NodeId) -> Option<&NodeAnim> {
-        self.0.get(node.0 as usize).filter(|a| !a.is_empty())
+        self.0.get(node.index()).filter(|a| !a.is_empty())
     }
 
     /// 增长到 n 并返回可变切片（update 调，确保 node_id 可索引）。
@@ -185,14 +185,14 @@ impl AnimTable {
 
     /// 清该节点所有通道（回 CSS）。
     pub fn clear_node(&mut self, node: NodeId) {
-        if let Some(a) = self.0.get_mut(node.0 as usize) {
+        if let Some(a) = self.0.get_mut(node.index()) {
             *a = NodeAnim::default();
         }
     }
 
     /// 清该节点某 prop 对应通道（Translate/Scale/Rotation 都映射到 transform 通道）。
     pub fn clear_prop(&mut self, node: NodeId, prop: crate::tween::TweenProp) {
-        let a = match self.0.get_mut(node.0 as usize) {
+        let a = match self.0.get_mut(node.index()) {
             Some(a) => a,
             None => return,
         };
@@ -656,19 +656,22 @@ mod tests {
     fn animtable_get_returns_none_for_empty_or_unset() {
         let mut t = AnimTable::default();
         t.ensure(3);
-        // 全默认（None）→ get 返 None（is_empty 过滤）
+        // 全默认（None）→ get 返 None（is_empty 过滤）；NodeId 字面量 .index()=0（0>>12=0）
         assert!(t.get(NodeId(0)).is_none());
-        assert!(t.get(NodeId(5)).is_none(), "越界 → None");
+        assert!(t.get(NodeId(5)).is_none(), "index 0（5>>12=0）默认 → None");
     }
 
     #[test]
     fn animtable_clear_prop_transform_channel_shared() {
+        // 经 slotmap 分配真实打包 NodeId（.index()=1），与 AnimTable::clear_prop 的 .index() 语义一致。
+        let sc = Scene::build(&[(None, NodeKind::Container, ResolvedStyle::default(), Vec::new(), None, false, None)]);
+        let rid = sc.roots[0];
         let mut t = AnimTable::default();
-        t.ensure(2);
-        t.0[1].transform = Some(crate::transform::from_scale(2.0, 2.0));
+        t.ensure(rid.index() + 1);
+        t.0[rid.index()].transform = Some(crate::transform::from_scale(2.0, 2.0));
         // Translate/Scale/Rotation 都清 transform 通道
-        t.clear_prop(NodeId(1), crate::tween::TweenProp::Scale);
-        assert!(t.0[1].transform.is_none(), "clear Scale → transform 通道 None");
+        t.clear_prop(rid, crate::tween::TweenProp::Scale);
+        assert!(t.0[rid.index()].transform.is_none(), "clear Scale → transform 通道 None");
     }
 
     #[test]

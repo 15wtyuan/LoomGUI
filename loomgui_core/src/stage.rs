@@ -475,6 +475,30 @@ mod tests {
         assert!(s.scene.as_ref().unwrap().anim.0[rid.index()].opacity.is_none(), "dt=0 不写 override");
     }
 
+    /// Critical-1 回归：tween 写 scene.anim（用 id.index()）→ render 读 anim.opacity
+    /// （AnimTable::get 现用 node.index()）→ frame.nodes[该节点].alpha 吃到 override。
+    /// 堵「tween 写入正确但 render 读取失败」盲区（旧 bug：AnimTable::get 用 node.0 as usize，
+    /// 打包 NodeId.0=4097 越界 → anim override 在渲染层丢失 → alpha 退回 CSS 默认 1.0）。
+    #[test]
+    fn tween_anim_override_visible_in_render_output() {
+        let font_path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/DejaVuSans.ttf");
+        let mut s = Stage::new(font_path, (200.0, 100.0)).unwrap();
+        s.load_inline(r#"<div class="b"></div>"#, ".b{width:100px;height:50px;}").unwrap();
+        let rid = s.scene.as_ref().unwrap().roots[0];
+        // tween opacity 0→0.5，delay=0、duration=1.0、Linear。
+        s.tween(rid, crate::tween::TweenProp::Opacity,
+                [0.0, 0.0, 0.0, 0.0], [0.5, 0.0, 0.0, 0.0],
+                crate::tween::Ease::Linear, 0.0, 1.0, 0);
+        // 推进整段 duration → tt=1.0 → Linear 插值末值 0.5。
+        s.advance_time(1.0);
+        let frame = s.tick_and_render();
+        // 唯一根节点 → frame.nodes[pos=0]。断言 render 输出吃到 anim override（alpha=0.5），
+        // 不是只断言 anim 表内值——确保读写对称贯穿到渲染层。
+        assert!((frame.nodes[0].alpha - 0.5).abs() < 1e-5,
+                "tween anim.opacity override 应在 render 输出可见：alpha={}（期望 0.5）",
+                frame.nodes[0].alpha);
+    }
+
     /// 拖拽滚动容器 → 同 tick world_transforms 已含 scroll_pos（零延迟）。
     /// process 写 scroll_pos（drag_follow）→ compute_world_transforms 在 process 后读 scroll_pos
     /// → world matrix 含 T(-scroll_pos) offset。

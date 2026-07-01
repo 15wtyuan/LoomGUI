@@ -690,10 +690,12 @@ mod tests {
         n.style.opacity = 1.0;
         let mut scene = Scene::from_nodes(vec![n], vec![]);
         let rid = scene.roots[0];
-        // anim override：opacity=0.25、bg=蓝
-        scene.anim.ensure(rid.0 as usize + 1);
-        scene.anim.0[rid.0 as usize].opacity = Some(0.25);
-        scene.anim.0[rid.0 as usize].bg_color = Some([0.0, 0.0, 1.0, 1.0]);
+        // anim override：opacity=0.25、bg=蓝（生产路径写法：ensure 返切片后按 index 写）
+        {
+            let anim = scene.anim.ensure(rid.index() + 1);
+            anim[rid.index()].opacity = Some(0.25);
+            anim[rid.index()].bg_color = Some([0.0, 0.0, 1.0, 1.0]);
+        }
 
         let font = test_font().expect("need font");
         crate::scene::transform::compute_world_transforms(&mut scene);
