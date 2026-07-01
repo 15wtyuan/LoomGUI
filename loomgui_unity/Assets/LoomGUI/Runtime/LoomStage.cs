@@ -181,6 +181,92 @@ namespace LoomGUI
             Native.loomgui_stage_clear_anim_prop(_stage, nodeId, (uint)prop);
         }
 
+        // ===== T8 动态树 API 封装（§7.2）：转调 FFI（T7 csbindgen 生成 Native.loomgui_stage_*）。
+        // kind/css/text/src = UTF-8 字节（fixed 钉住 + 指针+len，同 FindNodeById/LoadHtml 风格）。
+        // create_root/create_node 返 uint NodeId（0xFFFF_FFFF = 失败）；其余返 int（0=ok，-1=err）。
+        // 调用方：用返回的 NodeId 句柄，勿硬编码 0（slotmap idx 从 1 起 → 首节点 NodeId 非 0）。
+        // 前置：须先 load_html/load_package 建 scene（create_root 等需 self.scene Some）。
+
+        /// 建根节点并设为 roots[0]。kind ∈ {div/l-container/button/img/span}；css = "w:100px;..."。
+        /// 返 NodeId；0xFFFF_FFFF = 失败（无 scene / 未知 kind）。
+        public uint CreateRoot(string kind, string css)
+        {
+            if (_stage == null) return uint.MaxValue;
+            byte[] k = Encoding.UTF8.GetBytes(kind ?? "");
+            byte[] c = Encoding.UTF8.GetBytes(css ?? "");
+            fixed (byte* kp = k, cp = c)
+                return Native.loomgui_stage_create_root(_stage, kp, (nuint)k.Length, cp, (nuint)c.Length);
+        }
+
+        /// 建游离节点（不挂父）。需配合 AppendChild/InsertBefore 挂到树。
+        /// 返 NodeId；0xFFFF_FFFF = 失败。
+        public uint CreateNode(string kind, string css)
+        {
+            if (_stage == null) return uint.MaxValue;
+            byte[] k = Encoding.UTF8.GetBytes(kind ?? "");
+            byte[] c = Encoding.UTF8.GetBytes(css ?? "");
+            fixed (byte* kp = k, cp = c)
+                return Native.loomgui_stage_create_node(_stage, kp, (nuint)k.Length, cp, (nuint)c.Length);
+        }
+
+        /// 挂子到 parent 末尾。child 必须当前无父。返 0=ok，-1=err。
+        public int AppendChild(uint parent, uint child)
+        {
+            if (_stage == null) return -1;
+            return Native.loomgui_stage_append_child(_stage, parent, child);
+        }
+
+        /// 在 parent.children 中 refId 之前插 child。refId=0xFFFF_FFFF → 末尾追加。
+        /// 返 0=ok，-1=err。
+        public int InsertBefore(uint parent, uint child, uint refId)
+        {
+            if (_stage == null) return -1;
+            return Native.loomgui_stage_insert_before(_stage, parent, child, refId);
+        }
+
+        /// 摘子（不删节点）：从 parent.children 移除，节点仍 live 可重挂。返 0=ok，-1=err。
+        public int RemoveChild(uint parent, uint child)
+        {
+            if (_stage == null) return -1;
+            return Native.loomgui_stage_remove_child(_stage, parent, child);
+        }
+
+        /// 删节点（递归删子 + 联动清 anim/scroll/tween + slotmap remove）。
+        /// 旧 NodeId 此后失效（gen++）。返 0（恒成功，no-op 语义）。
+        public int RemoveNode(uint node)
+        {
+            if (_stage == null) return 0;
+            return Native.loomgui_stage_remove_node(_stage, node);
+        }
+
+        /// 改 Text 节点 content + 标 dirty_text。非 Text 节点 → -1。返 0=ok，-1=err。
+        public int SetText(uint node, string text)
+        {
+            if (_stage == null) return -1;
+            byte[] t = Encoding.UTF8.GetBytes(text ?? "");
+            fixed (byte* tp = t)
+                return Native.loomgui_stage_set_text(_stage, node, tp, (nuint)t.Length);
+        }
+
+        /// 改 Image 节点 src + 标 dirty_mesh。非 Image 节点 → -1。返 0=ok，-1=err。
+        public int SetSrc(uint node, string src)
+        {
+            if (_stage == null) return -1;
+            byte[] s = Encoding.UTF8.GetBytes(src ?? "");
+            fixed (byte* sp = s)
+                return Native.loomgui_stage_set_src(_stage, node, sp, (nuint)s.Length);
+        }
+
+        /// 改 base_style（apply_css）+ 标 dirty_mesh。下帧 rematch 从 base 重算 style。
+        /// 返 0=ok，-1=err。
+        public int SetStyle(uint node, string css)
+        {
+            if (_stage == null) return -1;
+            byte[] c = Encoding.UTF8.GetBytes(css ?? "");
+            fixed (byte* cp = c)
+                return Native.loomgui_stage_set_style(_stage, node, cp, (nuint)c.Length);
+        }
+
         void Awake()
         {
             // ExecuteAlways：EditMode/Play 反复 Awake + domain reload 会让上一轮的 loom_node 镜像 GO
