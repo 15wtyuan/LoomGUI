@@ -1,0 +1,9 @@
+<style>
+  /* LoomGUI 预览对齐 polyfill（预览专用，打包器忽略 head 的 <style>，不影响 pkg.bin）。
+     LoomGUI 契约：div 永远 flex column（00-main-design.md §109）；taffy 默认 border-box。
+     Chromium 默认 div=block / content-box / body 有 8px margin → 预览失真，此 polyfill 对齐。
+     生成 HTML 时把这段 <style> 内联进 <head>。设计师样式放外部 css 文件（跑 pack.mjs 传该 css）。 */
+  div { display: flex; flex-direction: column; }
+  * { box-sizing: border-box; }
+  body { margin: 0; }
+</style>

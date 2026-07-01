@@ -5,6 +5,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>LoomGUI Dashboard — 围栏组件样例</title>
 <style>
+  /* LoomGUI 预览对齐 polyfill（div 永远 flex column + border-box + body 贴边） */
+  div { display: flex; flex-direction: column; }
+  * { box-sizing: border-box; }
+  body { margin: 0; }
   /* 围栏正面教材：flex + gap，禁 grid/margin 间距/:focus/@media。
      本文件本身也是 LoomGUI 围栏合规的 HTML/CSS 样例。 */
   .root { width: 1080px; height: 1920px; background-color: #1a1d2e; display: flex; flex-direction: column; gap: 16px; padding: 24px; }

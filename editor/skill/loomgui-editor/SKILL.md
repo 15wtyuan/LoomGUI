@@ -20,10 +20,11 @@ triggers:
 1. **读围栏规则**：读 `references/fence.md`（围栏硬约束）+ `references/preview-trust.md`（预览可信清单）。围栏是硬约束，违反会导致预览与 Unity 渲染不一致。
 
 2. **按设计师 prompt 生成 HTML+CSS**：
-   - 元素只用 `div`/`span`/`img`/`button`/`l-container`。
+   - 元素只用 `div`/`span`/`img`/`button`。
    - 布局用 flex + `gap`（子项间距用 gap 不用 margin）。
    - 禁 grid/absolute/float/@media/skew 等（详见 fence.md）。
    - 风格由设计师 prompt 决定（颜色/字号/字体自由，只要守围栏）。
+   - **HTML `<head>` 必须内联预览 polyfill**（从 `references/preview-polyfill.html` 抄整段 `<style>`）。LoomGUI 契约 div 永远 flex column，Chromium 默认 block 会让预览塌。polyfill 只在 head（预览用），设计师样式放外部 css 文件（跑 pack.mjs 传该 css，打包用）。pack.mjs 吃外部 css、忽略 head `<style>`，polyfill 不进 pkg。
 
 3. **生成完跑验证+打包**：
    ```bash
