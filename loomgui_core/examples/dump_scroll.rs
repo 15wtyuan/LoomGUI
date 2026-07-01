@@ -19,21 +19,15 @@ fn main() {
     s.tick_and_render();
     let scene = s.scene.as_ref().unwrap();
     println!("n_nodes={}", scene.nodes.len());
-    for (i, st) in scene.scroll.0.iter().enumerate() {
-        if let Some(st) = st {
-            // scroll.0 按 NodeId::index() 索引（slotmap idx，从 1 起）；用 idx 定位节点。
-            let n = scene
-                .nodes
-                .values()
-                .find(|n| n.id.index() == i)
-                .expect("live node for scroll slot");
-            let id = n.id_attr.clone().unwrap_or_default();
-            println!(
-                "node{:>3} id={:<24} ovf_x={:?} ovf_y={:?} content=({:>6.0},{:>6.0}) viewport=({:>6.0},{:>6.0}) overlap=({:>6.0},{:>6.0})",
-                i, id, n.style.overflow_x, n.style.overflow_y,
-                st.content_size.0, st.content_size.1, st.viewport_size.0, st.viewport_size.1,
-                st.overlap.0, st.overlap.1,
-            );
-        }
+    // scroll.0 是 HashMap<NodeId, ScrollPaneState>（T3）；按 NodeId 迭代。
+    for (id, st) in scene.scroll.0.iter() {
+        let n = scene.get(*id).expect("live node for scroll slot");
+        let id_attr = n.id_attr.clone().unwrap_or_default();
+        println!(
+            "node id={:<24} ovf_x={:?} ovf_y={:?} content=({:>6.0},{:>6.0}) viewport=({:>6.0},{:>6.0}) overlap=({:>6.0},{:>6.0})",
+            id_attr, n.style.overflow_x, n.style.overflow_y,
+            st.content_size.0, st.content_size.1, st.viewport_size.0, st.viewport_size.1,
+            st.overlap.0, st.overlap.1,
+        );
     }
 }

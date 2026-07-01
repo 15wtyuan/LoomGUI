@@ -449,7 +449,7 @@ mod tests {
                 crate::tween::Ease::Linear, 0.0, 1.0, 99);
         s.advance_time(0.5);
         s.tick_and_render();
-        let op = s.scene.as_ref().unwrap().anim.0[rid.index()].opacity;
+        let op = s.scene.as_ref().unwrap().anim.0.get(&rid).and_then(|a| a.opacity);
         assert!((op.unwrap() - 0.5).abs() < 1e-4, "半程 opacity=0.5");
         assert!(s.last_events().iter().all(|e| e.event_type != crate::input::EVT_TWEEN_COMPLETE), "未结束");
         s.advance_time(0.5);
@@ -472,7 +472,7 @@ mod tests {
                 [0.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0],
                 crate::tween::Ease::Linear, 1.0, 1.0, 0);
         s.tick_and_render();   // 无 advance_time → dt=0 → elapsed < delay → 不推进
-        assert!(s.scene.as_ref().unwrap().anim.0[rid.index()].opacity.is_none(), "dt=0 不写 override");
+        assert!(s.scene.as_ref().unwrap().anim.0.get(&rid).is_none(), "dt=0 不写 override（HashMap 无条目）");
     }
 
     /// Critical-1 回归：tween 写 scene.anim（用 id.index()）→ render 读 anim.opacity

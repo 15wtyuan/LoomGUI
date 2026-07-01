@@ -110,7 +110,7 @@ impl Ease {
 }
 
 use crate::input::{EventRecord, EVT_TWEEN_COMPLETE};
-use crate::scene::node::{NodeId, NodeAnim, Scene};
+use crate::scene::node::{AnimTable, NodeId, Scene};
 use crate::transform::{self};
 
 /// 一个进行中的 tween（内部结构，TweenManager 内部 Vec 管理）。
@@ -168,12 +168,13 @@ impl TweenManager {
         if self.tweens.is_empty() {
             return;
         }
-        let n = scene.nodes.len();
-        // slotmap idx 从 1 起（idx 0 是 sentinel），anim Vec 长度 = n+1 容纳 idx=n。
-        let anim = scene.anim.ensure(n + 1);
-        // 先在 anim 上 apply（按 node.index 索引），再单独收集 complete 事件。
         for t in &mut self.tweens {
-            if t.killed || t.node.index() >= n + 1 {
+            if t.killed {
+                continue;
+            }
+            // 悬空/无效 NodeId（不在 scene.nodes）→ 跳过 apply + 不产 complete
+            // （HashMap 对任意 NodeId 都能插条目，故须显式校验 live，防悬空 tween 写幽灵槽）。
+            if scene.get(t.node).is_none() {
                 continue;
             }
             t.elapsed += dt;
@@ -184,7 +185,7 @@ impl TweenManager {
             let tt = t.elapsed - t.delay;
             let clamped = if tt >= t.duration { t.duration } else { tt };
             let norm = t.ease.evaluate(clamped, t.duration);
-            apply(anim, t.node, t.prop, t.start, t.end, norm);
+            apply(&mut scene.anim, t.node, t.prop, t.start, t.end, norm);
             if tt >= t.duration {
                 t.killed = true;
                 out.push(EventRecord {
@@ -202,8 +203,9 @@ impl TweenManager {
 }
 
 /// 逐分量 lerp start→end 写入 anim 对应通道（n=已算的 normalized）。
-fn apply(anim: &mut [NodeAnim], node: NodeId, prop: TweenProp, start: [f32; 4], end: [f32; 4], n: f32) {
-    let a = &mut anim[node.index()];
+/// 经 AnimTable::ensure(node) 取可变 NodeAnim（HashMap entry，缺则插 default）。
+fn apply(anim: &mut AnimTable, node: NodeId, prop: TweenProp, start: [f32; 4], end: [f32; 4], n: f32) {
+    let a = anim.ensure(node);
     let lerp = |i: usize| start[i] + (end[i] - start[i]) * n;
     match prop {
         TweenProp::Opacity => a.opacity = Some(lerp(0)),
@@ -301,7 +303,7 @@ mod tests {
         let mut out = Vec::new();
         // dt=0.5 → norm=0.5 → opacity=0.5
         mgr.update(0.5, &mut s, &mut out);
-        assert!((s.anim.0[nid.index()].opacity.unwrap() - 0.5).abs() < 1e-5, "半程 opacity=0.5");
+        assert!((s.anim.0.get(&nid).unwrap().opacity.unwrap() - 0.5).abs() < 1e-5, "半程 opacity=0.5");
         assert!(out.is_empty(), "未结束 → 无 complete 事件");
     }
 
@@ -318,7 +320,7 @@ mod tests {
         assert_eq!(out[0].click_count, TweenProp::Scale as u8, "click_count 复用装 prop");
         assert_eq!(out[0].touch_id, 7, "touch_id 复用装 tag");
         // 末值 = scale(2,3)
-        let m = s.anim.0[nid.index()].transform.unwrap();
+        let m = s.anim.0.get(&nid).unwrap().transform.unwrap();
         assert!((m[0] - 2.0).abs() < 1e-5 && (m[3] - 3.0).abs() < 1e-5, "末值 scale(2,3)");
         // 完成后 tween 移除
         let mut out2 = Vec::new();
@@ -334,10 +336,11 @@ mod tests {
                   Ease::Linear, 1.0, 1.0, 0);  // delay=1
         let mut out = Vec::new();
         mgr.update(0.5, &mut s, &mut out);   // elapsed 0.5 < delay 1 → 不写
-        assert!(s.anim.0[nid.index()].opacity.is_none(), "delay 内不写 override");
+        // delay 内未 apply → HashMap 无该 node 条目
+        assert!(s.anim.0.get(&nid).is_none(), "delay 内不写 override（HashMap 无条目）");
         assert!(out.is_empty());
         mgr.update(1.0, &mut s, &mut out);   // elapsed 1.5，tt=0.5 → norm=0.5
-        assert!((s.anim.0[nid.index()].opacity.unwrap() - 0.5).abs() < 1e-5, "越过 delay 后按 tt 插值");
+        assert!((s.anim.0.get(&nid).unwrap().opacity.unwrap() - 0.5).abs() < 1e-5, "越过 delay 后按 tt 插值");
     }
 
     #[test]
@@ -348,10 +351,10 @@ mod tests {
                   Ease::Linear, 0.0, 1.0, 0);
         let mut out = Vec::new();
         mgr.update(0.3, &mut s, &mut out);
-        let v = s.anim.0[nid.index()].opacity.unwrap();
+        let v = s.anim.0.get(&nid).unwrap().opacity.unwrap();
         mgr.kill(nid, TweenProp::Opacity);
         mgr.update(0.5, &mut s, &mut out);   // kill 后不再推进
-        assert_eq!(s.anim.0[nid.index()].opacity.unwrap(), v, "kill 后 override 保留末值不变");
+        assert_eq!(s.anim.0.get(&nid).unwrap().opacity.unwrap(), v, "kill 后 override 保留末值不变");
         assert!(out.is_empty(), "kill 不产 complete");
     }
 

@@ -89,25 +89,24 @@ pub struct ScrollPaneState {
     pub content_size_dirty: bool,
 }
 
-/// 每节点滚动状态表（`Vec<Option<ScrollPaneState>>`，index = NodeId.0）。
-/// 镜像 `AnimTable` 模式但槽为 `Option`（仅滚动容器 ensure 后有值）。
+/// 每节点滚动状态表（`HashMap<NodeId, ScrollPaneState>`）。仅滚动容器 ensure 后有值。
 /// transient——不进 pkg（同 `anim` / `world_transforms`）。
+///
+/// **T3 校准**：原 `Vec<Option<ScrollPaneState>>`（按 id.index() 索引）改 HashMap（同 AnimTable，
+/// 见 node.rs AnimTable doc：slotmap Key trait sealed，NodeId 不能直接当 SecondaryMap Key）。
 #[derive(Debug, Clone, Default)]
-pub struct ScrollTable(pub Vec<Option<ScrollPaneState>>);
+pub struct ScrollTable(pub std::collections::HashMap<NodeId, ScrollPaneState>);
 
 impl ScrollTable {
     pub fn get(&self, id: NodeId) -> Option<&ScrollPaneState> {
-        self.0.get(id.index()).and_then(|o| o.as_ref())
+        self.0.get(&id)
     }
     pub fn get_mut(&mut self, id: NodeId) -> Option<&mut ScrollPaneState> {
-        self.0.get_mut(id.index()).and_then(|o| o.as_mut())
+        self.0.get_mut(&id)
     }
-    /// 增长到含 id 的长度（缺省填 None），返回该节点可变状态（缺则插 default）。
+    /// 确保该节点有 scroll 槽并返回可变状态（缺则插 default）。
     pub fn ensure(&mut self, id: NodeId) -> &mut ScrollPaneState {
-        if id.index() >= self.0.len() {
-            self.0.resize(id.index() + 1, None);
-        }
-        self.0[id.index()].get_or_insert_with(ScrollPaneState::default)
+        self.0.entry(id).or_insert_with(ScrollPaneState::default)
     }
     pub fn clear(&mut self) {
         self.0.clear();
@@ -554,14 +553,12 @@ pub fn apply_wheel_to_hit(scene: &mut Scene, w: WheelEvent) {
 }
 
 /// tick 推进所有活跃 scroll tween（tweening≠0）。
-/// 遍历 scene.scroll，每个 Some(st) 若 tweening≠0 调 st.advance(dt)。
+/// 遍历 scene.scroll（HashMap values_mut），每个 st 若 tweening≠0 调 st.advance(dt)。
 /// tweening=0 的拖拽中/静止容器不 advance。
 pub fn advance_all(dt: f32, scene: &mut Scene) {
-    for slot in &mut scene.scroll.0 {
-        if let Some(st) = slot {
-            if st.tweening != 0 {
-                st.advance(dt);
-            }
+    for st in scene.scroll.0.values_mut() {
+        if st.tweening != 0 {
+            st.advance(dt);
         }
     }
 }
@@ -703,16 +700,16 @@ mod tests {
     }
 
     #[test]
-    fn scrolltable_get_mut_ensure_clear() {
-        // ScrollTable 按 id.index() 索引（slotmap idx，从 1 起；此单元测试不经过 Scene，
-        // 直接造带已知 index 的 NodeId：NodeId((idx<<12)|1)）。
+    fn scrolltable_hashmap_get_mut_ensure_clear() {
+        // ScrollTable 用 HashMap<NodeId, ScrollPaneState>（T3）。NodeId 已 impl Hash+Eq，
+        // 不依赖 slotmap 主表存不存在，故此单元测试可不经 Scene 直接造字面量 NodeId。
         let mk = |idx: u32| NodeId((idx << 12) | 1);
         let mut t = ScrollTable::default();
-        assert!(t.get(mk(0)).is_none(), "空表 get → None");
-        // ensure 增长并插 default
+        assert!(t.get(mk(2)).is_none(), "空表 get → None");
+        // ensure 插 default
         let st = t.ensure(mk(2));
         st.scroll_pos = (5.0, 7.0);
-        assert_eq!(t.0.len(), 3, "ensure(idx=2) 增长到 len 3");
+        assert_eq!(t.0.len(), 1, "ensure(mk(2)) → 1 个条目");
         let got = t.get(mk(2)).unwrap();
         assert_eq!(got.scroll_pos, (5.0, 7.0));
         // get_mut
@@ -724,9 +721,16 @@ mod tests {
         // ensure 同 id 二次返同槽（不重置）
         let st2 = t.ensure(mk(2));
         assert_eq!(st2.scroll_pos, (1.0, 2.0), "二次 ensure 不重置已有值");
+        // 不同 id → 不同槽
+        t.ensure(mk(5)).scroll_pos = (9.0, 9.0);
+        assert_eq!(t.0.len(), 2, "ensure 不同 id → 2 个条目");
+        assert!(t.get(mk(5)).is_some());
+        // 未 ensure 的 id → None
+        assert!(t.get(mk(99)).is_none(), "未 ensure 的 id → None");
         // clear
         t.clear();
         assert!(t.0.is_empty(), "clear 清空");
+        assert!(t.get(mk(2)).is_none(), "clear 后 get None");
     }
 
     #[test]

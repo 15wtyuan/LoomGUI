@@ -163,8 +163,8 @@ mod tests {
         // node CSS transform=identity；anim.transform=scale(2,2) → world 非纯平移（吃 override）
         let mut s = scene_with(vec![ node(0, None, Rect { x: 0.0, y: 0.0, w: 10.0, h: 10.0 }) ]);
         let rid = root_id(&s);
-        let anim = s.anim.ensure(rid.index() + 1);
-        anim[rid.index()].transform = Some(transform::from_scale(2.0, 2.0));
+        let anim = s.anim.ensure(rid);
+        anim.transform = Some(transform::from_scale(2.0, 2.0));
         compute_world_transforms(&mut s);
         assert!(!s.world_transforms[rid.index()].is_pure_translation(), "anim.transform override 生效（scale）");
     }

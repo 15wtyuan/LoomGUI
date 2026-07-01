@@ -557,10 +557,13 @@ mod tests {
         let html = b"<div class=\"b\"></div>";
         let css = b".b{width:100px;height:50px;}";
         loomgui_stage_load_html(h, html.as_ptr(), html.len(), css.as_ptr(), css.len());
+        // 经 slotmap 分配的真实根 NodeId（v1.3+ 动态树：root_id 非 0，是 idx<<12|gen）。
+        // 传 node_id=0 会因 scene.get(NodeId(0)) 悬空 → update 跳过 → 无 complete 事件。
+        let root_id = unsafe { (*h).stage.scene.as_ref().unwrap().roots[0].0 };
         let start = [0.0f32; 4];
         let end = [1.0f32, 0.0, 0.0, 0.0];
         // prop=0 (Opacity), ease=0 (Linear), duration=1.0, delay=0, tag=55
-        loomgui_stage_tween(h, 0, 0, start.as_ptr(), end.as_ptr(), 1.0, 0, 0.0, 55);
+        loomgui_stage_tween(h, root_id, 0, start.as_ptr(), end.as_ptr(), 1.0, 0, 0.0, 55);
         loomgui_stage_tick(h, 1.0); // 推进到结束
         let mut len = 0usize;
         let p = loomgui_stage_borrow_events(h, &mut len);

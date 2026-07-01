@@ -166,33 +166,36 @@ impl NodeAnim {
     }
 }
 
-/// 每节点动画 override 表（index = NodeId.index()，slotmap 槽位号）。运行时态，不进 pkg（同 world_transforms）。
+/// 每节点动画 override 表（HashMap<NodeId, NodeAnim>）。运行时态，不进 pkg（同 world_transforms）。
+///
+/// **T3 校准**：brief 原定 `SecondaryMap<NodeId, NodeAnim>`，但 slotmap 1.1 的 `Key` trait 是
+/// sealed——外部类型 NodeId（手写 `pub u32`，非 `new_key_type!` 产物）无法 impl Key，故
+/// `SecondaryMap<NodeId, _>` 不可行。T2 的 DefaultKey 桥接使 anim/scroll 的访问句柄是 NodeId，
+/// 若用 `SecondaryMap<DefaultKey, _>` 则每次访问要 `NodeId::to_key()` 转换，且 SecondaryMap 不
+/// 自动跟踪主 SlotMap 的删除（删节点须手动 remove，否则残留）。改用 `HashMap<NodeId, NodeAnim>`：
+/// NodeId 已 derive Hash+Eq（T1），零 trait 限制、零转换、悬空安全（删节点联动 remove，否则
+/// 残留条目但 get 用 live NodeId 查不到）。查询 O(1) HashMap，u32 hash 快，节点数千量级可接受。
 #[derive(Debug, Clone, Default, PartialEq)]
-pub struct AnimTable(pub Vec<NodeAnim>);
+pub struct AnimTable(pub std::collections::HashMap<NodeId, NodeAnim>);
 
 impl AnimTable {
     pub fn get(&self, node: NodeId) -> Option<&NodeAnim> {
-        self.0.get(node.index()).filter(|a| !a.is_empty())
+        self.0.get(&node).filter(|a| !a.is_empty())
     }
 
-    /// 增长到 n 并返回可变切片（update 调，确保 node_id 可索引）。
-    pub fn ensure(&mut self, n: usize) -> &mut [NodeAnim] {
-        if self.0.len() < n {
-            self.0.resize(n, NodeAnim::default());
-        }
-        &mut self.0
+    /// 确保该节点有 anim 槽并返回可变引用（update 调）。
+    pub fn ensure(&mut self, node: NodeId) -> &mut NodeAnim {
+        self.0.entry(node).or_insert_with(NodeAnim::default)
     }
 
-    /// 清该节点所有通道（回 CSS）。
+    /// 清该节点所有通道（回 CSS）= remove。
     pub fn clear_node(&mut self, node: NodeId) {
-        if let Some(a) = self.0.get_mut(node.index()) {
-            *a = NodeAnim::default();
-        }
+        self.0.remove(&node);
     }
 
     /// 清该节点某 prop 对应通道（Translate/Scale/Rotation 都映射到 transform 通道）。
     pub fn clear_prop(&mut self, node: NodeId, prop: crate::tween::TweenProp) {
-        let a = match self.0.get_mut(node.index()) {
+        let a = match self.0.get_mut(&node) {
             Some(a) => a,
             None => return,
         };
@@ -652,26 +655,86 @@ mod tests {
         assert!(sc.get(sc.roots[0]).unwrap().clip_rect.is_none(), "双轴 Visible → 无 clip slot");
     }
 
-    #[test]
-    fn animtable_get_returns_none_for_empty_or_unset() {
-        let mut t = AnimTable::default();
-        t.ensure(3);
-        // 全默认（None）→ get 返 None（is_empty 过滤）；NodeId 字面量 .index()=0（0>>12=0）
-        assert!(t.get(NodeId(0)).is_none());
-        assert!(t.get(NodeId(5)).is_none(), "index 0（5>>12=0）默认 → None");
+    /// AnimTable 用 HashMap<NodeId, NodeAnim>（T3）。测试一律用 slotmap 分配的真实 NodeId
+    /// + 生产路径写法（ensure(id)），不用字面量 NodeId(N) 撑表（reviewer Minor-3）。
+    fn anim_scene_one_node() -> (Scene, NodeId) {
+        let sc = Scene::build(&[(None, NodeKind::Container, ResolvedStyle::default(), Vec::new(), None, false, None)]);
+        let id = sc.roots[0];
+        (sc, id)
     }
 
     #[test]
-    fn animtable_clear_prop_transform_channel_shared() {
-        // 经 slotmap 分配真实打包 NodeId（.index()=1），与 AnimTable::clear_prop 的 .index() 语义一致。
-        let sc = Scene::build(&[(None, NodeKind::Container, ResolvedStyle::default(), Vec::new(), None, false, None)]);
-        let rid = sc.roots[0];
+    fn animtable_hashmap_get_ensure_clear() {
+        let (_sc, id) = anim_scene_one_node();
         let mut t = AnimTable::default();
-        t.ensure(rid.index() + 1);
-        t.0[rid.index()].transform = Some(crate::transform::from_scale(2.0, 2.0));
-        // Translate/Scale/Rotation 都清 transform 通道
-        t.clear_prop(rid, crate::tween::TweenProp::Scale);
-        assert!(t.0[rid.index()].transform.is_none(), "clear Scale → transform 通道 None");
+        // 未 ensure 的 id → get None
+        assert!(t.get(id).is_none(), "未 ensure → get None");
+        // ensure + 写
+        t.ensure(id).opacity = Some(0.5);
+        assert_eq!(t.get(id).unwrap().opacity, Some(0.5));
+        // 全默认的 NodeAnim（ensure 后未写任何通道）→ get 返 None（is_empty 过滤）
+        let other = {
+            let sc = Scene::build(&[
+                (None, NodeKind::Container, ResolvedStyle::default(), Vec::new(), None, false, None),
+                (Some(0), NodeKind::Container, ResolvedStyle::default(), Vec::new(), None, false, None),
+            ]);
+            sc.roots[0]
+        };
+        // 注：other 是另一 scene 的 NodeId，此处仅验证 ensure 后未写 → get None
+        let mut t2 = AnimTable::default();
+        t2.ensure(other);
+        assert!(t2.get(other).is_none(), "ensure 后全 None → is_empty 过滤 → get None");
+        // clear_node
+        t.clear_node(id);
+        assert!(t.get(id).is_none(), "clear_node 后 get 返 None");
+    }
+
+    #[test]
+    fn animtable_clear_prop_keeps_other_channels() {
+        let (_sc, id) = anim_scene_one_node();
+        let mut t = AnimTable::default();
+        let a = t.ensure(id);
+        a.opacity = Some(0.5);
+        a.transform = Some(crate::transform::from_scale(2.0, 2.0));
+        t.clear_prop(id, crate::tween::TweenProp::Scale);
+        assert!(t.get(id).unwrap().transform.is_none(), "清 transform 通道");
+        assert_eq!(t.get(id).unwrap().opacity, Some(0.5), "opacity 通道保留");
+    }
+
+    #[test]
+    fn animtable_clear_prop_all_variants() {
+        let (_sc, id) = anim_scene_one_node();
+        let mut t = AnimTable::default();
+        let a = t.ensure(id);
+        a.opacity = Some(0.5);
+        a.transform = Some(crate::transform::from_scale(2.0, 2.0));
+        a.bg_color = Some([1.0; 4]);
+        a.text_color = Some([2.0; 4]);
+        // 注：clear_prop 后断言用 t.0.get(&id)（绕过 get 的 is_empty 过滤），
+        // 因逐通道清到全 None 时 get 会返 None，但条目本身仍在（clear_node 才 remove）。
+        // macro：每次展开独立借用，避免闭包持借冲突 clear_prop 的 &mut。
+        macro_rules! raw { () => { t.0.get(&id).expect("条目存在（clear_prop 不 remove）") }; }
+        t.clear_prop(id, crate::tween::TweenProp::Opacity);
+        assert!(raw!().opacity.is_none(), "清 opacity");
+        assert!(raw!().transform.is_some(), "opacity 清了，transform 保留");
+        t.clear_prop(id, crate::tween::TweenProp::Translate);
+        assert!(raw!().transform.is_none(), "Translate 清 transform");
+        // 重新写 transform 再清 Scale/Rotation
+        t.ensure(id).transform = Some(crate::transform::from_scale(2.0, 2.0));
+        t.clear_prop(id, crate::tween::TweenProp::Scale);
+        assert!(raw!().transform.is_none(), "Scale 清 transform");
+        t.ensure(id).transform = Some(crate::transform::from_rotate(0.5));
+        t.clear_prop(id, crate::tween::TweenProp::Rotation);
+        assert!(raw!().transform.is_none(), "Rotation 清 transform");
+        t.clear_prop(id, crate::tween::TweenProp::BgColor);
+        assert!(raw!().bg_color.is_none(), "清 bg_color");
+        t.clear_prop(id, crate::tween::TweenProp::TextColor);
+        assert!(raw!().text_color.is_none(), "清 text_color");
+        // 全清后 → is_empty → get None（条目仍在，但 get 过滤掉）
+        assert!(t.get(id).is_none(), "全通道清后 get 返 None（is_empty 过滤）");
+        // clear_node 才真正 remove
+        t.clear_node(id);
+        assert!(t.0.get(&id).is_none(), "clear_node 后 HashMap 无条目");
     }
 
     #[test]
