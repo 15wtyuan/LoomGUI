@@ -16,11 +16,11 @@ pub fn compute_world_transforms(scene: &mut Scene) {
 }
 
 fn rec(scene: &Scene, anim: &AnimTable, id: NodeId, parent_world: Affine2, worlds: &mut [Affine2]) {
-    let node = &scene.nodes[id.0];
+    let node = &scene.nodes[id.0 as usize];
     let lr = node.layout_rect;
     let pivot = (lr.w / 2.0, lr.h / 2.0);
     let rel = match node.parent {
-        Some(p) => (lr.x - scene.nodes[p.0].layout_rect.x, lr.y - scene.nodes[p.0].layout_rect.y),
+        Some(p) => (lr.x - scene.nodes[p.0 as usize].layout_rect.x, lr.y - scene.nodes[p.0 as usize].layout_rect.y),
         None => (lr.x, lr.y),
     };
     // transform 矩阵源 = anim.transform override（replace-override）unwrap css matrix。
@@ -46,7 +46,7 @@ fn rec(scene: &Scene, anim: &AnimTable, id: NodeId, parent_world: Affine2, world
         ),
         None => transform::mul(&parent_world, &local),
     };
-    worlds[id.0] = world;
+    worlds[id.0 as usize] = world;
     let kids = node.children.clone();
     for c in kids {
         rec(scene, anim, c, world, worlds);
@@ -62,8 +62,8 @@ mod tests {
 
     fn node(id: usize, parent: Option<usize>, rect: Rect) -> Node {
         let mut n = Node::default();
-        n.id = NodeId(id);
-        n.parent = parent.map(NodeId);
+        n.id = NodeId(id as u32);
+        n.parent = parent.map(|p| NodeId(p as u32));
         n.layout_rect = rect;
         n
     }

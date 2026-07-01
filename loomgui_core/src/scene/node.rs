@@ -8,8 +8,27 @@
 use crate::parse::dom::{ElementId, ElementTree};
 use crate::style::resolved::{OverflowMode, ResolvedStyle};
 
+/// 不透明节点句柄。对外 u32（FFI/C# 透明），内部 = 高 20 bit index + 低 12 bit generation。
+/// sentinel 0xFFFF_FFFF = INVALID。index 用于并行数组（anim/scroll/world_transforms）索引，
+/// gen 由 slotmap 校验悬空。详见 v1.3+ 动态树 spec §3。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct NodeId(pub usize);
+pub struct NodeId(pub u32);
+
+impl NodeId {
+    /// 无效句柄 sentinel（同 v1 FFI None/0 约定）。
+    pub const INVALID: NodeId = NodeId(0xFFFF_FFFF);
+    pub fn is_valid(self) -> bool {
+        self.0 != 0xFFFF_FFFF
+    }
+    /// slotmap 槽位号（高 20 bit）。并行数组按此索引。
+    pub fn index(self) -> usize {
+        (self.0 >> 12) as usize
+    }
+    /// generation（低 12 bit）。slotmap 内部校验用。
+    pub fn gen(self) -> u16 {
+        (self.0 & 0xFFF) as u16
+    }
+}
 
 /// 默认 `Container`（无数据变体），render 层测试构造 Node 用 `Default::default()`。
 #[derive(Debug, Clone, Default)]
@@ -125,7 +144,7 @@ pub struct AnimTable(pub Vec<NodeAnim>);
 
 impl AnimTable {
     pub fn get(&self, node: NodeId) -> Option<&NodeAnim> {
-        self.0.get(node.0).filter(|a| !a.is_empty())
+        self.0.get(node.0 as usize).filter(|a| !a.is_empty())
     }
 
     /// 增长到 n 并返回可变切片（update 调，确保 node_id 可索引）。
@@ -138,14 +157,14 @@ impl AnimTable {
 
     /// 清该节点所有通道（回 CSS）。
     pub fn clear_node(&mut self, node: NodeId) {
-        if let Some(a) = self.0.get_mut(node.0) {
+        if let Some(a) = self.0.get_mut(node.0 as usize) {
             *a = NodeAnim::default();
         }
     }
 
     /// 清该节点某 prop 对应通道（Translate/Scale/Rotation 都映射到 transform 通道）。
     pub fn clear_prop(&mut self, node: NodeId, prop: crate::tween::TweenProp) {
-        let a = match self.0.get_mut(node.0) {
+        let a = match self.0.get_mut(node.0 as usize) {
             Some(a) => a,
             None => return,
         };
@@ -197,8 +216,8 @@ impl Scene {
         };
         for (i, (parent_idx, kind, style, classes, id_attr, draggable, tabindex)) in entries.iter().enumerate() {
             scene.nodes.push(Node {
-                id: NodeId(i),
-                parent: parent_idx.map(NodeId),
+                id: NodeId(i as u32),
+                parent: parent_idx.map(|p| NodeId(p as u32)),
                 kind: kind.clone(),
                 style: style.clone(),
                 base_style: style.clone(),
@@ -228,8 +247,8 @@ impl Scene {
         // 接 children + roots（entries 先序 → 按 parent 出现序填）
         for i in 0..entries.len() {
             match entries[i].0 {
-                Some(p) => scene.nodes[p].children.push(NodeId(i)),
-                None => scene.roots.push(NodeId(i)),
+                Some(p) => scene.nodes[p].children.push(NodeId(i as u32)),
+                None => scene.roots.push(NodeId(i as u32)),
             }
         }
         // text_layouts 随 nodes 长度对齐（None 占位，layout::solve 填实际 TextLayout）。
@@ -268,8 +287,8 @@ fn gather_rec(
     parent_idx: Option<usize>,
     entries: &mut Vec<(Option<usize>, NodeKind, ResolvedStyle, Vec<String>, Option<String>, bool, Option<i32>)>,
 ) -> usize {
-    let el = &tree.nodes[el_id.0];
-    let style = &styles[el_id.0];
+    let el = &tree.nodes[el_id.0 as usize];
+    let style = &styles[el_id.0 as usize];
     // parse 层已保证 tag 在围栏白名单内（div/span/img/button/l-container），
     // 故此处显式 match 无 fallback；若来未识别 tag 是 parse/白名单的 bug。
     // img 的 src 从属性取（`<img src="...">`），不是元素文本；
@@ -327,6 +346,28 @@ fn gather_rec(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn node_id_index_and_gen_decode() {
+        // 高 20 bit index + 低 12 bit gen
+        let id = NodeId((5 << 12) | 7);
+        assert_eq!(id.index(), 5, "index = 高 20 bit");
+        assert_eq!(id.gen(), 7, "gen = 低 12 bit");
+    }
+
+    #[test]
+    fn node_id_invalid_sentinel() {
+        assert!(!NodeId::INVALID.is_valid(), "0xFFFF_FFFF = INVALID");
+        assert!(NodeId(0).is_valid(), "0 有效");
+    }
+
+    #[test]
+    fn node_id_index_capacity_20bit() {
+        // 20 bit index 上限 = (1<<20)-1 = 1048575
+        let max_idx = (1u32 << 20) - 1;
+        let id = NodeId(max_idx << 12);
+        assert_eq!(id.index(), max_idx as usize);
+    }
 
     #[test]
     fn node_has_runtime_state_fields_default() {
@@ -503,10 +544,10 @@ mod parse_tests {
         let sheet = parse_css(css).unwrap();
         let styles = resolve_styles(&tree, &sheet);
         let scene = build_scene(&tree, &styles);
-        let root = &scene.nodes[scene.roots[0].0];
+        let root = &scene.nodes[scene.roots[0].0 as usize];
         assert_eq!(root.classes, vec!["a".to_string(), "b".to_string()]);
         assert_eq!(root.id_attr.as_deref(), Some("x"));
-        let span = &scene.nodes[root.children[0].0];
+        let span = &scene.nodes[root.children[0].0 as usize];
         assert_eq!(span.classes, vec!["c".to_string()]);
     }
 
@@ -535,19 +576,19 @@ mod parse_tests {
         let sheet = parse_css(css).unwrap();
         let styles = resolve_styles(&tree, &sheet);
         let scene = build_scene(&tree, &styles);
-        let root = &scene.nodes[scene.roots[0].0];
+        let root = &scene.nodes[scene.roots[0].0 as usize];
         assert!(matches!(root.kind, NodeKind::Container));
         assert_eq!(root.children.len(), 3);
         assert!(matches!(
-            scene.nodes[root.children[0].0].kind,
+            scene.nodes[root.children[0].0 as usize].kind,
             NodeKind::Button
         ));
-        let text = &scene.nodes[root.children[1].0];
+        let text = &scene.nodes[root.children[1].0 as usize];
         match &text.kind {
             NodeKind::Text { content } => assert_eq!(content, "hi"),
             _ => panic!("expected Text"),
         }
-        match &scene.nodes[root.children[2].0].kind {
+        match &scene.nodes[root.children[2].0 as usize].kind {
             NodeKind::Image { src } => assert_eq!(src, "logo.png"),
             _ => panic!("expected Image"),
         }
@@ -573,8 +614,8 @@ mod parse_tests {
         let sheet = parse_css(css).unwrap();
         let styles = resolve_styles(&tree, &sheet);
         let scene = build_scene(&tree, &styles);
-        let root = &scene.nodes[scene.roots[0].0];
-        match &scene.nodes[root.children[0].0].kind {
+        let root = &scene.nodes[scene.roots[0].0 as usize];
+        match &scene.nodes[root.children[0].0 as usize].kind {
             NodeKind::Image { src } => assert_eq!(src, ""),
             _ => panic!("expected Image"),
         }
@@ -589,10 +630,10 @@ mod parse_tests {
         let sheet = parse_css(css).unwrap();
         let styles = resolve_styles(&tree, &sheet);
         let scene = build_scene(&tree, &styles);
-        let root = &scene.nodes[scene.roots[0].0];
+        let root = &scene.nodes[scene.roots[0].0 as usize];
         assert!(root.dirty_mesh);
         assert!(!root.dirty_text); // Container 不脏文本
-        let text = &scene.nodes[root.children[0].0];
+        let text = &scene.nodes[root.children[0].0 as usize];
         assert!(text.dirty_mesh);
         assert!(text.dirty_text); // Text 节点脏文本
     }
@@ -607,10 +648,10 @@ mod parse_tests {
         let sheet = parse_css(css).unwrap();
         let styles = resolve_styles(&tree, &sheet);
         let scene = build_scene(&tree, &styles);
-        let root = &scene.nodes[scene.roots[0].0];
+        let root = &scene.nodes[scene.roots[0].0 as usize];
         assert!(matches!(root.kind, NodeKind::Container));
         assert_eq!(root.children.len(), 1, "裸文本应产 1 个 Text 子节点");
-        let child = &scene.nodes[root.children[0].0];
+        let child = &scene.nodes[root.children[0].0 as usize];
         match &child.kind {
             NodeKind::Text { content } => assert_eq!(content, "标题"),
             other => panic!("expected Text child, got {:?}", other),
@@ -628,10 +669,10 @@ mod parse_tests {
         let sheet = parse_css(css).unwrap();
         let styles = resolve_styles(&tree, &sheet);
         let scene = build_scene(&tree, &styles);
-        let btn = &scene.nodes[scene.roots[0].0];
+        let btn = &scene.nodes[scene.roots[0].0 as usize];
         assert!(matches!(btn.kind, NodeKind::Button));
         assert_eq!(btn.children.len(), 1);
-        match &scene.nodes[btn.children[0].0].kind {
+        match &scene.nodes[btn.children[0].0 as usize].kind {
             NodeKind::Text { content } => assert_eq!(content, "确定"),
             _ => panic!("expected Text child"),
         }
@@ -648,8 +689,8 @@ mod parse_tests {
         let sheet = parse_css(css).unwrap();
         let styles = resolve_styles(&tree, &sheet);
         let scene = build_scene(&tree, &styles);
-        let root = &scene.nodes[scene.roots[0].0];
-        let child = &scene.nodes[root.children[0].0];
+        let root = &scene.nodes[scene.roots[0].0 as usize];
+        let child = &scene.nodes[root.children[0].0 as usize];
         // 继承
         assert_eq!(child.style.color, [1.0, 0.0, 0.0, 1.0]);
         assert_eq!(child.style.font_size, 20.0);
@@ -669,7 +710,7 @@ mod parse_tests {
         let sheet = parse_css(css).unwrap();
         let styles = resolve_styles(&tree, &sheet);
         let scene = build_scene(&tree, &styles);
-        let root = &scene.nodes[scene.roots[0].0];
+        let root = &scene.nodes[scene.roots[0].0 as usize];
         // btn 是 root 的子（root 的 Text 子"OK"另算——button 裸文本→Text 子）。
         // 找 button kind 的子：
         let btn = scene.nodes.iter().find(|n| matches!(n.kind, NodeKind::Button)).expect("btn");
@@ -685,7 +726,7 @@ mod parse_tests {
         let sheet = parse_css(css).unwrap();
         let styles = resolve_styles(&tree, &sheet);
         let scene = build_scene(&tree, &styles);
-        let root = &scene.nodes[scene.roots[0].0];
+        let root = &scene.nodes[scene.roots[0].0 as usize];
         assert!(!root.draggable, "draggable=\"false\" → false");
         let btn = scene.nodes.iter().find(|n| matches!(n.kind, NodeKind::Button)).expect("btn");
         assert!(!btn.draggable, "draggable=\"yes\"（非 true）→ false（truthy 仅认 true）");

@@ -287,7 +287,7 @@ pub extern "C" fn loomgui_stage_set_node_disabled(
         return;
     }
     let sh = unsafe { &mut *h };
-    sh.stage.set_node_disabled(NodeId(node_id as usize), disabled);
+    sh.stage.set_node_disabled(NodeId(node_id), disabled);
 }
 
 /// 返 parent node_id（C# 事件路由沿链用，spec §4.2）。根/越界/无 scene → 0xFFFF_FFFF（sentinel）。
@@ -347,7 +347,7 @@ pub extern "C" fn loomgui_stage_find_node_by_id(
 pub extern "C" fn loomgui_stage_add_touch_monitor(h: *mut StageHandle, touch_id: i32, node_id: u32) {
     if h.is_null() { return; }
     let sh = unsafe { &mut *h };
-    sh.stage.add_touch_monitor(touch_id, NodeId(node_id as usize));
+    sh.stage.add_touch_monitor(touch_id, NodeId(node_id));
 }
 
 /// 移除 touch monitor（C# 主动释放调）。从所有槽移除该 node。null 句柄 → no-op。
@@ -357,7 +357,7 @@ pub extern "C" fn loomgui_stage_add_touch_monitor(h: *mut StageHandle, touch_id:
 pub extern "C" fn loomgui_stage_remove_touch_monitor(h: *mut StageHandle, node_id: u32) {
     if h.is_null() { return; }
     let sh = unsafe { &mut *h };
-    sh.stage.remove_touch_monitor(NodeId(node_id as usize));
+    sh.stage.remove_touch_monitor(NodeId(node_id));
 }
 
 /// 外部取消待 click（照 fgui Stage.CancelClick(touchId)）。置对应槽 click_cancelled。
@@ -417,7 +417,7 @@ pub extern "C" fn loomgui_stage_set_scroll_pos(
 ) {
     if h.is_null() { return; }
     let handle = unsafe { &mut *h };
-    handle.stage.set_scroll_pos(NodeId(node_id as usize), x, y, animated != 0);
+    handle.stage.set_scroll_pos(NodeId(node_id), x, y, animated != 0);
 }
 
 /// 编程聚焦节点（照 fgui RequestFocus）。强制聚焦任意非 disabled 节点
@@ -428,7 +428,7 @@ pub extern "C" fn loomgui_stage_set_scroll_pos(
 pub extern "C" fn loomgui_stage_request_focus(h: *mut StageHandle, node_id: u32) {
     if h.is_null() { return; }
     let sh = unsafe { &mut *h };
-    sh.stage.request_focus(NodeId(node_id as usize));
+    sh.stage.request_focus(NodeId(node_id));
 }
 
 /// 读当前焦点节点。无焦点/无 scene → 0xFFFF_FFFF（sentinel，同 node_parent）。null 句柄 → sentinel。
@@ -496,7 +496,7 @@ pub extern "C" fn loomgui_stage_tween(
         s[i] = st[i];
         e[i] = en[i];
     }
-    sh.stage.tween(NodeId(node_id as usize), prop, s, e, ease, delay, duration, tag);
+    sh.stage.tween(NodeId(node_id), prop, s, e, ease, delay, duration, tag);
 }
 
 /// 停该节点该 prop 的 tween（override 保留末值）。
@@ -507,7 +507,7 @@ pub extern "C" fn loomgui_stage_kill_tween(h: *mut StageHandle, node_id: u32, pr
     }
     let sh = unsafe { &mut *h };
     if let Some(prop) = loomgui_core::tween::TweenProp::try_from(prop) {
-        sh.stage.kill_tween(NodeId(node_id as usize), prop);
+        sh.stage.kill_tween(NodeId(node_id), prop);
     }
 }
 
@@ -518,7 +518,7 @@ pub extern "C" fn loomgui_stage_clear_anim(h: *mut StageHandle, node_id: u32) {
         return;
     }
     let sh = unsafe { &mut *h };
-    sh.stage.clear_anim(NodeId(node_id as usize));
+    sh.stage.clear_anim(NodeId(node_id));
 }
 
 /// 清该节点某 prop 对应通道（回 CSS）。
@@ -529,7 +529,7 @@ pub extern "C" fn loomgui_stage_clear_anim_prop(h: *mut StageHandle, node_id: u3
     }
     let sh = unsafe { &mut *h };
     if let Some(prop) = loomgui_core::tween::TweenProp::try_from(prop) {
-        sh.stage.clear_anim_prop(NodeId(node_id as usize), prop);
+        sh.stage.clear_anim_prop(NodeId(node_id), prop);
     }
 }
 

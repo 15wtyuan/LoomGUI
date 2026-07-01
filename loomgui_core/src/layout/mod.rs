@@ -84,7 +84,7 @@ pub fn solve(scene: &mut Scene, font: &Font, root_size: (f32, f32), textures: &T
         textures: &TextureRegistry,
         parent_overflow: bool,
     ) -> taffy::NodeId {
-        let node = &scene.nodes[id.0];
+        let node = &scene.nodes[id.0 as usize];
         let mut style = node.style.taffy_style.clone();
         // overflow != visible → 设 taffy overflow，让 flex automatic min-size=0（CSS flex §4.5）。
         // 不设则 taffy 默认 Visible → min-size=min-content → 容器被 content 撑开（viewport=content）
@@ -143,7 +143,7 @@ pub fn solve(scene: &mut Scene, font: &Font, root_size: (f32, f32), textures: &T
             // 容器：用 children 建。
             tree.new_with_children(style, &children_ids).unwrap()
         };
-        taffy_ids[id.0] = Some(tid);
+        taffy_ids[id.0 as usize] = Some(tid);
         tid
     }
 
@@ -154,7 +154,7 @@ pub fn solve(scene: &mut Scene, font: &Font, root_size: (f32, f32), textures: &T
     let mut taffy_to_scene: HashMap<taffy::NodeId, NodeId> = HashMap::new();
     for (scene_idx, tid) in taffy_ids.iter().enumerate() {
         if let Some(tid) = tid {
-            taffy_to_scene.insert(*tid, NodeId(scene_idx));
+            taffy_to_scene.insert(*tid, NodeId(scene_idx as u32));
         }
     }
     let mut text_layouts: Vec<Option<TextLayout>> = vec![None; scene.nodes.len()];
@@ -223,7 +223,7 @@ pub fn solve(scene: &mut Scene, font: &Font, root_size: (f32, f32), textures: &T
                         // Some(available)（换行）。一旦存了 Some，后续 None 不覆盖（taffy 末尾
                         // 可能补测 None）。
                         if let Some(sid) = taffy_to_scene.get(&nid) {
-                            let slot = &mut text_layouts[sid.0];
+                            let slot = &mut text_layouts[sid.0 as usize];
                             if slot.is_none() || known.width.is_some() {
                                 *slot = Some(layout.clone());
                             }
@@ -243,12 +243,12 @@ pub fn solve(scene: &mut Scene, font: &Font, root_size: (f32, f32), textures: &T
         id: NodeId,
         parent_origin: (f32, f32),
     ) {
-        let tid = taffy_ids[id.0].unwrap();
+        let tid = taffy_ids[id.0 as usize].unwrap();
         let layout = tree.layout(tid).unwrap();
         let x = parent_origin.0 + layout.location.x;
         let y = parent_origin.1 + layout.location.y;
         let (w, h) = (layout.size.width, layout.size.height);
-        let node = &mut scene.nodes[id.0];
+        let node = &mut scene.nodes[id.0 as usize];
         node.layout_rect = Rect { x, y, w, h };
         // overflow:hidden 节点（build_scene 已建 Some 槽）：用自身 border 框填 clip。
         if node.clip_rect.is_some() {
@@ -290,9 +290,9 @@ mod tests {
         let mut scene = build_scene(&tree, &styles);
         let tex = TextureRegistry::default();
         solve(&mut scene, &font().expect("test needs a font"), (200.0, 200.0), &tex);
-        let root = &scene.nodes[scene.roots[0].0];
-        let a = &scene.nodes[root.children[0].0];
-        let b = &scene.nodes[root.children[1].0];
+        let root = &scene.nodes[scene.roots[0].0 as usize];
+        let a = &scene.nodes[root.children[0].0 as usize];
+        let b = &scene.nodes[root.children[1].0 as usize];
         assert!((a.layout_rect.h - 50.0).abs() < 0.1);
         assert!((b.layout_rect.h - 30.0).abs() < 0.1);
         assert!((b.layout_rect.y - 50.0).abs() < 0.1); // 垂直堆叠
@@ -310,9 +310,9 @@ mod tests {
         let mut scene = build_scene(&tree, &styles);
         let tex = TextureRegistry::default();
         solve(&mut scene, &font().expect("test needs a font"), (200.0, 200.0), &tex);
-        let root = &scene.nodes[scene.roots[0].0];
-        let a = &scene.nodes[root.children[0].0];
-        let b = &scene.nodes[root.children[1].0];
+        let root = &scene.nodes[scene.roots[0].0 as usize];
+        let a = &scene.nodes[root.children[0].0 as usize];
+        let b = &scene.nodes[root.children[1].0 as usize];
         // 垂直堆叠：b.y ≈ a.h（a 在上，b 在下）。
         // 若默认回退到 row，b.y 会 ≈ 0（横排），此断言失败。
         assert!(

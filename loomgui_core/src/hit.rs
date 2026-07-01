@@ -14,9 +14,9 @@ pub(crate) fn point_in_rect(point: (f32, f32), r: Rect) -> bool {
 /// 实现：先反转 children（让后者靠前），再按 `-order` 稳定排——stable 保反转后序，
 /// 即同 order 下后者先测，与 hit_test"顶层优先"一致。
 fn effective_draw_order(scene: &Scene, parent: NodeId) -> Vec<NodeId> {
-    let mut kids: Vec<NodeId> = scene.nodes[parent.0].children.clone();
+    let mut kids: Vec<NodeId> = scene.nodes[parent.0 as usize].children.clone();
     kids.reverse();
-    kids.sort_by_key(|&c| -scene.nodes[c.0].style.order); // 负号=降序
+    kids.sort_by_key(|&c| -scene.nodes[c.0 as usize].style.order); // 负号=降序
     kids
 }
 
@@ -24,7 +24,7 @@ fn effective_draw_order(scene: &Scene, parent: NodeId) -> Vec<NodeId> {
 /// scrollbar 最上层——遍历所有容器 check v/h thumb rect。
 pub fn hit_scrollbar_grip(scene: &Scene, point: (f32, f32)) -> Option<(NodeId, u8)> {
     for id in 0..scene.nodes.len() {
-        let nid = NodeId(id);
+        let nid = NodeId(id as u32);
         if let Some(r) = crate::scroll::v_thumb_rect(scene, nid) {
             if point_in_rect(point, r) {
                 return Some((nid, 0));
@@ -49,7 +49,7 @@ pub fn hit_test(scene: &Scene, point: (f32, f32)) -> Option<NodeId> {
         } else {
             crate::scroll::H_THUMB_FLAG
         };
-        return Some(NodeId((container.0 as u32 | flag) as usize));
+        return Some(NodeId(container.0 | flag));
     }
     // 从 roots 逐棵 DFS。多个 root 按顺序，后 root 顶层（与渲染序一致）。
     for &root in &scene.roots {
@@ -62,7 +62,7 @@ pub fn hit_test(scene: &Scene, point: (f32, f32)) -> Option<NodeId> {
 
 /// 递归测某子树。先测子（逆等效序，顶层先），子命中返回子的；子都不命中→自身 fallback。
 fn hit_subtree(scene: &Scene, id: NodeId, point: (f32, f32)) -> Option<NodeId> {
-    let node = &scene.nodes[id.0];
+    let node = &scene.nodes[id.0 as usize];
     // clip 门控：有 clip_rect 且点不在 clip 内 → 整个子树不命中
     if let Some(clip) = node.clip_rect {
         if !point_in_rect(point, clip) {
@@ -78,7 +78,7 @@ fn hit_subtree(scene: &Scene, id: NodeId, point: (f32, f32)) -> Option<NodeId> {
     // 子都不命中 → 自身 fallback：touchable + 点经 world matrix 逆投到本地 box
     // world_to_local：点经 world matrix 逆投到本地，判本地 box (0,0,w,h)
     if node.touchable {
-        let wm = scene.world_transforms[id.0];
+        let wm = scene.world_transforms[id.0 as usize];
         let inv = crate::transform::inverse(&wm);
         let (lx, ly) = crate::transform::apply_point(&inv, point.0, point.1);
         let lr = node.layout_rect;

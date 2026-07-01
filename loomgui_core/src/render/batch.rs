@@ -121,7 +121,7 @@ pub fn assign_sort_keys(scene: &Scene, nodes: &mut [RenderNode]) -> Vec<ClipEntr
         accumulated: Option<Rect>,
         scroll_offset: (f32, f32),
     ) {
-        let node = &scene.nodes[id.0];
+        let node = &scene.nodes[id.0 as usize];
         // mask_context + clip 交集：本节点 clip_rect 非空 → 开新层级（计数器+1），
         // 算 own ∩ accumulated；否则继承父层级与 accumulated。
         //
@@ -147,7 +147,7 @@ pub fn assign_sort_keys(scene: &Scene, nodes: &mut [RenderNode]) -> Vec<ClipEntr
             (parent_mask, accumulated)
         };
         {
-            let rn = &mut nodes[id.0];
+            let rn = &mut nodes[id.0 as usize];
             rn.sort_key = *counter;
             rn.mask_context = mask;
             *counter += 1;

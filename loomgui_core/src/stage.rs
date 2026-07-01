@@ -117,8 +117,8 @@ impl Stage {
     /// 业务设节点 disabled（伪类源 + active/click 抑制）。NodeId.0 越界静默跳过。
     pub fn set_node_disabled(&mut self, node_id: NodeId, disabled: bool) {
         if let Some(scene) = self.scene.as_mut() {
-            if node_id.0 < scene.nodes.len() {
-                scene.nodes[node_id.0].disabled = disabled;
+            if (node_id.0 as usize) < scene.nodes.len() {
+                scene.nodes[node_id.0 as usize].disabled = disabled;
             }
         }
     }
@@ -173,7 +173,7 @@ impl Stage {
     /// animated=false 直接 snap+clamp；true 启 cubic-out tween（调 set_pos）。
     pub fn set_scroll_pos(&mut self, node: NodeId, x: f32, y: f32, animated: bool) {
         if let Some(scene) = self.scene.as_mut() {
-            if node.0 < scene.nodes.len() {
+            if (node.0 as usize) < scene.nodes.len() {
                 if let Some(s) = scene.scroll.get_mut(node) {
                     s.set_pos((x, y), animated);
                 }
@@ -186,10 +186,10 @@ impl Stage {
     /// disabled 拒 / 越界跳过。记 pending_focus_request，下 tick 最前消费（不直接写 last_events）。
     pub fn request_focus(&mut self, node_id: NodeId) {
         if let Some(scene) = self.scene.as_ref() {
-            if node_id.0 >= scene.nodes.len() {
+            if (node_id.0 as usize) >= scene.nodes.len() {
                 return;
             }
-            if scene.nodes[node_id.0].disabled {
+            if scene.nodes[node_id.0 as usize].disabled {
                 return; // disabled 拒
             }
         } else {

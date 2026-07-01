@@ -35,7 +35,7 @@ fn main() {
         let rect_w = n.layout_rect.w;
         let m_none = measure_text(&content, st.font_size, st.line_height, st.letter_spacing, st.text_align, st.white_space_nowrap, None, font);
         let before = measure_text(&content, st.font_size, st.line_height, st.letter_spacing, st.text_align, st.white_space_nowrap, Some(rect_w), font).lines.len();
-        let after = scene.text_layouts.get(n.id.0).cloned().flatten().map(|l| l.lines.len()).unwrap_or(0);
+        let after = scene.text_layouts.get(n.id.0 as usize).cloned().flatten().map(|l| l.lines.len()).unwrap_or(0);
         let id = n.id_attr.clone().unwrap_or_default();
         let flag = before != after;
         if flag { flagged += 1; }

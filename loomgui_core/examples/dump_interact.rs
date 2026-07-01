@@ -14,7 +14,7 @@ fn dump(stage: &Stage, label: &str, focus: u32) {
     // 取最近 tick 的 frame：重跑 build_render_nodes 不现实；改读 scene 节点状态 + prev_hashes
     println!("=== {} ===", label);
     for (i, n) in scene.nodes.iter().enumerate() {
-        if i == focus || n.parent == Some(loomgui_core::scene::node::NodeId(focus)) {
+        if i == focus || n.parent == Some(loomgui_core::scene::node::NodeId(focus as u32)) {
             println!(
                 "  n{} kind={:?} active={} hovered={} rect=({:.0},{:.0},{:.0},{:.0}) bg={:?} wm={:?}",
                 i,
@@ -41,7 +41,7 @@ fn dump_frame(stage: &mut Stage, label: &str, focus: u32) {
         let nid = rn.node_id as usize;
         if nid == focus_us
             || (nid < scene.nodes.len()
-                && scene.nodes[nid].parent == Some(loomgui_core::scene::node::NodeId(focus_us)))
+                && scene.nodes[nid].parent == Some(loomgui_core::scene::node::NodeId(focus_us as u32)))
         {
             let pk = match &rn.payload {
                 NodePayload::Mesh { verts, colors, .. } => {

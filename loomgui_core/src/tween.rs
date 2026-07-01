@@ -172,7 +172,7 @@ impl TweenManager {
         let anim = scene.anim.ensure(n);
         // 先在 anim 上 apply（按 node 索引），再单独收集 complete 事件。
         for t in &mut self.tweens {
-            if t.killed || t.node.0 >= n {
+            if t.killed || (t.node.0 as usize) >= n {
                 continue;
             }
             t.elapsed += dt;
@@ -202,7 +202,7 @@ impl TweenManager {
 
 /// 逐分量 lerp start→end 写入 anim 对应通道（n=已算的 normalized）。
 fn apply(anim: &mut [NodeAnim], node: NodeId, prop: TweenProp, start: [f32; 4], end: [f32; 4], n: f32) {
-    let a = &mut anim[node.0];
+    let a = &mut anim[node.0 as usize];
     let lerp = |i: usize| start[i] + (end[i] - start[i]) * n;
     match prop {
         TweenProp::Opacity => a.opacity = Some(lerp(0)),

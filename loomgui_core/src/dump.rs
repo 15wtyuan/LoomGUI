@@ -31,9 +31,9 @@ pub fn dump_scene_json(scene: &Scene) -> String {
         };
         let id = json_escape(n.id_attr.as_deref().unwrap_or(""));
         let classes = n.classes.iter().map(|c| json_escape(c)).collect::<Vec<_>>().join(" ");
-        let wm = if n.id.0 < scene.world_transforms.len() { &scene.world_transforms[n.id.0] } else { &crate::transform::IDENTITY };
+        let wm = if (n.id.0 as usize) < scene.world_transforms.len() { &scene.world_transforms[n.id.0 as usize] } else { &crate::transform::IDENTITY };
         // 诊断：附 anim.transform 是否 Some + opacity 值，定位 tween 是否真写进 anim。
-        let (anim_tr, anim_op) = match scene.anim.0.get(n.id.0) {
+        let (anim_tr, anim_op) = match scene.anim.0.get(n.id.0 as usize) {
             Some(a) => (a.transform.is_some(), a.opacity),
             None => (false, None),
         };

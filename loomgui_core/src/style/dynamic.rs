@@ -104,7 +104,7 @@ pub fn compound_matches_node(c: &Compound, node: &Node) -> bool {
 /// `pseudo_disabled → node.disabled`；`pseudo_focus → node.focused`。
 /// 先检状态门，再调 compound_matches_node（tag/classes/id_attr 匹配）。
 fn compound_matches_with_state(c: &Compound, node_id: NodeId, scene: &Scene) -> bool {
-    let node = &scene.nodes[node_id.0];
+    let node = &scene.nodes[node_id.0 as usize];
     if c.pseudo_hover && !node.hovered {
         return false;
     }
@@ -153,7 +153,7 @@ fn match_chain_with_state(
     let target_comp = &comps[end_idx - 1];
     let combinator = comps[end_idx].combinator;
     match combinator {
-        Combinator::Child => match scene.nodes[start_node.0].parent {
+        Combinator::Child => match scene.nodes[start_node.0 as usize].parent {
             Some(parent) => {
                 compound_matches_with_state(target_comp, parent, scene)
                     && match_chain_with_state(comps, end_idx - 1, parent, scene)
@@ -161,7 +161,7 @@ fn match_chain_with_state(
             None => false,
         },
         Combinator::Descendant => {
-            let mut cur = scene.nodes[start_node.0].parent;
+            let mut cur = scene.nodes[start_node.0 as usize].parent;
             while let Some(ancestor) = cur {
                 if compound_matches_with_state(target_comp, ancestor, scene) {
                     if match_chain_with_state(comps, end_idx - 1, ancestor, scene) {
@@ -169,7 +169,7 @@ fn match_chain_with_state(
                     }
                     // 此祖先匹配但更左链匹配不上 → 继续往上找
                 }
-                cur = scene.nodes[ancestor.0].parent;
+                cur = scene.nodes[ancestor.0 as usize].parent;
             }
             false
         }
@@ -198,7 +198,7 @@ pub fn rematch_pseudo_classes(scene: &mut Scene) -> bool {
         })
         .collect();
     for i in 0..scene.nodes.len() {
-        let node_id = NodeId(i);
+        let node_id = NodeId(i as u32);
         // 从 base_style 重起
         let mut new_style = scene.nodes[i].base_style.clone();
         // 收集命中规则

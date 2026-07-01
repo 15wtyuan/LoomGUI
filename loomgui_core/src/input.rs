@@ -104,12 +104,12 @@ fn scroll_threshold(touch_id: i32) -> f32 {
 /// 从 `pane` 的 parent 起向上查（不含 pane 自身），首个 eff_x||eff_y 节点返。
 /// 用于 V-only 容器遇水平手势时提升到外层可滚容器（嵌套让出）。
 fn next_effective_ancestor(scene: &Scene, pane: NodeId) -> Option<NodeId> {
-    let mut cur = scene.nodes.get(pane.0).and_then(|n| n.parent);
+    let mut cur = scene.nodes.get(pane.0 as usize).and_then(|n| n.parent);
     while let Some(id) = cur {
-        if id.0 >= scene.nodes.len() {
+        if (id.0 as usize) >= scene.nodes.len() {
             break;
         }
-        let n = &scene.nodes[id.0];
+        let n = &scene.nodes[id.0 as usize];
         if let Some(st) = scene.scroll.get(id) {
             let eff_x = effective(n.style.overflow_x, st.content_size.0, st.viewport_size.0);
             let eff_y = effective(n.style.overflow_y, st.content_size.1, st.viewport_size.1);
@@ -209,11 +209,11 @@ fn ancestor_chain(scene: &Scene, target: Option<NodeId>) -> Vec<NodeId> {
     let mut chain = Vec::new();
     let mut cur = target;
     while let Some(id) = cur {
-        if id.0 >= scene.nodes.len() {
+        if (id.0 as usize) >= scene.nodes.len() {
             break; // 防御（脏 scene）
         }
         chain.push(id);
-        cur = scene.nodes[id.0].parent;
+        cur = scene.nodes[id.0 as usize].parent;
     }
     chain
 }
@@ -227,8 +227,8 @@ pub(crate) fn focus_node(scene: &mut Scene, new: Option<NodeId>, out: &mut Vec<E
         return; // 无变化不发
     }
     if let Some(o) = old {
-        if o.0 < scene.nodes.len() {
-            scene.nodes[o.0].focused = false;
+        if (o.0 as usize) < scene.nodes.len() {
+            scene.nodes[o.0 as usize].focused = false;
         }
         out.push(EventRecord {
             node_id: o.0 as u32,
@@ -241,8 +241,8 @@ pub(crate) fn focus_node(scene: &mut Scene, new: Option<NodeId>, out: &mut Vec<E
         });
     }
     if let Some(n) = new {
-        if n.0 < scene.nodes.len() {
-            scene.nodes[n.0].focused = true;
+        if (n.0 as usize) < scene.nodes.len() {
+            scene.nodes[n.0 as usize].focused = true;
         }
         out.push(EventRecord {
             node_id: n.0 as u32,
@@ -259,10 +259,10 @@ pub(crate) fn focus_node(scene: &mut Scene, new: Option<NodeId>, out: &mut Vec<E
 
 /// DFS 先序收集 tabindex>=0 且非 disabled 节点，分桶 positive(>0)/zero(==0)。
 fn dfs_collect(scene: &Scene, id: NodeId, positive: &mut Vec<(i32, NodeId)>, zero: &mut Vec<NodeId>) {
-    if id.0 >= scene.nodes.len() {
+    if (id.0 as usize) >= scene.nodes.len() {
         return;
     }
-    let n = &scene.nodes[id.0];
+    let n = &scene.nodes[id.0 as usize];
     if !n.disabled {
         match n.tabindex {
             Some(t) if t > 0 => positive.push((t, id)),
@@ -447,8 +447,8 @@ impl PointerState {
             let slot = &mut self.slots[i];
             if slot.is_down && !slot.longpress_fired && !slot.longpress_cancelled {
                 if let Some(n) = slot.down_node {
-                    if n.0 < scene.nodes.len()
-                        && !scene.nodes[n.0].disabled
+                    if (n.0 as usize) < scene.nodes.len()
+                        && !scene.nodes[n.0 as usize].disabled
                         && time_s - slot.down_time >= LONGPRESS_TRIGGER
                     {
                         slot.longpress_fired = true;
@@ -495,8 +495,8 @@ impl PointerState {
                     // scroll 阈值赛跑（drag/scroll 都未判定时）。scene 此处只读（查 effective）。
                     if slot.is_down && slot.scroll_testing && slot.scrolling_pane.is_none() && !slot.dragging {
                         if let Some(pane_id) = slot.scroll_candidate {
-                            if pane_id.0 < scene.nodes.len() {
-                                let n = &scene.nodes[pane_id.0];
+                            if (pane_id.0 as usize) < scene.nodes.len() {
+                                let n = &scene.nodes[pane_id.0 as usize];
                                 let (eff_x, eff_y) = match scene.scroll.get(pane_id) {
                                     Some(st) => (
                                         effective(n.style.overflow_x, st.content_size.0, st.viewport_size.0),
@@ -582,7 +582,7 @@ impl PointerState {
                         if slot.grip_dragging {
                             // grip 拖拽：指针在 track 内的比例 → scroll_pos
                             if let Some(s) = scene.scroll.get_mut(pane) {
-                                let lr = scene.nodes[pane.0].layout_rect;
+                                let lr = scene.nodes[pane.0 as usize].layout_rect;
                                 let pe = slot.last_pos;
                                 let min_thumb = crate::scroll::MIN_THUMB_SIZE;
                                 if slot.scroll_gesture & 1 != 0 {
@@ -644,7 +644,7 @@ impl PointerState {
                     slot.longpress_cancelled = false;
                     // drag_target = down_targets 中最近 draggable（叶子优先，含 down_node）；disabled 跳过。
                     slot.drag_target = slot.down_targets.iter()
-                        .find(|&&n| n.0 < scene.nodes.len() && scene.nodes[n.0].draggable && !scene.nodes[n.0].disabled)
+                        .find(|&&n| (n.0 as usize) < scene.nodes.len() && scene.nodes[n.0 as usize].draggable && !scene.nodes[n.0 as usize].disabled)
                         .copied();
                     slot.drag_testing = slot.drag_target.is_some();
                     slot.dragging = false;
@@ -657,10 +657,10 @@ impl PointerState {
                     {
                         let mut cur = hit;
                         while let Some(id) = cur {
-                            if id.0 >= scene.nodes.len() {
+                            if (id.0 as usize) >= scene.nodes.len() {
                                 break;
                             }
-                            let n = &scene.nodes[id.0];
+                            let n = &scene.nodes[id.0 as usize];
                             let (eff_x, eff_y) = match scene.scroll.get(id) {
                                 Some(st) => (
                                     effective(n.style.overflow_x, st.content_size.0, st.viewport_size.0),
@@ -680,15 +680,15 @@ impl PointerState {
                     // 沿 down_targets（leaf 优先，同 drag_target 模式）找最近可聚焦非 disabled 节点。
                     // 不可聚焦/`-1` → 不夺焦（照 DOM：点空白不 blur）。
                     let focus_target = slot.down_targets.iter()
-                        .find(|&&n| n.0 < scene.nodes.len()
-                            && !scene.nodes[n.0].disabled
-                            && matches!(scene.nodes[n.0].tabindex, Some(t) if t >= 0))
+                        .find(|&&n| (n.0 as usize) < scene.nodes.len()
+                            && !scene.nodes[n.0 as usize].disabled
+                            && matches!(scene.nodes[n.0 as usize].tabindex, Some(t) if t >= 0))
                         .copied();
                     if let Some(t) = focus_target {
                         focus_node(scene, Some(t), &mut out);
                     }
                     if let Some(n) = hit {
-                        if !scene.nodes[n.0].disabled {
+                        if !scene.nodes[n.0 as usize].disabled {
                             out.push(EventRecord {
                                 node_id: n.0 as u32,
                                 event_type: EVT_DOWN,
@@ -736,7 +736,7 @@ impl PointerState {
                     // grip_dragging 时 hit 为 sentinel（scene.nodes 越界），跳过 EVT_UP/EVT_CLICK（grip Up 不产这些事件）。
                     if !slot.grip_dragging {
                         if let Some(n) = hit {
-                            if !scene.nodes[n.0].disabled {
+                            if !scene.nodes[n.0 as usize].disabled {
                                 out.push(EventRecord {
                                     node_id: n.0 as u32,
                                     event_type: EVT_UP,
@@ -747,7 +747,7 @@ impl PointerState {
                                     y: ev.y,
                                 });
                                 if let Some(target) = Self::click_test(slot, scene, hit) {
-                                    if !scene.nodes[target.0].disabled {
+                                    if !scene.nodes[target.0 as usize].disabled {
                                         let count = Self::bump_click_count(slot, ev.button, time_s);
                                         out.push(EventRecord {
                                             node_id: target.0 as u32,
@@ -819,19 +819,19 @@ impl PointerState {
             return None;
         }
         if let Some(&leaf) = slot.down_targets.first() {
-            if leaf.0 < scene.nodes.len() {
+            if (leaf.0 as usize) < scene.nodes.len() {
                 return Some(leaf);
             }
         }
         let mut cur = current_hit;
         while let Some(id) = cur {
-            if id.0 >= scene.nodes.len() {
+            if (id.0 as usize) >= scene.nodes.len() {
                 break;
             }
             if slot.down_targets.contains(&id) {
                 return Some(id);
             }
-            cur = scene.nodes[id.0].parent;
+            cur = scene.nodes[id.0 as usize].parent;
         }
         None
     }
@@ -902,11 +902,11 @@ impl PointerState {
             if i == 0 || self.slots[i].touch_id >= 0 {
                 let mut cur = self.slots[i].last_hit;
                 while let Some(id) = cur {
-                    if id.0 >= scene.nodes.len() {
+                    if (id.0 as usize) >= scene.nodes.len() {
                         break;
                     }
-                    scene.nodes[id.0].hovered = true;
-                    cur = scene.nodes[id.0].parent;
+                    scene.nodes[id.0 as usize].hovered = true;
+                    cur = scene.nodes[id.0 as usize].parent;
                 }
             }
         }
@@ -921,18 +921,18 @@ impl PointerState {
             if slot.is_down {
                 let mut cur = slot.down_node;
                 while let Some(id) = cur {
-                    if id.0 >= scene.nodes.len() {
+                    if (id.0 as usize) >= scene.nodes.len() {
                         break;
                     }
                     // disabled 节点截断 active 链——自身不设 active，其祖先也不（按下 disabled
                     // 子树不应让 disabled 节点或其上层变 active）。逐节点查（不只 down_node）：
                     // hit 落 disabled 节点的非 disabled 子（如 Text 子）时，链上遇到 disabled
                     // 祖先须截断，而非只查 down_node。
-                    if scene.nodes[id.0].disabled {
+                    if scene.nodes[id.0 as usize].disabled {
                         break;
                     }
-                    scene.nodes[id.0].active = true;
-                    cur = scene.nodes[id.0].parent;
+                    scene.nodes[id.0 as usize].active = true;
+                    cur = scene.nodes[id.0 as usize].parent;
                 }
             }
         }
@@ -1962,7 +1962,7 @@ mod tests {
         root.layout_rect = Rect { x: 0.0, y: 0.0, w: 400.0, h: 200.0 };
         let mk = |id: usize, ti: Option<i32>, disabled: bool| {
             let mut n = Node::default();
-            n.id = NodeId(id); n.parent = Some(NodeId(0)); n.kind = NodeKind::Button;
+            n.id = NodeId(id as u32); n.parent = Some(NodeId(0)); n.kind = NodeKind::Button;
             n.tabindex = ti; n.disabled = disabled;
             n.layout_rect = Rect { x: id as f32 * 50.0, y: 0.0, w: 40.0, h: 40.0 };
             n
@@ -1985,7 +1985,7 @@ mod tests {
         let chain = build_tab_chain(&s);
         // 正整数组 [B(tabindex=1), A(tabindex=2)] 升序，后接 0 组 [C(tabindex=0)]。
         // D(-1)/E(None)/F(disabled) 不进。
-        let ids: Vec<usize> = chain.iter().map(|n| n.0).collect();
+        let ids: Vec<usize> = chain.iter().map(|n| n.0 as usize).collect();
         assert_eq!(ids, vec![2, 1, 3], "链序：正整数升序(B=1,A=2)后接 0 组(C=0)");
     }
 

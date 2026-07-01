@@ -103,13 +103,13 @@ pub fn build_render_nodes(
     let baselined = prev_hashes.len() == n_nodes;
 
     for n in &scene.nodes {
-        let rn = &mut nodes[n.id.0];
+        let rn = &mut nodes[n.id.0 as usize];
         let anim = scene.anim.get(n.id);
         rn.node_id = n.id.0 as u32;
         rn.parent_id = n.parent.map(|p| p.0 as u32);
         rn.alpha = anim.and_then(|a| a.opacity).unwrap_or(n.style.opacity);
         rn.color_tint = anim.and_then(|a| a.text_color).unwrap_or(n.style.color);
-        let wm = scene.world_transforms[n.id.0];
+        let wm = scene.world_transforms[n.id.0 as usize];
         rn.world_matrix = wm;
         rn.visible = true;
         let rect = if crate::transform::is_pure_translation(&wm) {
@@ -226,7 +226,7 @@ pub fn build_render_nodes(
                 // 会误判换行。fallback（text_layouts 空，如 test 未走 solve）：用 rect.w 测。
                 let mut layout = scene
                     .text_layouts
-                    .get(n.id.0)
+                    .get(n.id.0 as usize)
                     .cloned()
                     .flatten()
                     .unwrap_or_else(|| {
@@ -248,8 +248,8 @@ pub fn build_render_nodes(
         }
         // 算本帧 hash，与上帧比。相等（且有基线）→ payload 改回 Unchanged。
         let h = crate::render::dirty::node_hash(rn);
-        new_hashes[n.id.0] = h;
-        if baselined && prev_hashes[n.id.0] == h {
+        new_hashes[n.id.0 as usize] = h;
+        if baselined && prev_hashes[n.id.0 as usize] == h {
             rn.payload = NodePayload::Unchanged;
         }
     }
@@ -261,7 +261,7 @@ pub fn build_render_nodes(
     // 合成 scrollbar thumb（merge 后追加——sentinel id = container|V/H_THUMB_FLAG 高位，
     // batch.rs reorder 用 node 索引 scene.nodes，sentinel 越界；故不参与 batch，独立 quad 末尾追加）。
     for id in 0..scene.nodes.len() {
-        let nid = NodeId(id);
+        let nid = NodeId(id as u32);
         let n = &scene.nodes[id];
         if let Some(s) = scene.scroll.get(nid) {
             if crate::scroll::effective(n.style.overflow_y, s.content_size.1, s.viewport_size.1) {
@@ -357,8 +357,8 @@ mod tests {
     /// 构造一个带 layout_rect 的 Container Node。
     fn container_node(id: usize, parent: Option<usize>, rect: Rect, bg: Option<[f32; 4]>) -> Node {
         let mut n = Node::default();
-        n.id = NodeId(id);
-        n.parent = parent.map(NodeId);
+        n.id = NodeId(id as u32);
+        n.parent = parent.map(|p| NodeId(p as u32));
         n.kind = NodeKind::Container;
         n.layout_rect = rect;
         n.style.background_color = bg;

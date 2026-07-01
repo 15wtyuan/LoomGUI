@@ -97,17 +97,17 @@ pub struct ScrollTable(pub Vec<Option<ScrollPaneState>>);
 
 impl ScrollTable {
     pub fn get(&self, id: NodeId) -> Option<&ScrollPaneState> {
-        self.0.get(id.0).and_then(|o| o.as_ref())
+        self.0.get(id.0 as usize).and_then(|o| o.as_ref())
     }
     pub fn get_mut(&mut self, id: NodeId) -> Option<&mut ScrollPaneState> {
-        self.0.get_mut(id.0).and_then(|o| o.as_mut())
+        self.0.get_mut(id.0 as usize).and_then(|o| o.as_mut())
     }
     /// 增长到含 id 的长度（缺省填 None），返回该节点可变状态（缺则插 default）。
     pub fn ensure(&mut self, id: NodeId) -> &mut ScrollPaneState {
-        if id.0 >= self.0.len() {
-            self.0.resize(id.0 + 1, None);
+        if (id.0 as usize) >= self.0.len() {
+            self.0.resize(id.0 as usize + 1, None);
         }
-        self.0[id.0].get_or_insert_with(ScrollPaneState::default)
+        self.0[id.0 as usize].get_or_insert_with(ScrollPaneState::default)
     }
     pub fn clear(&mut self) {
         self.0.clear();
@@ -409,7 +409,7 @@ pub fn v_thumb_rect(scene: &Scene, id: NodeId) -> Option<Rect> {
     if s.overlap.1 <= 0.0 {
         return None;
     }
-    let lr = scene.nodes[id.0].layout_rect;
+    let lr = scene.nodes[id.0 as usize].layout_rect;
     let track_w = SCROLLBAR_TRACK_THICKNESS;
     let track_h = lr.h;
     let thumb_h = (s.viewport_size.1 * (s.viewport_size.1 / s.content_size.1))
@@ -435,7 +435,7 @@ pub fn h_thumb_rect(scene: &Scene, id: NodeId) -> Option<Rect> {
     if s.overlap.0 <= 0.0 {
         return None;
     }
-    let lr = scene.nodes[id.0].layout_rect;
+    let lr = scene.nodes[id.0 as usize].layout_rect;
     let track_h = SCROLLBAR_TRACK_THICKNESS;
     let track_w = lr.w;
     let thumb_w = (s.viewport_size.0 * (s.viewport_size.0 / s.content_size.0))
@@ -461,7 +461,7 @@ pub fn h_thumb_rect(scene: &Scene, id: NodeId) -> Option<Rect> {
 pub fn refresh_content_sizes(scene: &mut Scene) {
     let ids: Vec<usize> = (0..scene.nodes.len()).collect();
     for id in ids {
-        let nid = NodeId(id);
+        let nid = NodeId(id as u32);
         let is_scroll = {
             let n = &scene.nodes[id];
             n.style.overflow_x != OverflowMode::Visible
@@ -475,7 +475,7 @@ pub fn refresh_content_sizes(scene: &mut Scene) {
         let (mut min_x, mut min_y) = (f32::MAX, f32::MAX);
         let (mut max_x, mut max_y) = (f32::MIN, f32::MIN);
         for c in &kids {
-            let r = scene.nodes[c.0].layout_rect;
+            let r = scene.nodes[c.0 as usize].layout_rect;
             min_x = min_x.min(r.x);
             min_y = min_y.min(r.y);
             max_x = max_x.max(r.x + r.w);
@@ -529,8 +529,8 @@ pub fn apply_wheel_to_hit(scene: &mut Scene, w: WheelEvent) {
         // sentinel thumb_id → decode container_id（thumb covers container edge,
         // wheel on thumb = wheel on container）
         let id = if id.0 & 0x6000_0000 != 0 { NodeId(id.0 & !0x6000_0000) } else { id };
-        if id.0 < scene.nodes.len() {
-            let n = &scene.nodes[id.0];
+        if (id.0 as usize) < scene.nodes.len() {
+            let n = &scene.nodes[id.0 as usize];
             let eff_y = effective(
                 n.style.overflow_y,
                 scene.scroll.get(id).map_or(0.0, |s| s.content_size.1),
@@ -551,7 +551,7 @@ pub fn apply_wheel_to_hit(scene: &mut Scene, w: WheelEvent) {
             // defensive: invalid node id (shouldn't happen after sentinel decode)
             break;
         }
-        pane = scene.nodes[id.0].parent;
+        pane = scene.nodes[id.0 as usize].parent;
     }
 }
 
