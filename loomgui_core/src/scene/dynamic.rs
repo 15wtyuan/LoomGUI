@@ -19,16 +19,16 @@ use crate::style::resolved::{OverflowMode, ResolvedStyle};
 use crate::tween::TweenManager;
 
 /// tag 字符串 → NodeKind（复用 dom.rs 围栏白名单语义，runtime 可用，不依赖 parse feature）。
-/// 围栏白名单：div/l-container→Container, button→Button, img→Image, span→Text。
+/// 围栏白名单：div→Container, button→Button, img→Image, span→Text。
 /// 未识别 tag → Err（动态建树 API 的 kind 入参由调用方负责，不像 parse 层有白名单兜底）。
 pub fn kind_from_tag(tag: &str) -> Result<NodeKind, String> {
     match tag {
-        "div" | "l-container" => Ok(NodeKind::Container),
+        "div" => Ok(NodeKind::Container),
         "button" => Ok(NodeKind::Button),
         "img" => Ok(NodeKind::Image { src: String::new() }),
         "span" => Ok(NodeKind::Text { content: String::new() }),
         other => Err(format!(
-            "unknown kind tag: {}（围栏白名单：div/l-container/button/img/span）",
+            "unknown kind tag: {}（围栏白名单：div/button/img/span）",
             other
         )),
     }
@@ -373,7 +373,6 @@ mod tests {
     #[test]
     fn kind_from_tag_maps_fence_whitelist() {
         assert!(matches!(kind_from_tag("div").unwrap(), NodeKind::Container));
-        assert!(matches!(kind_from_tag("l-container").unwrap(), NodeKind::Container));
         assert!(matches!(kind_from_tag("button").unwrap(), NodeKind::Button));
         assert!(matches!(kind_from_tag("img").unwrap(), NodeKind::Image { .. }));
         assert!(matches!(kind_from_tag("span").unwrap(), NodeKind::Text { .. }));
@@ -382,6 +381,7 @@ mod tests {
     #[test]
     fn kind_from_tag_unknown_returns_err() {
         assert!(kind_from_tag("ul").is_err());
+        assert!(kind_from_tag("l-container").is_err());  // 砍出围栏，与 div 同映射冗余
         assert!(kind_from_tag("").is_err());
     }
 
