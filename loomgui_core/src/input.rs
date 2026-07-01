@@ -582,7 +582,16 @@ impl PointerState {
                     if let Some(pane) = scrolling_pane {
                         if slot.grip_dragging {
                             // grip 拖拽：指针在 track 内的比例 → scroll_pos
-                            let lr = scene.get(pane).expect("live node").layout_rect;
+                            // 容器可能在拖拽中被 remove_node 删（动态树）：pane 不 live 时
+                            // 中断本次 grip 处理 + 清 scrolling_pane（防下帧再进此臂 panic）。
+                            let lr = match scene.get(pane) {
+                                Some(n) => n.layout_rect,
+                                None => {
+                                    slot.scrolling_pane = None;
+                                    slot.grip_dragging = false;
+                                    continue;
+                                }
+                            };
                             if let Some(s) = scene.scroll.get_mut(pane) {
                                 let pe = slot.last_pos;
                                 let min_thumb = crate::scroll::MIN_THUMB_SIZE;

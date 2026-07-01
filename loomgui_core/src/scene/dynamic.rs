@@ -222,6 +222,11 @@ pub fn remove_node(scene: &mut Scene, tweens: &mut TweenManager, id: NodeId) {
     scene.anim.clear_node(id);
     scene.scroll.remove(id);
     tweens.kill_node(id);
+    // 3b. focused_node 联动清：删焦点节点后 focused_node 不应悬空（否则 FOCUS_OUT 带 stale node_id）。
+    //     全局单一焦点，== Some(id) 检查对每个被删节点都做（递归删子时若子是焦点同样清）。
+    if scene.focused_node == Some(id) {
+        scene.focused_node = None;
+    }
     // 4. slotmap remove（gen++，旧 NodeId 失效，槽位可复用）。
     //    经 key_for(NodeId) 桥接到 DefaultKey（T2）。
     scene.nodes.remove(scene.key_for(id));
@@ -335,6 +340,38 @@ mod tests {
         remove_node(&mut scene, &mut tweens, child);
         assert!(scene.get(child).is_none());
         assert!(scene.get(root).is_some(), "root 仍在");
+    }
+
+    #[test]
+    fn remove_node_clears_focused_node() {
+        // Minor-1：删焦点节点后 focused_node 应联动清（防 FOCUS_OUT 带 stale node_id）。
+        let (mut scene, root, child, _grand) = build_3level();
+        let mut tweens = TweenManager::new();
+        scene.focused_node = Some(child);
+        remove_node(&mut scene, &mut tweens, child);
+        assert_eq!(scene.focused_node, None, "删焦点节点 → focused_node 清");
+        assert!(scene.get(child).is_none(), "child 已删");
+        assert!(scene.get(root).is_some(), "root 仍在");
+    }
+
+    #[test]
+    fn remove_node_keeps_focused_node_when_other_deleted() {
+        // 焦点是 root，删非焦点 child → focused_node 不变（指向 root 仍 live）。
+        let (mut scene, root, child, _grand) = build_3level();
+        let mut tweens = TweenManager::new();
+        scene.focused_node = Some(root);
+        remove_node(&mut scene, &mut tweens, child);
+        assert_eq!(scene.focused_node, Some(root), "删非焦点 → focused_node 不变");
+    }
+
+    #[test]
+    fn remove_node_recursion_clears_focused_child() {
+        // 递归删子时，若子是焦点也要清（root 删 → grand 是焦点 → focused_node 清）。
+        let (mut scene, root, _child, grand) = build_3level();
+        let mut tweens = TweenManager::new();
+        scene.focused_node = Some(grand);
+        remove_node(&mut scene, &mut tweens, root);
+        assert_eq!(scene.focused_node, None, "递归删焦点子 → focused_node 清");
     }
 
     #[test]
