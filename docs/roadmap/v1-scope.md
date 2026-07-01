@@ -54,6 +54,7 @@
 
 **元素**：`div`(Container) / `span`+裸文本(Text) / `img`(Image) / `button`(Button) / `l-container`(Container，与 div 同)。
 围栏外标签报错（不降级）。砍：`l-rich`/`input`/`l-graph`/`l-loader`/`l-movie`/`l-list`/`l-slider`/`l-combobox`/`l-tree`/`l-native`（v1.x）。v1 可滚动列表用 `div`+ScrollPane 手搓 item，**不做 `<l-list>` 虚拟化**。
+> `l-list`/`l-rich` **设计层不用**：虚拟列表（slot 复用/防花屏）和富文本（行内混排/多样式）是 runtime 行为，设计师用 `div`+`gap` 画 item 模板/纯文本占位即可，虚拟化和图文混排由代码层在 ScrollPane/文本测量上做。围栏不暴露这两个标签，AI 不知道就不会写。
 
 **CSS 布局**：`display:flex/none`、`flex-direction`、`flex-wrap`、`gap`、`row-gap`、`column-gap`、`justify-content`、`align-items`、`align-self`、`flex`(grow/shrink/basis)、`width/height/min/max`(px/%/auto)、`padding`、`margin`、`border-width`、`aspect-ratio`、`order`。
 砍：`position:absolute/fixed/sticky`（静默忽略，不脱离流）、`display:grid`（落 Flex）、`float`、`align-content`（换行行分布不可配，围栏文档须告知）（v1.x）。
@@ -93,7 +94,7 @@
 **Chrome 预览可信清单（防 AI 被预览骗）**：polyfill 只管视觉/状态自定义属性，管不了 LoomGUI 与浏览器的**布局语义分歧**。AI 须分清——
 - **可信**（Chrome ≈ LoomGUI）：flex 轴/方向、显式 `display:flex`、**`gap` 间距**、颜色、opacity、border、图片、px 尺寸、**`background-image`/`background-size`（标准 CSS，Chrome 原生渲染）**。
 - **不可信**（Chrome ≠ LoomGUI，别按预览调）：
-  - **裸 div 混排**：Chrome 行内流 vs LoomGUI 堆叠——但验证器会挡，AI 拿不到预览，须改用 `<l-rich>`。
+  - **裸 div 混排**：Chrome 行内流 vs LoomGUI 堆叠——验证器会挡（行内混排报错），AI 拿不到预览。改用 `div`/`span` 拆成块级，富文本图文混排由代码层处理（围栏不暴露 `l-rich`，见 §2 元素说明）。
   - **margin 控间距**：Chrome（block flow）折叠 margin、LoomGUI（flex）求和不折叠。**子项间距用 `gap`**，别用 margin（gap 两边一致）。
   - **文本换行/像素级**：Chrome 文本引擎 vs LoomGUI（unicode-linebreak），换行点/塞文本宽度会偏。调宽塞文本时别全信 Chrome。
 - **口径**：不可信项"信围栏规则，别信预览"。
