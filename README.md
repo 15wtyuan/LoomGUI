@@ -38,7 +38,7 @@ Unity 后端：用 Unity 6.5 打开 `loomgui_unity/`，PlayMode 加载 `.pkg.bin
 ## 文档
 
 - [文档总览](docs/README.md)
-- [主设计](docs/design/00-main-design.md) · [围栏权威](docs/design/fence.md) · [路线图](docs/roadmap/roadmap.md)
+- [主设计](docs/design/main-design.md) · [围栏权威](docs/design/fence.md) · [路线图](docs/roadmap/roadmap.md)
 
 ## 项目结构
 

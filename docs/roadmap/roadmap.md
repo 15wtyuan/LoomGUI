@@ -2,7 +2,7 @@
 
 > v1 架构验证完成（v1a-v1e + showcase + v1.1-v1.3+ 动态树，家里机验收坑 58-95 修复），桌面 Mono 可演示。
 > 本文是 **v1 全貌（已交付）+ v1 之后的三板块路线（v1.x 功能 / v other 编辑器 / v2 平台）+ v1.x/v2 机制草稿**。
-> 设计契约见 `docs/design/00-main-design.md`；围栏属性权威见 `docs/design/fence.md`。
+> 设计契约见 `docs/design/main-design.md`；围栏属性权威见 `docs/design/fence.md`。
 
 ---
 

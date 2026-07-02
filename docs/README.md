@@ -11,7 +11,7 @@
 
 ## 入口
 
-- **开发依据**：[`design/00-main-design.md`](design/00-main-design.md) —— 当前实现真相源
+- **开发依据**：[`design/main-design.md`](design/main-design.md) —— 当前实现真相源
 - **围栏属性**：[`design/fence.md`](design/fence.md) —— 权威清单（真相源 `fence_contract.rs` 测试）
 - **路线/范围/机制草稿**：[`roadmap/roadmap.md`](roadmap/roadmap.md)
 

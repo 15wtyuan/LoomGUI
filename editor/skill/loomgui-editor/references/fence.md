@@ -207,7 +207,7 @@
 |---|---|---|
 | editor 围栏规则（注入设计师工作区） | `editor/rules/claude/CLAUDE.md.tmpl` + `editor/skill/loomgui-editor/references/fence.md` | 围栏清单 + 预览可信清单（roadmap §1.3） |
 | v1 范围冻结 | `docs/roadmap/roadmap.md` §1.2 | 引用 fence.md + 标注 v1 冻结子集 / v1.x 扩展 |
-| 设计契约 | `docs/design/00-main-design.md` | 引用 fence.md 为围栏权威源 |
+| 设计契约 | `docs/design/main-design.md` | 引用 fence.md 为围栏权威源 |
 
 **同步规则**：改 fence.md → 检查三处消费者是否需同步。editor 的 CLAUDE.md.tmpl 是注入给设计师的，过时会让 AI 生成违规 UI，优先同步。
 
