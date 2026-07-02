@@ -760,6 +760,39 @@ mod abi_tests {
     use super::*;
     use std::ffi::CString;
 
+    /// T1 桥接辅助：把单 scene → v1.4-a 单组件 pkg（兼容旧 FFI 测试）。
+    /// 旧 write_package(scene, root_size, atlas, dynamic) 已改签名为 write_package(PackageInput)。
+    /// Task 7 会重写这些 FFI 测试（资源池 + instantiate 模型）。
+    fn scene_to_pkg(scene: &loomgui_core::scene::Scene) -> Vec<u8> {
+        use loomgui_core::asset::{PackageInput, TemplateNode};
+        use loomgui_core::scene::NodeId;
+        let pos_of: std::collections::HashMap<NodeId, usize> = scene
+            .nodes
+            .values()
+            .enumerate()
+            .map(|(i, n)| (n.id, i))
+            .collect();
+        let nodes: Vec<TemplateNode> = scene
+            .nodes
+            .values()
+            .map(|n| TemplateNode {
+                kind: n.kind.clone(),
+                style: n.style.clone(),
+                parent_idx: n.parent.map(|p| pos_of[&p]),
+                classes: n.classes.clone(),
+                id_attr: n.id_attr.clone(),
+                draggable: n.draggable,
+                tabindex: n.tabindex,
+            })
+            .collect();
+        let rules = loomgui_core::style::dynamic::DynamicRuleTable::default();
+        let input = PackageInput {
+            components: vec![("scene", nodes.as_slice(), &rules)],
+            asset_manifest: &[],
+        };
+        loomgui_core::asset::write_package(&input)
+    }
+
     /// 字体路径：CARGO_MANIFEST_DIR = loomgui_ffi_c/，字体在
     /// ../loomgui_core/tests/fixtures/DejaVuSans.ttf（仓库内测试字体）。
     fn font_path() -> (CString, usize) {
@@ -806,7 +839,6 @@ mod abi_tests {
     /// 与 load_html 路径解耦（parse feature off 时仍可用）。
     #[test]
     fn load_package_builds_blob_from_package() {
-        use loomgui_core::asset::write_package;
         use loomgui_core::scene::{NodeKind, Scene};
         use loomgui_core::style::resolved::ResolvedStyle;
         let (fp, fplen) = font_path();
@@ -815,7 +847,7 @@ mod abi_tests {
             (None, NodeKind::Container, ResolvedStyle::default(), Vec::new(), None, false, None),
             (Some(0), NodeKind::Text { content: "hi".into() }, ResolvedStyle::default(), Vec::new(), None, false, None),
         ];
-        let pkg = write_package(&Scene::build(&entries), (100.0, 50.0), &loomgui_core::asset::AtlasSection::default(), &loomgui_core::style::dynamic::DynamicRuleTable::default());
+        let pkg = scene_to_pkg(&Scene::build(&entries));
 
         let h = loomgui_stage_new(fp.as_ptr() as *const u8, fplen, 100.0, 50.0);
         assert!(!h.is_null());
@@ -842,46 +874,14 @@ mod abi_tests {
         loomgui_stage_free(h);
     }
 
-    /// atlas_count/atlas_info：手搓含 atlas 的包 → load_package → 读 atlas 元数据。
-    /// 契约：atlas_info 返 String::as_ptr（无尾 NUL）+ *out_src_len=字节长，
-    /// 故用 slice::from_raw_parts + from_utf8 读，不能用 CStr（String 无 trailing \0）。
-    /// *out_tex_id = atlas index + 1（atlas[0]→tex_id 1，build_registry 同约定）。
+    /// atlas_count/atlas_info：v1.4-a 把图集移出 pkg（D8 图集归 Unity Sprite Atlas），
+    /// load_package 不再填 stage.atlases。本测验证的"包→atlas→stage"链路已断。
+    /// **ignore**：Task 7/8 删 atlas FFI（loomgui_stage_atlas_count/info）+ 本测时一并清。
     #[test]
+    #[ignore = "v1.4-a: pkg 不再带 atlas（图集归 Unity）；Task 7/8 删 atlas FFI + 本测"]
     fn atlas_count_and_info_round_trip() {
-        use loomgui_core::asset::{write_package, AtlasInfo, AtlasSection, AtlasSprite};
-        use loomgui_core::scene::{NodeKind, Scene};
-        use loomgui_core::style::resolved::ResolvedStyle;
-        let (fp, fplen) = font_path();
-        let entries: Vec<(Option<usize>, NodeKind, ResolvedStyle, Vec<String>, Option<String>, bool, Option<i32>)> = vec![
-            (None, NodeKind::Container, ResolvedStyle::default(), Vec::new(), None, false, None),
-            (Some(0), NodeKind::Image { src: "a.png".into() }, ResolvedStyle::default(), Vec::new(), None, false, None),
-            (Some(0), NodeKind::Image { src: "b.png".into() }, ResolvedStyle::default(), Vec::new(), None, false, None),
-        ];
-        let atlas = AtlasSection {
-            atlases: vec![AtlasInfo { filename: "loom.atlas.png".into(), width: 512, height: 256 }],
-            sprites: vec![
-                AtlasSprite { src: "a.png".into(), x: 0, y: 0, w: 64, h: 32 },
-                AtlasSprite { src: "b.png".into(), x: 64, y: 0, w: 100, h: 200 },
-            ],
-        };
-        let pkg = write_package(&Scene::build(&entries), (100.0, 50.0), &atlas, &loomgui_core::style::dynamic::DynamicRuleTable::default());
-
-        let h = loomgui_stage_new(fp.as_ptr() as *const u8, fplen, 100.0, 50.0);
-        assert!(!h.is_null());
-        assert_eq!(loomgui_stage_load_package(h, pkg.as_ptr(), pkg.len()), 0);
-
-        assert_eq!(loomgui_stage_atlas_count(h), 1);
-        let mut tid = 0u32; let mut w = 0u32; let mut hh = 0u32; let mut slen = 0usize;
-        let p = loomgui_stage_atlas_info(h, 0, &mut tid, &mut w, &mut hh, &mut slen);
-        assert!(!p.is_null());
-        assert_eq!(tid, 1, "atlas[0] → tex_id 1");
-        assert_eq!((w, hh), (512, 256));
-        let fname = unsafe { std::str::from_utf8(std::slice::from_raw_parts(p, slen)).unwrap() };
-        assert_eq!(fname, "loom.atlas.png");
-        // OOB → null
-        assert!(loomgui_stage_atlas_info(h, 99, &mut tid, &mut w, &mut hh, &mut slen).is_null());
-
-        loomgui_stage_free(h);
+        // 占位：原验证 pkg 带 atlas → load_package → atlas FFI 读元数据。
+        // 新格式无 atlas 段，assertion 不可达；保留 fn 体防 dead_code 警告，待 T7/8 删。
     }
 
     /// set_input → tick → borrow_events：装载按钮 + Move 到 (50,25) 应产 RollOver。
@@ -940,19 +940,12 @@ mod abi_tests {
     fn is_pointer_on_ui_true_on_hit_false_on_miss() {
         use loomgui_core::input::{PointerEvent, PointerKind};
         use loomgui_core::scene::{NodeKind, Scene};
-        use loomgui_core::style::dynamic::DynamicRuleTable;
         use loomgui_core::style::resolved::ResolvedStyle;
-        use loomgui_core::asset::{write_package, AtlasSection};
         let (fp, fplen) = font_path();
         let h = loomgui_stage_new(fp.as_ptr() as *const u8, fplen, 200.0, 100.0);
         // 手搓空 scene（单根 Container），不走 parse
         let entries: Vec<(Option<usize>, NodeKind, ResolvedStyle, Vec<String>, Option<String>, bool, Option<i32>)> = vec![(None, NodeKind::Container, ResolvedStyle::default(), Vec::new(), None, false, None)];
-        let pkg = write_package(
-            &Scene::build(&entries),
-            (200.0, 100.0),
-            &AtlasSection::default(),
-            &DynamicRuleTable::default(),
-        );
+        let pkg = scene_to_pkg(&Scene::build(&entries));
         loomgui_stage_load_package(h, pkg.as_ptr(), pkg.len());
         // 命中根 (100,50)——根不算 UI → is_pointer_on_ui=false
         let ev = PointerEvent { kind: PointerKind::Move, x: 100.0, y: 50.0, button: 0, pad: [0, 0], touch_id: -1 };
@@ -1069,16 +1062,15 @@ mod abi_tests {
     /// node_parent 契约：child.parent==root；root.parent==sentinel；OOB==sentinel。
     #[test]
     fn node_parent_returns_chain_and_sentinel() {
-        use loomgui_core::asset::{write_package, AtlasSection};
         use loomgui_core::scene::{NodeKind, Scene};
-        use loomgui_core::style::{resolved::ResolvedStyle, dynamic::DynamicRuleTable};
+        use loomgui_core::style::resolved::ResolvedStyle;
         let (fp, fplen) = font_path();
         // root/child 各带 id_attr → find_node_by_id 解析 slotmap 分配的 NodeId（u32 打包值）
         let entries: Vec<(Option<usize>, NodeKind, ResolvedStyle, Vec<String>, Option<String>, bool, Option<i32>)> = vec![
             (None, NodeKind::Container, ResolvedStyle::default(), Vec::new(), Some("root".to_string()), false, None),
             (Some(0), NodeKind::Container, ResolvedStyle::default(), Vec::new(), Some("child".to_string()), false, None),
         ];
-        let pkg = write_package(&Scene::build(&entries), (100.0, 50.0), &AtlasSection::default(), &DynamicRuleTable::default());
+        let pkg = scene_to_pkg(&Scene::build(&entries));
         let h = loomgui_stage_new(fp.as_ptr() as *const u8, fplen, 100.0, 50.0);
         assert!(!h.is_null());
         assert_eq!(loomgui_stage_load_package(h, pkg.as_ptr(), pkg.len()), 0);
@@ -1102,16 +1094,15 @@ mod abi_tests {
     /// 无匹配 → sentinel。照 node_parent 测用包路径（不走 parse）。
     #[test]
     fn find_node_by_id_round_trip() {
-        use loomgui_core::asset::{write_package, AtlasSection};
         use loomgui_core::scene::{NodeKind, Scene};
-        use loomgui_core::style::{resolved::ResolvedStyle, dynamic::DynamicRuleTable};
+        use loomgui_core::style::resolved::ResolvedStyle;
         let (fp, fplen) = font_path();
         let entries: Vec<(Option<usize>, NodeKind, ResolvedStyle, Vec<String>, Option<String>, bool, Option<i32>)> = vec![
             (None, NodeKind::Container, ResolvedStyle::default(), Vec::new(), None, false, None),
             (Some(0), NodeKind::Button, ResolvedStyle::default(), Vec::new(), Some("ok".to_string()), false, None),
             (Some(1), NodeKind::Text { content: "OK".into() }, ResolvedStyle::default(), Vec::new(), None, false, None),
         ];
-        let pkg = write_package(&Scene::build(&entries), (100.0, 50.0), &AtlasSection::default(), &DynamicRuleTable::default());
+        let pkg = scene_to_pkg(&Scene::build(&entries));
         let h = loomgui_stage_new(fp.as_ptr() as *const u8, fplen, 100.0, 50.0);
         assert!(!h.is_null());
         assert_eq!(loomgui_stage_load_package(h, pkg.as_ptr(), pkg.len()), 0);
@@ -1454,7 +1445,6 @@ mod abi_tests {
     #[cfg(feature = "parse")]
     #[test]
     fn ffi_set_scroll_pos_round_trip() {
-        use loomgui_core::scene::NodeId;
         let (fp, fplen) = font_path();
         let h = loomgui_stage_new(fp.as_ptr() as *const u8, fplen, 200.0, 100.0);
         let html = b"<div class=\"scroll\"></div>";
@@ -1490,15 +1480,14 @@ mod abi_tests {
     ///       remove_child 摘子 → remove_node 删根。每步断言返回值契约。
     #[test]
     fn dynamic_tree_api_ffi_round_trip() {
-        use loomgui_core::asset::{write_package, AtlasSection};
         use loomgui_core::scene::{NodeKind, Scene};
-        use loomgui_core::style::{resolved::ResolvedStyle, dynamic::DynamicRuleTable};
+        use loomgui_core::style::resolved::ResolvedStyle;
         let (fp, fplen) = font_path();
         // 初始 scene：单根 Container（load_package 建初始 scene，供后续动态 API 操作）
         let entries: Vec<(Option<usize>, NodeKind, ResolvedStyle, Vec<String>, Option<String>, bool, Option<i32>)> = vec![
             (None, NodeKind::Container, ResolvedStyle::default(), Vec::new(), None, false, None),
         ];
-        let pkg = write_package(&Scene::build(&entries), (200.0, 100.0), &AtlasSection::default(), &DynamicRuleTable::default());
+        let pkg = scene_to_pkg(&Scene::build(&entries));
         let h = loomgui_stage_new(fp.as_ptr() as *const u8, fplen, 200.0, 100.0);
         assert!(!h.is_null());
         assert_eq!(loomgui_stage_load_package(h, pkg.as_ptr(), pkg.len()), 0);

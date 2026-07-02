@@ -1,9 +1,15 @@
 //! 打包器库：HTML+CSS+散图 → .pkg.bin + atlas.png。
 //! 复用 core parse/style/scene + asset::write_package；新加 image crate 解码/编码 PNG + shelf 打包。
 
-use loomgui_core::asset::{AtlasInfo, AtlasSection, AtlasSprite};
+use loomgui_core::asset::{AtlasInfo, AtlasSection, AtlasSprite, PackageInput, TemplateNode};
+use loomgui_core::scene::NodeId;
 use std::io::Cursor;
 use std::path::Path;
+
+/// T1 桥接辅助：把单 scene + dynamic 打成 v1.4-a 单组件 pkg。
+/// 旧 write_package(scene, root_size, atlas, dynamic) 已改签名为 write_package(PackageInput)；
+/// root_size/atlas 已从新格式砍掉（D9 归 Stage / D8 图集归 Unity）。
+/// image srcs 进 asset_manifest（供 Unity Sprite Atlas 校验）。Task 3 会重写本打包器为多 HTML。
 
 /// 打包产物：.pkg.bin bytes + atlas.png bytes + atlas 相对文件名（写进 .pkg.bin header）。
 #[derive(Debug)]
@@ -23,6 +29,38 @@ struct PlacedSprite {
     h: u32,
 }
 
+/// T1 桥接：scene + dynamic + image srcs → v1.4-a 单组件 pkg bytes。
+fn scene_to_pkg(
+    scene: &loomgui_core::scene::Scene,
+    dynamic: &loomgui_core::style::dynamic::DynamicRuleTable,
+    asset_manifest: &[String],
+) -> Vec<u8> {
+    let pos_of: std::collections::HashMap<NodeId, usize> = scene
+        .nodes
+        .values()
+        .enumerate()
+        .map(|(i, n)| (n.id, i))
+        .collect();
+    let nodes: Vec<TemplateNode> = scene
+        .nodes
+        .values()
+        .map(|n| TemplateNode {
+            kind: n.kind.clone(),
+            style: n.style.clone(),
+            parent_idx: n.parent.map(|p| pos_of[&p]),
+            classes: n.classes.clone(),
+            id_attr: n.id_attr.clone(),
+            draggable: n.draggable,
+            tabindex: n.tabindex,
+        })
+        .collect();
+    let input = PackageInput {
+        components: vec![("scene", nodes.as_slice(), dynamic)],
+        asset_manifest,
+    };
+    loomgui_core::asset::write_package(&input)
+}
+
 /// 把 HTML+CSS+res_dir 下散图打成 .pkg.bin + atlas.png。
 /// res_dir = 解析 `<img src>` 的基准目录（CLI 传 html_path.parent()）。
 /// 无图 → 空 atlas（atlas_count=0，pkg.bin 仍可读，runtime 跳过 atlas 加载）。
@@ -30,7 +68,7 @@ struct PlacedSprite {
 fn pack_inner(
     html: &str,
     css: &str,
-    root_size: (f32, f32),
+    _root_size: (f32, f32), // v1.4-a：root_size 归 Stage（D9），pkg 不再带。Task 3 重写打包器时移除参数。
     res_dir: &Path,
     atlas_name: &str,
 ) -> Result<PackedPackage, String> {
@@ -61,7 +99,7 @@ fn pack_inner(
 
     // 2. 无图 → 空 atlas。
     if srcs.is_empty() {
-        let pkg = loomgui_core::asset::write_package(&scene, root_size, &AtlasSection::default(), &dynamic_rules);
+        let pkg = scene_to_pkg(&scene, &dynamic_rules, &srcs);
         return Ok(PackedPackage {
             pkg_bytes: pkg,
             atlas_png: Vec::new(),
@@ -112,8 +150,9 @@ fn pack_inner(
         .write_to(&mut Cursor::new(&mut png_bytes), image::ImageFormat::Png)
         .map_err(|e| format!("encode atlas png: {e}"))?;
 
-    // 7. AtlasSection + write_package。
-    let atlas_section = AtlasSection {
+    // 7. v1.4-a：pkg 不再带 atlas（图集归 Unity）。atlas_section 仅用于本过渡期产物
+    //    （atlas.png 仍输出供旧 Unity 路径；Task 3 砍 atlas 改 path 归一化）。
+    let _atlas_section = AtlasSection {
         atlases: vec![AtlasInfo {
             filename: atlas_name.into(),
             width: atlas_w,
@@ -130,7 +169,7 @@ fn pack_inner(
             })
             .collect(),
     };
-    let pkg = loomgui_core::asset::write_package(&scene, root_size, &atlas_section, &dynamic_rules);
+    let pkg = scene_to_pkg(&scene, &dynamic_rules, &srcs);
 
     Ok(PackedPackage {
         pkg_bytes: pkg,

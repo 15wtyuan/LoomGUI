@@ -90,21 +90,47 @@ impl Stage {
         Ok(())
     }
 
-    /// 从二进制包加载：read_package → self.scene + root_size（用包 header 的）。
-    /// 与 `load_inline` 二选一设 scene；后续 tick_and_render 不变。不需 parse feature。
+    /// 从二进制包加载（v1.4-a 多组件格式）。
     ///
-    /// read_package 解出 AtlasSection → build_registry 建 TextureRegistry
-    /// （atlas[0]→tex_id 1，sprite UV 来自 AtlasSprite），atlas 表存 self.atlases。
+    /// **T1 临时桥接**：v1.4-a 把 pkg 改成多组件资源池，`Stage::load_package` 的最终语义是
+    /// "进资源池不建 scene"（spec §4.2）。但那是 Task 4 的工作（packages 字段 + 砍 textures/
+    /// atlases/load_inline）。本 task（T1）只改 pkg 格式，stage 侧保持编译通过 + 旧 scene 语义：
+    /// 读 Package → 取首个组件建 scene（单组件包兼容旧测试）。root_size 不再在 pkg header（D9），
+    /// 沿用 self.root_size。Task 4 会重写本方法为资源池模型。
     pub fn load_package(&mut self, bytes: &[u8]) -> Result<(), String> {
-        let (scene, root_size, atlas_section) =
-            crate::asset::read_package(bytes).map_err(|e| e.to_string())?;
-        self.textures = crate::asset::build_registry(&atlas_section);
-        self.atlases = atlas_section.atlases;
+        let pkg = crate::asset::read_package(bytes).map_err(|e| e.to_string())?;
+        // 单组件包：取首个组件建 scene（兼容旧 load_package 测试）。
+        // 多组件包：v1.4-a 资源池语义，Task 4 改。
+        let comp = pkg
+            .components
+            .values()
+            .next()
+            .ok_or_else(|| "package has no components".to_string())?;
+        let entries: Vec<_> = comp
+            .nodes
+            .iter()
+            .map(|tn| {
+                (
+                    tn.parent_idx,
+                    tn.kind.clone(),
+                    tn.style.clone(),
+                    tn.classes.clone(),
+                    tn.id_attr.clone(),
+                    tn.draggable,
+                    tn.tabindex,
+                )
+            })
+            .collect();
+        let mut scene = crate::scene::Scene::build(&entries);
+        scene.dynamic_rules = comp.dynamic_rules.clone();
         self.tweens.clear();   // 旧 tween 指向失效 node_id，随 scene 重建清空
         if let Some(s) = self.scene.as_mut() { s.scroll.clear(); }   // 旧 scroll 槽随 scene 重建清空（防悬空 NodeId）
         self.prev_node_hashes.clear();   // 旧 hash 基线随 scene 重建失效（防 NodeId 错位）
         self.scene = Some(scene);
-        self.root_size = root_size;
+        // root_size 不再在 pkg header（D9 归 Stage），沿用 self.root_size 不变。
+        // textures/atlases 清空（图集归 Unity，Task 4 删这俩字段；此处保持旧 clear 语义避免悬空）。
+        self.textures.clear();
+        self.atlases.clear();
         Ok(())
     }
 
@@ -386,6 +412,39 @@ impl Stage {
 #[cfg(all(test, feature = "parse"))]
 mod tests {
     use super::*;
+    use crate::asset::{PackageInput, TemplateNode};
+    use crate::scene::NodeId;
+
+    /// T1 桥接辅助：把单 scene + dynamic 打成 v1.4-a 单组件 pkg（兼容旧 stage 测试）。
+    /// 旧 write_package(scene, root_size, atlas, dynamic) 已改签名为 write_package(PackageInput)；
+    /// 这里把 scene 平铺成 TemplateNode[] 单组件喂入。root_size/atlas 已从新格式砍掉（D9/D8）。
+    /// Task 4 会重写这些测试为资源池 + instantiate 模型。
+    fn scene_to_pkg(scene: &crate::scene::Scene, dynamic: &crate::style::dynamic::DynamicRuleTable) -> Vec<u8> {
+        let pos_of: std::collections::HashMap<NodeId, usize> = scene
+            .nodes
+            .values()
+            .enumerate()
+            .map(|(i, n)| (n.id, i))
+            .collect();
+        let nodes: Vec<TemplateNode> = scene
+            .nodes
+            .values()
+            .map(|n| TemplateNode {
+                kind: n.kind.clone(),
+                style: n.style.clone(),
+                parent_idx: n.parent.map(|p| pos_of[&p]),
+                classes: n.classes.clone(),
+                id_attr: n.id_attr.clone(),
+                draggable: n.draggable,
+                tabindex: n.tabindex,
+            })
+            .collect();
+        let input = PackageInput {
+            components: vec![("scene", nodes.as_slice(), dynamic)],
+            asset_manifest: &[],
+        };
+        crate::asset::write_package(&input)
+    }
 
     /// 黄金等价（最强门）：inline 渲染 == 包渲染。
     /// fixture（div + 文本 + img + rect mask）经 pkg→load_package→render_json
@@ -409,7 +468,7 @@ mod tests {
         // 不走 build_registry 路径，故传空 atlas section；包路径 load_package 时 build_registry
         // 建空 registry，再手工 insert 覆盖为真实 tex_id，与 inline 路径对齐）
         let scene = s_inline.scene.as_ref().unwrap();
-        let pkg = crate::asset::write_package(scene, (200.0, 100.0), &crate::asset::AtlasSection::default(), &crate::style::dynamic::DynamicRuleTable::default());
+        let pkg = scene_to_pkg(scene, &crate::style::dynamic::DynamicRuleTable::default());
 
         // 包路径（新 Stage，同字体，同纹理注册）
         let mut s_pkg = Stage::new(font_path, (200.0, 100.0)).unwrap();
@@ -433,7 +492,7 @@ mod tests {
         let scene = s.scene.as_ref().unwrap().clone();
         let sheet = crate::parse::css::parse_css(css).unwrap();
         let dynamic = crate::asset::extract_dynamic_rules(&sheet);
-        let pkg = crate::asset::write_package(&scene, (200.0, 100.0), &crate::asset::AtlasSection::default(), &dynamic);
+        let pkg = scene_to_pkg(&scene, &dynamic);
         let mut s2 = Stage::new(font_path, (200.0, 100.0)).unwrap();
         s2.load_package(&pkg).unwrap();
         // 预热 tick：compute_world_transforms 在 process/scroll 后跑，hit_test 读上帧 world_transforms
@@ -461,7 +520,7 @@ mod tests {
         let mut s = Stage::new(font_path, (200.0, 100.0)).unwrap();
         s.load_inline(html, css).unwrap();
         let scene = s.scene.as_ref().unwrap().clone();
-        let pkg = crate::asset::write_package(&scene, (200.0, 100.0), &crate::asset::AtlasSection::default(), &crate::style::dynamic::DynamicRuleTable::default());
+        let pkg = scene_to_pkg(&scene, &crate::style::dynamic::DynamicRuleTable::default());
         let mut s2 = Stage::new(font_path, (200.0, 100.0)).unwrap();
         s2.load_package(&pkg).unwrap();
         // btn = root 的首个子（root=Container, btn=Button, btn 的 Text 子）
