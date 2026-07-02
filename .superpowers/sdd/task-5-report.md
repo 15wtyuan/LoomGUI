@@ -84,3 +84,24 @@ instantiate 伪类规则去重需选择器相等比较。给三个结构 derive 
 
 ## 结论
 T5 完成。instantiate 克隆组件子树进 scene + 伪类规则合并去重，3 个 T4 ignore 测试重写恢复（黄金等价 + hover + disabled），492 core 测试全过，ignored 9→6（FFI 6 留 T7）。零回归。
+
+---
+
+## Review Fix：多实例 :hover 独立性受测化（Important-2）
+
+**发现**：review 指出 `instantiate_multi_instance_independent` 只验结构独立（NodeId 不同 / child 不串），`:hover` 行为独立是设计推断（spec §4.4 "dynamic_rules 按 class 匹配、多实例共享；hit_test 返具体 NodeId → 各实例独立 :hover"），非受测事实。防 rematch 串状态回归缺直接测试。
+
+**修复**：新增 `instantiate_multi_instance_hover_independent`（stage.rs `instantiate_tests`，`#[cfg(feature = "parse")]`）：
+1. 建 pkg：comp1 = Container(div 100x50) → Button.btn(100x50, 灰底 #cccccc) + `.btn:hover { background-color:#0000ff }` 规则。
+2. `create_root`(div 400x200) 作唯一 scene_root → `instantiate` 两次 → `append_child` 都挂 scene_root 下（块流纵向堆叠；layout solve 仅 roots[0] 下沉，两实例必须挂同一根子树才被布局）。
+3. warmup tick（hit_test 读上帧 world_transforms，1 帧延迟语义）。
+4. 校验两 btn world_transform 分离（y2-y1 ≥ 40，无几何重叠 → 命中不串）。
+5. 校验 hover 前两 btn 都是灰底（基线一致）。
+6. Move 到 (50,25)——落 btn1 几何 (0,0)-(100,50) 内、btn2(y≈50) 外。
+7. tick → **断言 btn1 变蓝 [0,0,1,1]（hover 命中 + rematch），btn2 保持灰 [0.8,0.8,0.8,1.0]（无 cross-talk），两者 background_color 不等**。
+
+**结果**：测试通过——`:hover` 独立性确认为受测事实，无串状态 bug。设计契约（共享规则 + hit_test 返具体 NodeId → 各实例独立伪类）成立。
+
+**回归**：core 测试 492→493，workspace ignored 仍 6（loomgui_ffi_c T7 FFI 留待）。零回归。
+
+**commit**：`3ac7a92` test(stage): 多实例 instantiate :hover 独立性（防 rematch 串状态回归）
