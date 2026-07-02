@@ -216,7 +216,7 @@ namespace LoomGUI
         // 调用方：用返回的 NodeId 句柄，勿硬编码 0（slotmap idx 从 1 起 → 首节点 NodeId 非 0）。
         // 前置：须先 CreateRoot 建 scene（create_node 等需 self.scene Some）。
 
-        /// 建根节点并设为 roots[0]。kind ∈ {div/l-container/button/img/span}；css = "w:100px;..."。
+        /// 建根节点并设为 roots[0]。kind ∈ {div/button/img/span}；css = "w:100px;..."。
         /// 返 NodeId；0xFFFF_FFFF = 失败（无 scene / 未知 kind）。
         public uint CreateRoot(string kind, string css)
         {
