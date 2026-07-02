@@ -213,16 +213,40 @@ impl Stage {
 
     // ---- T6 动态建树 API（转调 scene::dynamic） ----
 
+    /// scene 不存在则建空骨架（首次 create_root/create_node 调用时初始化）。
+    /// spec §4.2：scene 初始由 create_root 建（load_package 不建 scene）。
+    /// 多次调用幂等（已存在 scene → no-op）。`pub(crate)` 供集成测试直接初始化场景
+    /// （如黄金等价测试需 instantiate 后把孤立根 push 进 scene.roots，不套额外 stage_root）。
+    pub(crate) fn ensure_scene(&mut self) {
+        if self.scene.is_none() {
+            self.scene = Some(crate::scene::node::Scene {
+                roots: vec![],
+                nodes: slotmap::SlotMap::with_key(),
+                dynamic_rules: Default::default(),
+                focused_node: None,
+                world_transforms: Vec::new(),
+                anim: Default::default(),
+                scroll: Default::default(),
+                text_layouts: Vec::new(),
+            });
+            self.prev_node_hashes.clear(); // 新 scene → 无基线，下帧全 dirty
+        }
+    }
+
     /// 建根节点：create_node + roots.push(id)。返回新 NodeId。
+    /// scene 不存在则首次调用建空骨架（spec：scene 初始由 create_root 建）。
     pub fn create_root(&mut self, kind: &str, css: &str) -> Result<NodeId, String> {
-        let scene = self.scene.as_mut().ok_or("no scene")?;
+        self.ensure_scene();
+        let scene = self.scene.as_mut().unwrap();
         crate::scene::dynamic::create_root(scene, kind, css)
     }
 
     /// 建节点（不挂父）：kind_from_tag + apply_css 填 base_style + slotmap insert。
     /// 返回新 NodeId，需配合 append_child/insert_before 挂到树。
+    /// scene 不存在则首次调用建空骨架。
     pub fn create_node(&mut self, kind: &str, css: &str) -> Result<NodeId, String> {
-        let scene = self.scene.as_mut().ok_or("no scene")?;
+        self.ensure_scene();
+        let scene = self.scene.as_mut().unwrap();
         crate::scene::dynamic::create_node(scene, kind, css)
     }
 
@@ -264,6 +288,75 @@ impl Stage {
     /// 改 base_style（apply_css）+ 标 dirty_mesh。下帧 rematch 从 base 重算 style。
     pub fn set_style(&mut self, node: NodeId, css: &str) -> Result<(), String> {
         crate::scene::dynamic::set_style(self.scene.as_mut().ok_or("no scene")?, node, css)
+    }
+
+    /// 从包克隆一个组件进当前 scene，返回组件根 NodeId（孤立，parent=None，调用方 append_child 挂载）。
+    ///
+    /// v1.4-a T5（spec §4.2/§4.4）：
+    /// 1. 查 `packages[pkg].components[component]`，clone 出 ComponentTemplate（避开 packages/scene 双借）。
+    /// 2. 遍历 template.nodes，按 parent_idx 序建 live Node（父先建于子），复用 v1.3+ 节点构造
+    ///    （`create_node_from_template`：kind + baked style → base_style/style 初始 + clip_rect +
+    ///    dirty_text + slotmap insert + id 回填），再填 classes/id_attr/draggable/tabindex。
+    ///    按 parent_idx 串子树（append_child 语义：parent.children.push + child.parent=Some(parent)）。
+    ///    根（parent_idx=None）不串父，记录返回。
+    /// 3. 伪类规则合并去重：遍历 template.dynamic_rules，相同选择器（ParsedSelector.eq）不重复加进
+    ///    scene.dynamic_rules。规则按 class 匹配，多实例共享；hit_test 返具体 NodeId → 各实例独立 :hover。
+    /// 4. scene 必须已存在（create_root 建过），否则 Err。
+    ///
+    /// 多实例独立：同组件多次 instantiate → 各自独立子树（NodeId 不同）+ 各自独立事件/伪类命中。
+    /// id_attr 多实例约定限制：find_node_by_id 返首个匹配（不做核心 id 去重，YAGNI）。
+    pub fn instantiate(&mut self, pkg: &str, component: &str) -> Result<NodeId, String> {
+        let scene = self.scene.as_mut().ok_or("no scene (create_root first)")?;
+        // clone 出 template 避开 packages + scene 双借（packages 在 self 上，scene 也在 self 上）。
+        let template = self
+            .packages
+            .get(pkg)
+            .and_then(|p| p.components.get(component))
+            .cloned()
+            .ok_or_else(|| format!("component `{component}` not in pkg `{pkg}`"))?;
+
+        // 遍历 template.nodes 建树（父先建于子——parent_idx < i 由打包器/读保证）。
+        // id_map[模板 idx] = live NodeId（slotmap 分配）。
+        let mut id_map: Vec<Option<NodeId>> = vec![None; template.nodes.len()];
+        let mut root_id: Option<NodeId> = None;
+        for (i, tn) in template.nodes.iter().enumerate() {
+            let node_id = crate::scene::dynamic::create_node_from_template(
+                scene,
+                tn.kind.clone(),
+                tn.style.clone(),
+            );
+            // 填 classes/id_attr/draggable/tabindex（create_node_from_template 不填这些，同 create_node）
+            let n = scene.get_mut(node_id).unwrap();
+            n.classes = tn.classes.clone();
+            n.id_attr = tn.id_attr.clone();
+            n.draggable = tn.draggable;
+            n.tabindex = tn.tabindex;
+            id_map[i] = Some(node_id);
+            // 按 parent_idx 串子树（根 parent_idx=None 不串）
+            if let Some(pidx) = tn.parent_idx {
+                let parent = id_map[pidx].expect("parent built before child (parent_idx < i)");
+                scene.get_mut(parent).unwrap().children.push(node_id);
+                scene.get_mut(node_id).unwrap().parent = Some(parent);
+            } else {
+                // 组件根（parent_idx=None）——记录返回（多根取最后一个，spec 约定单根组件）
+                root_id = Some(node_id);
+            }
+        }
+        let root = root_id.ok_or("component has no root node (parent_idx=None missing)")?;
+
+        // 伪类规则合并去重：相同选择器（ParsedSelector PartialEq）不重复加。
+        // 规则按 class 匹配，多实例共享同一规则条目；hit_test 返具体 NodeId → 各实例独立命中。
+        for rule in &template.dynamic_rules.rules {
+            let dup = scene
+                .dynamic_rules
+                .rules
+                .iter()
+                .any(|r| r.selector == rule.selector);
+            if !dup {
+                scene.dynamic_rules.rules.push(rule.clone());
+            }
+        }
+        Ok(root)
     }
 
     /// 测试 helper：建空 scene 的 Stage（不依赖 parse feature）。
@@ -378,14 +471,110 @@ impl Stage {
 #[cfg(all(test, feature = "parse"))]
 mod tests {
     use super::*;
+    use crate::asset::{PackageInput, TemplateNode};
+    use crate::parse::dom::{ElementId, ElementTree};
+    use crate::scene::NodeKind;
+    use crate::style::resolved::ResolvedStyle;
+
+    /// 测试辅助：从 inline HTML+CSS 抽出 ComponentTemplate 数据（nodes + dynamic_rules），
+    /// 模仿 loomgui_pkg 打包器的提取逻辑（gather_rec 同构：tag→kind、resolve_styles 烘焙 style、
+    /// classes/id/draggable/tabindex 从 ElementData 取）。供黄金等价测试把 inline 场景序列化成包。
+    ///
+    /// 约定：整棵 inline 树打包成一个名为 "scene" 的组件（nodes[0]=根，parent_idx=None）。
+    fn gather_template_nodes(
+        tree: &ElementTree,
+        styles: &[ResolvedStyle],
+        el_id: ElementId,
+        parent_idx: Option<usize>,
+        out: &mut Vec<TemplateNode>,
+    ) {
+        let el = &tree.nodes[el_id.0];
+        let style = &styles[el_id.0];
+        let mut kind = crate::scene::dynamic::kind_from_tag(&el.tag)
+            .unwrap_or_else(|_| unreachable!("parse 层白名单已挡围栏外 tag"));
+        match &mut kind {
+            NodeKind::Image { src } => {
+                *src = el.attrs.get("src").cloned().unwrap_or_default();
+            }
+            NodeKind::Text { content } => {
+                *content = el.text.clone().unwrap_or_default();
+            }
+            _ => {}
+        }
+        let draggable = el.attrs.get("draggable").map(|v| v == "true").unwrap_or(false);
+        let tabindex = el.attrs.get("tabindex").and_then(|v| v.parse::<i32>().ok());
+        let my_idx = out.len();
+        out.push(TemplateNode {
+            kind: kind.clone(),
+            style: style.clone(),
+            parent_idx,
+            classes: el.classes.clone(),
+            id_attr: el.id.clone(),
+            draggable,
+            tabindex,
+        });
+        // Container/Button 的裸文本 → Text 子（同 gather_rec，继承字体/颜色字段）
+        if matches!(kind, NodeKind::Container | NodeKind::Button) {
+            if let Some(text) = &el.text {
+                let mut ts = ResolvedStyle::default();
+                ts.color = style.color;
+                ts.font_size = style.font_size;
+                ts.font_family = style.font_family.clone();
+                ts.font_weight = style.font_weight;
+                ts.line_height = style.line_height;
+                ts.letter_spacing = style.letter_spacing;
+                ts.text_align = style.text_align;
+                ts.white_space_nowrap = style.white_space_nowrap;
+                out.push(TemplateNode {
+                    kind: NodeKind::Text { content: text.clone() },
+                    style: ts,
+                    parent_idx: Some(my_idx),
+                    classes: Vec::new(),
+                    id_attr: None,
+                    draggable: false,
+                    tabindex: None,
+                });
+            }
+        }
+        for c in &el.children {
+            gather_template_nodes(tree, styles, *c, Some(my_idx), out);
+        }
+    }
+
+    /// 测试辅助：把 inline HTML+CSS 打成一个名为 "scene" 的单组件包 bytes。
+    /// 返回 (pkg_bytes, asset_manifest)。dynamic_rules 从 CSS 抽（含 :hover 等伪类的规则）。
+    fn pkg_bytes_from_inline(html: &str, css: &str) -> (Vec<u8>, Vec<String>) {
+        let tree = crate::parse::dom::parse_html(html).unwrap();
+        let sheet = crate::parse::css::parse_css(css).unwrap();
+        let styles = crate::style::cascade::resolve_styles(&tree, &sheet);
+        let dynamic = crate::asset::extract_dynamic_rules(&sheet);
+        let mut nodes: Vec<TemplateNode> = Vec::new();
+        // 单根树（inline 测试都是单根）；多根场景测试不在此 helper 范围
+        for root in &tree.roots {
+            gather_template_nodes(&tree, &styles, *root, None, &mut nodes);
+        }
+        // asset_manifest：扫所有 Image 节点的 src（已归一化路径——测试用 src 直接作 path）
+        let manifest: Vec<String> = nodes
+            .iter()
+            .filter_map(|tn| match &tn.kind {
+                NodeKind::Image { src } if !src.is_empty() => Some(src.clone()),
+                _ => None,
+            })
+            .collect();
+        let input = PackageInput {
+            components: vec![("scene", nodes.as_slice(), &dynamic)],
+            asset_manifest: &manifest,
+        };
+        (crate::asset::write_package(&input), manifest)
+    }
 
     /// 黄金等价（最强门）：inline 渲染 == 包渲染。
     ///
-    /// **v1.4-a T4 暂 ignore**：load_package 不再建 scene（进资源池），包路径无 scene 可渲染。
-    /// T5（instantiate）落地后改写为：load_package → instantiate("scene") → append_child → render，
-    /// 与 load_inline_for_test 渲染等价对比。T6（Image payload path）后 Image 路径也对齐。
+    /// v1.4-a T5 改写（原 T4 暂 ignore）：load_package 进资源池不建 scene，包路径走
+    /// `load_package → instantiate("scene") → append_child → render`，与 inline 路径
+    /// （load_inline_for_test → render）渲染输出逐字等价对比。证明 instantiate 克隆子树 +
+    /// 挂载后几何/样式与 inline 同构（零回归）。
     #[test]
-    #[ignore = "v1.4-a T4: load_package 不建 scene；T5 instantiate 后改写包路径"]
     fn package_load_renders_identical_to_inline() {
         let font_path = concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -399,27 +588,138 @@ mod tests {
         s_inline.load_inline_for_test(html, css).unwrap();
         let inline_json = s_inline.render_json();
 
-        // 包路径暂不可用（load_package 不建 scene）——T5 instantiate 后恢复。
-        let _ = inline_json; // 占位防 unused
+        // 包路径：load_package → instantiate("scene") → 挂为 scene 根 → render。
+        // inline 路径把 .c div 作 scene 根；包路径 instantiate 返回孤立根，直接 push 进
+        // scene.roots（同 create_root 语义），不套额外 stage_root——保证两路径节点树同构。
+        let (pkg_bytes, _) = pkg_bytes_from_inline(html, css);
+        let mut s_pkg = Stage::new(font_path, (200.0, 100.0)).unwrap();
+        s_pkg.load_package("bag", &pkg_bytes).unwrap();
+        // ensure_scene（首次建空骨架）+ instantiate 返回孤立根 → push 进 scene.roots 作场景根
+        s_pkg.ensure_scene();
+        let comp_root = s_pkg.instantiate("bag", "scene").unwrap();
+        s_pkg.scene.as_mut().unwrap().roots.push(comp_root);
+        let pkg_json = s_pkg.render_json();
+
+        assert_eq!(inline_json, pkg_json, "包路径渲染输出必须 == inline（instantiate 克隆子树等价）");
     }
 
-    /// **v1.4-a T4 暂 ignore**：原测 inline→包重建 scene 验 :hover 伪类重匹配。
-    /// load_package 不再建 scene，包路径伪类测试待 T5 instantiate 落地后改写
-    /// （load_package → instantiate → :hover 重匹配验证）。
+    /// v1.4-a T5 改写（原 T4 暂 ignore）：load_package → instantiate → :hover 重匹配验证。
+    /// 按钮 + :hover 规则打成包，instantiate 后 Move 到按钮 → RollOver + 伪类重匹配变蓝。
     #[cfg(feature = "parse")]
     #[test]
-    #[ignore = "v1.4-a T4: load_package 不建 scene；T5 instantiate 后改写包路径伪类测试"]
     fn set_input_hover_emits_rollover_and_rematch() {
-        // 占位：T5 instantiate 后改写
+        let font_path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/DejaVuSans.ttf");
+        let html = r#"<div class="root"><button class="btn">OK</button></div>"#;
+        let css = r#".btn { width: 100px; height: 50px; background-color: #cccccc; } .btn:hover { background-color: #0000ff; }"#;
+        let (pkg_bytes, _) = pkg_bytes_from_inline(html, css);
+
+        let mut s = Stage::new(font_path, (200.0, 100.0)).unwrap();
+        s.load_package("bag", &pkg_bytes).unwrap();
+        // 包路径 instantiate 返回孤立根（div.root）→ push 进 scene.roots 作场景根（同 inline 语义）
+        s.ensure_scene();
+        let comp_root = s.instantiate("bag", "scene").unwrap();
+        s.scene.as_mut().unwrap().roots.push(comp_root);
+        // comp_root = div.root；btn = root 的首个 button 子（gather_rec 把 <button>OK</button> 建成 Button + auto Text 子）
+        // warmup tick：compute_world_transforms 在 process/scroll 后跑，hit_test 读上帧
+        // world_transforms（1 帧延迟语义）。首帧 world_transforms 空 → 首帧 hit_test 全 None。
+        s.tick_and_render();
+        // btn = comp_root 的首个 button 子（gather_rec 把 <button>OK</button> 建成 Button + auto Text 子）
+        let btn_id = {
+            let sc = s.scene.as_ref().unwrap();
+            *sc.get(comp_root).unwrap().children.iter().find(|&&c| {
+                matches!(sc.get(c).unwrap().kind, NodeKind::Button)
+            }).unwrap()
+        };
+        // Move 到按钮 (50,25)（按钮在 (0,0,100,50)）
+        s.set_input(&[crate::input::PointerEvent {
+            kind: crate::input::PointerKind::Move,
+            x: 50.0,
+            y: 25.0,
+            button: 0,
+            pad: [0, 0],
+            touch_id: -1,
+        }]);
+        s.tick_and_render();
+        let events = s.last_events();
+        assert!(
+            events.iter().any(|e| e.event_type == crate::input::EVT_ROLL_OVER),
+            "Move 到按钮 → RollOver"
+        );
+        assert!(s.is_pointer_on_ui(), "命中按钮 → is_pointer_on_ui=true");
+        // hover 后 rematch：btn style.background_color 应变蓝（dynamic 规则 .btn:hover）
+        let scene = s.scene.as_ref().unwrap();
+        let btn = scene.get(btn_id).unwrap();
+        assert_eq!(
+            btn.style.background_color,
+            Some([0.0, 0.0, 1.0, 1.0]),
+            ":hover 伪类重匹配 → 蓝"
+        );
     }
 
-    /// **v1.4-a T4 暂 ignore**：原测 inline→包重建 scene 验 disabled 抑制 click。
-    /// 同上，T5 instantiate 后改写包路径测试。
+    /// v1.4-a T5 改写（原 T4 暂 ignore）：load_package → instantiate → disabled 抑制 click。
+    /// 按钮打成包，instantiate 后 set_node_disabled(true) → Down+Up 不产 Click。
     #[cfg(feature = "parse")]
     #[test]
-    #[ignore = "v1.4-a T4: load_package 不建 scene；T5 instantiate 后改写包路径 disabled 测试"]
     fn set_node_disabled_inhibits_click() {
-        // 占位：T5 instantiate 后改写
+        let font_path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/DejaVuSans.ttf");
+        let html = r#"<div class="root"><button class="btn">OK</button></div>"#;
+        let css = r#".btn { width: 100px; height: 50px; }"#;
+        let (pkg_bytes, _) = pkg_bytes_from_inline(html, css);
+
+        let mut s = Stage::new(font_path, (200.0, 100.0)).unwrap();
+        s.load_package("bag", &pkg_bytes).unwrap();
+        s.ensure_scene();
+        let comp_root = s.instantiate("bag", "scene").unwrap();
+        s.scene.as_mut().unwrap().roots.push(comp_root);
+        // btn = comp_root 的首个 Button 子
+        let btn_id = {
+            let sc = s.scene.as_ref().unwrap();
+            *sc.get(comp_root).unwrap().children.iter().find(|&&c| {
+                matches!(sc.get(c).unwrap().kind, NodeKind::Button)
+            }).unwrap()
+        };
+        s.set_node_disabled(btn_id, true);
+        // warmup tick（同 hover 测：hit_test 1 帧延迟，首帧 world_transforms 空）
+        s.tick_and_render();
+        // 命中前置：Move 到按钮 → is_pointer_on_ui=true（证明按钮被几何命中，disabled 才有抑制对象）
+        s.set_input(&[crate::input::PointerEvent {
+            kind: crate::input::PointerKind::Move,
+            x: 50.0,
+            y: 25.0,
+            button: 0,
+            pad: [0, 0],
+            touch_id: -1,
+        }]);
+        s.tick_and_render();
+        assert!(
+            s.is_pointer_on_ui(),
+            "Move 到按钮 → 命中 UI（命中前置：证明按钮被几何命中）"
+        );
+        // Down + Up 在按钮上——disabled 不产 Click
+        s.set_input(&[
+            crate::input::PointerEvent {
+                kind: crate::input::PointerKind::Down,
+                x: 50.0,
+                y: 25.0,
+                button: 0,
+                pad: [0, 0],
+                touch_id: -1,
+            },
+            crate::input::PointerEvent {
+                kind: crate::input::PointerKind::Up,
+                x: 50.0,
+                y: 25.0,
+                button: 0,
+                pad: [0, 0],
+                touch_id: -1,
+            },
+        ]);
+        s.tick_and_render();
+        let events = s.last_events();
+        assert!(
+            !events.iter().any(|e| e.event_type == crate::input::EVT_CLICK),
+            "disabled → 不产 Click"
+        );
     }
 
     #[test]
@@ -830,5 +1130,159 @@ mod load_package_tests {
         assert_eq!(scene.roots.len(), 1, "scene roots 不变");
         assert_eq!(scene.roots[0], root, "scene root NodeId 不变");
         assert_eq!(scene.nodes.len(), 1, "scene 节点数不变");
+    }
+}
+
+/// T5 instantiate 测试：从包克隆组件子树进 scene + 伪类规则合并去重 + 多实例独立。
+/// 不依赖 parse feature——用内存 PackageInput（write_package）。
+#[cfg(test)]
+mod instantiate_tests {
+    use super::*;
+    use crate::asset::{PackageInput, TemplateNode};
+    use crate::scene::NodeKind;
+    use crate::style::resolved::ResolvedStyle;
+
+    /// 辅助：建带子树的 pkg（comp1 = root(Container) + child(Container)）。
+    fn make_test_pkg_with_subtree() -> Vec<u8> {
+        let mut root_style = ResolvedStyle::default();
+        // 给 root 显式尺寸，便于后续断言可扩展（此处仅验结构）
+        crate::scene::dynamic::apply_css(&mut root_style, "width:100px;height:100px");
+        let nodes = [
+            TemplateNode {
+                kind: NodeKind::Container,
+                style: root_style,
+                parent_idx: None,
+                classes: vec![],
+                id_attr: None,
+                draggable: false,
+                tabindex: None,
+            },
+            TemplateNode {
+                kind: NodeKind::Container,
+                style: ResolvedStyle::default(),
+                parent_idx: Some(0),
+                classes: vec![],
+                id_attr: None,
+                draggable: false,
+                tabindex: None,
+            },
+        ];
+        let rules = crate::style::dynamic::DynamicRuleTable::default();
+        let input = PackageInput {
+            components: vec![("comp1", &nodes, &rules)],
+            asset_manifest: &[],
+        };
+        crate::asset::write_package(&input)
+    }
+
+    #[test]
+    fn instantiate_clones_subtree_returns_orphan_root() {
+        let mut s = Stage::new_for_test();
+        s.create_root("div", "width:100px;height:100px").unwrap();
+        s.load_package("bag", &make_test_pkg_with_subtree()).unwrap();
+        let root = s.instantiate("bag", "comp1").unwrap();
+        let scene = s.scene.as_ref().unwrap();
+        // 组件根 parent = None（孤立）
+        assert!(scene.get(root).unwrap().parent.is_none(), "孤立根");
+        // comp1 含 root + child → 子树串好（root.children 含 child）
+        assert_eq!(scene.get(root).unwrap().children.len(), 1, "root 有 1 子");
+        let child = scene.get(root).unwrap().children[0];
+        assert_eq!(scene.get(child).unwrap().parent, Some(root), "child.parent=root");
+        // scene 节点数 = create_root 的 1 + 组件的 2 = 3
+        assert_eq!(scene.nodes.len(), 3, "scene 多了组件的 2 节点");
+    }
+
+    #[test]
+    fn instantiate_multi_instance_independent() {
+        let mut s = Stage::new_for_test();
+        s.create_root("div", "").unwrap();
+        s.load_package("bag", &make_test_pkg_with_subtree()).unwrap();
+        let i1 = s.instantiate("bag", "comp1").unwrap();
+        let i2 = s.instantiate("bag", "comp1").unwrap();
+        assert_ne!(i1, i2, "两实例不同 NodeId");
+        // 两实例都孤立，各自独立子树
+        let scene = s.scene.as_ref().unwrap();
+        assert!(scene.get(i1).unwrap().parent.is_none(), "i1 孤立");
+        assert!(scene.get(i2).unwrap().parent.is_none(), "i2 孤立");
+        // 各自的 child 不同（独立子树，不串）
+        let c1 = scene.get(i1).unwrap().children[0];
+        let c2 = scene.get(i2).unwrap().children[0];
+        assert_ne!(c1, c2, "两实例的 child 不同");
+        assert_eq!(scene.get(c1).unwrap().parent, Some(i1), "c1.parent=i1");
+        assert_eq!(scene.get(c2).unwrap().parent, Some(i2), "c2.parent=i2");
+    }
+
+    #[test]
+    fn instantiate_missing_pkg_or_comp_errors() {
+        let mut s = Stage::new_for_test();
+        s.create_root("div", "").unwrap();
+        // 用 load_package_tests 的 make_test_pkg（单组件 c1）——这里内联一个最小 pkg
+        let nodes = [TemplateNode {
+            kind: NodeKind::Container,
+            style: ResolvedStyle::default(),
+            parent_idx: None,
+            classes: vec![],
+            id_attr: None,
+            draggable: false,
+            tabindex: None,
+        }];
+        let rules = crate::style::dynamic::DynamicRuleTable::default();
+        let input = PackageInput {
+            components: vec![("c1", &nodes, &rules)],
+            asset_manifest: &[],
+        };
+        s.load_package("bag", &crate::asset::write_package(&input)).unwrap();
+        assert!(s.instantiate("nope", "c1").is_err(), "包不存在");
+        assert!(s.instantiate("bag", "nope").is_err(), "组件不存在");
+    }
+
+    #[test]
+    fn instantiate_without_scene_errors() {
+        // scene 必须已存在（create_root 建过），否则 Err
+        let font_path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/DejaVuSans.ttf");
+        let mut s = Stage::new(font_path, (200.0, 200.0)).unwrap();
+        // 不调 create_root，scene = None
+        s.load_package("bag", &make_test_pkg_with_subtree()).unwrap();
+        assert!(s.instantiate("bag", "comp1").is_err(), "无 scene → Err");
+    }
+
+    /// pkg 的 comp1 带 :hover 规则；instantiate 两次 → scene.dynamic_rules 只多一份（去重）。
+    /// parse-gated：需 parse_selector 构真实选择器（runtime 无字符串解析输入）。
+    #[cfg(feature = "parse")]
+    #[test]
+    fn instantiate_merges_dynamic_rules_dedup() {
+        use crate::parse::css::Declaration;
+        use crate::parse::selector::parse_selector;
+        use crate::style::dynamic::{DynamicRule, DynamicRuleTable};
+        let rules = DynamicRuleTable {
+            rules: vec![DynamicRule {
+                selector: parse_selector(".btn:hover").unwrap(),
+                declarations: vec![Declaration {
+                    prop: "background-color".into(),
+                    value: "#0000ff".into(),
+                }],
+            }],
+        };
+        let nodes = [TemplateNode {
+            kind: NodeKind::Button,
+            style: ResolvedStyle::default(),
+            parent_idx: None,
+            classes: vec!["btn".into()],
+            id_attr: None,
+            draggable: false,
+            tabindex: None,
+        }];
+        let input = PackageInput {
+            components: vec![("comp1", &nodes, &rules)],
+            asset_manifest: &[],
+        };
+        let mut s = Stage::new_for_test();
+        s.create_root("div", "").unwrap();
+        s.load_package("bag", &crate::asset::write_package(&input)).unwrap();
+        let before = s.scene.as_ref().unwrap().dynamic_rules.rules.len();
+        s.instantiate("bag", "comp1").unwrap();
+        s.instantiate("bag", "comp1").unwrap();
+        let after = s.scene.as_ref().unwrap().dynamic_rules.rules.len();
+        assert_eq!(after - before, 1, "同选择器规则去重，只加一份");
     }
 }

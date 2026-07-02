@@ -102,6 +102,54 @@ pub fn create_root(scene: &mut Scene, kind: &str, css: &str) -> Result<NodeId, S
     Ok(id)
 }
 
+/// 建节点（从已 bake 的 kind + base_style）：T5 instantiate 用。
+/// 与 `create_node` 同构的节点构造（clip_rect 派生 / dirty_text / slotmap insert / id 回填），
+/// 但跳过 CSS parse——style 已在 ComponentTemplate.nodes[i].style 烘焙好（打包期 resolve_styles 产物）。
+/// 直接用传入 style 作 base_style（源）+ style.clone() 作 style 初始（派生，下帧 rematch 从 base 起算）。
+/// classes/id_attr/draggable/tabindex 由调用方在返回 NodeId 后填（与 create_node 一致——
+/// create_node 也不填这些，由 parse 路径的 gather_rec 填；instantiate 路径从 TemplateNode 填）。
+pub fn create_node_from_template(
+    scene: &mut Scene,
+    kind: NodeKind,
+    base_style: ResolvedStyle,
+) -> NodeId {
+    let touchable = base_style.touchable;
+    let clip = if base_style.overflow_x != OverflowMode::Visible
+        || base_style.overflow_y != OverflowMode::Visible
+    {
+        Some(Rect::default())
+    } else {
+        None
+    };
+    let dirty_text = matches!(kind, NodeKind::Text { .. });
+    let node = Node {
+        id: NodeId::INVALID, // 临时，insert 后回填
+        parent: None,
+        kind,
+        style: base_style.clone(),
+        base_style,
+        taffy_id: None,
+        layout_rect: Rect::default(),
+        clip_rect: clip,
+        children: Vec::new(),
+        dirty_mesh: true,
+        dirty_text,
+        classes: Vec::new(),
+        id_attr: None,
+        touchable,
+        hovered: false,
+        active: false,
+        disabled: false,
+        draggable: false,
+        tabindex: None,
+        focused: false,
+    };
+    let key = scene.nodes.insert(node);
+    let id = NodeId::from_key(key);
+    scene.nodes.get_mut(key).unwrap().id = id; // 回填
+    id
+}
+
 /// 挂子：parent.children 末尾追加 + child.parent = Some(parent)。
 /// child 必须当前无父（先 remove_child 摘除旧父）。重复挂同一父子对幂等（已含则 no-op）。
 pub fn append_child(scene: &mut Scene, parent: NodeId, child: NodeId) -> Result<(), String> {
@@ -482,6 +530,43 @@ mod tests {
         assert!(scene.get(id).unwrap().clip_rect.is_some(), "overflow:hidden → clip slot");
         let id2 = create_node(&mut scene, "div", "").unwrap();
         assert!(scene.get(id2).unwrap().clip_rect.is_none(), "默认 Visible → 无 clip slot");
+    }
+
+    #[test]
+    fn create_node_from_template_uses_baked_style() {
+        // T5 instantiate 复用的节点构造：传入已 bake 的 kind+style，跳过 CSS parse。
+        let mut scene = empty_scene();
+        let mut style = ResolvedStyle::default();
+        apply_css(&mut style, "width:100px;height:100px;overflow:hidden;background-color:#ff0000");
+        let id = create_node_from_template(&mut scene, NodeKind::Container, style.clone());
+        let n = scene.get(id).unwrap();
+        assert_eq!(n.id, id, "id 回填");
+        assert!(n.parent.is_none());
+        assert_eq!(n.base_style, style, "base_style = 传入 baked style");
+        assert_eq!(n.style, n.base_style, "style 初始 = base_style.clone()");
+        assert!(n.dirty_mesh, "新建节点 dirty_mesh=true");
+        assert!(n.clip_rect.is_some(), "overflow:hidden → clip slot（同 create_node）");
+    }
+
+    #[test]
+    fn create_node_from_template_text_marks_dirty_text() {
+        let mut scene = empty_scene();
+        let id = create_node_from_template(
+            &mut scene,
+            NodeKind::Text { content: "hi".into() },
+            ResolvedStyle::default(),
+        );
+        let n = scene.get(id).unwrap();
+        assert!(n.dirty_text, "Text 节点 dirty_text=true（同 create_node）");
+        matches!(&n.kind, NodeKind::Text { content } if content == "hi");
+    }
+
+    #[test]
+    fn create_node_from_template_id_is_live() {
+        let mut scene = empty_scene();
+        let id = create_node_from_template(&mut scene, NodeKind::Container, ResolvedStyle::default());
+        assert!(scene.get(id).is_some(), "返回的 NodeId live");
+        assert_ne!(id, NodeId::INVALID);
     }
 
     #[test]
