@@ -80,7 +80,7 @@ v1 还没有编辑器/WASM 渲染，用 **open-design Chromium 兜底**：围栏
 
 富文本、软裁剪/形状遮罩(paintingMode)、Transition+Controller+Gear 编排、列表虚拟化、滚动分页/吸附/下拉刷新、IME 完整链路+软键盘、字体 fallback 链、完整 NativeHost、rustybuzz 复杂 shaping+BiDi、IL2CPP+移动端、grid、CSS transition。
 
-> 注：border-image-slice 九宫格（v1.3 已做）。v1d（滚动/键盘/transform/动画/safe-area）子轮已全交付，明细见 git history + knowledge-reference §2.15-2.21。
+> 注：border-image-slice 九宫格（v1.3 已做）。v1d（滚动/键盘/transform/动画/safe-area）子轮已全交付，明细见 git history + docs/pitfalls.md。
 
 ---
 
@@ -165,7 +165,7 @@ v1d.3 已做 **NativeHost-lite**（div 占位 + 后端 `BindNativeHost` 跟随 w
 
 ### 5.6 包格式：v1.x 演进项
 
-集中式迁移器链（多版本累积后）；`nextPos` 长度前缀 forward-compat（v2 加字段）；branches（多语言）/highResolution（1x/2x/3x）；scaleLevel（MatchWidth/MatchHeight）。v1 当前 formatVersion 8（详见 knowledge-reference §2.12）。
+集中式迁移器链（多版本累积后）；`nextPos` 长度前缀 forward-compat（v2 加字段）；branches（多语言）/highResolution（1x/2x/3x）；scaleLevel（MatchWidth/MatchHeight）。v1 当前 formatVersion 8（详见 docs/pitfalls.md §1 包格式）。
 
 ### 5.7 契约版本化（待第二个契约版本时定）
 
