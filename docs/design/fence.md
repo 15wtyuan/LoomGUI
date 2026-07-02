@@ -90,7 +90,7 @@
 | `transform` | translate(px,px)/rotate(deg)/scale(num[,num]) | mapping.rs:554-556 | 【实证】 |
 | `pointer-events` | auto/none | mapping.rs:549-553 | 【实证】 |
 
-### 2.3 v1.x 扩展属性（v1-scope §2 未列，代码已实现）
+### 2.3 v1.x 扩展属性（v1 围栏冻结子集未列，代码已实现）
 
 | 属性 | 值约束 | 出处 | v1.x 版本 | 标注 |
 |---|---|---|---|---|
@@ -168,7 +168,7 @@
 1. `apply_decl` 加 match arm。
 2. `fence_contract.rs` 加"支持"断言（写进去 → 期望生效）。
 3. 本 `fence.md` §2 对应表补一行，标注【实证】。
-4. 若是 v1.x 新增，v1-scope §2 同步补。
+4. 若是 v1.x 新增，roadmap §1.2 同步补。
 
 **新增围栏外禁令**（明确某属性不该写）：
 1. `fence_contract.rs` 加"围栏外静默忽略"断言（写进去 → 期望不改变布局）。
@@ -205,15 +205,15 @@
 
 | 消费者 | 位置 | 内容 |
 |---|---|---|
-| editor 围栏规则（注入设计师工作区） | `editor/rules/claude/CLAUDE.md.tmpl` + `editor/skill/loomgui-editor/references/fence.md` | 围栏清单 + 预览可信清单（v1-scope §2.1） |
-| v1 范围冻结 | `docs/roadmap/v1-scope.md` §2 | 引用 fence.md + 标注 v1 冻结子集 / v1.x 扩展 |
+| editor 围栏规则（注入设计师工作区） | `editor/rules/claude/CLAUDE.md.tmpl` + `editor/skill/loomgui-editor/references/fence.md` | 围栏清单 + 预览可信清单（roadmap §1.3） |
+| v1 范围冻结 | `docs/roadmap/roadmap.md` §1.2 | 引用 fence.md + 标注 v1 冻结子集 / v1.x 扩展 |
 | 设计契约 | `docs/design/00-main-design.md` | 引用 fence.md 为围栏权威源 |
 
 **同步规则**：改 fence.md → 检查三处消费者是否需同步。editor 的 CLAUDE.md.tmpl 是注入给设计师的，过时会让 AI 生成违规 UI，优先同步。
 
 ---
 
-## 6. 预览可信清单（v1-scope §2.1 搬迁）
+## 6. 预览可信清单
 
 open-design Chromium iframe 预览 ≠ taffy 渲染。AI 须分清：
 
