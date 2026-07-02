@@ -199,6 +199,96 @@ pub fn extract_dynamic_rules(sheet: &crate::parse::css::StyleSheet) -> DynamicRu
     DynamicRuleTable { rules }
 }
 
+// ── v1.4-a 归一化（T2：path + CSS）──────────────────────────────────────────
+//
+// 这两个是纯函数，T3 打包器扫 HTML 后调它们产归一化数据喂 write_package。
+// 都 parse-gated：消费 parse 后的产物（scraper 解析 HTML / 读 css 文件），runtime 无此输入。
+
+/// 归一化图片 src：去 res 目录前缀 + 统一正斜杠。
+///
+/// 输入例：`res/icons/skin.png` / `./res/icons/skin.png` / `res\icons\skin.png` → `icons/skin.png`。
+/// `res_dir` 取自打包配置（默认 `res`，可配置，对应 spec D10）。
+/// 不在 `res_dir/` 路径段下 → None（调用方 warning，不入 manifest）。
+///
+/// 边界检查：`res/` 必须是完整路径段，不误匹配 `pres/x`（前缀前字符须是 `/`、`.` 或串首）。
+/// spec §3.4（D8/D10）。
+#[cfg(feature = "parse")]
+pub fn normalize_path(src: &str, res_dir: &str) -> Option<String> {
+    let unified = src.replace('\\', "/"); // Win 反斜杠 → 正斜杠
+    let prefix = format!("{}/", res_dir);
+    // 找所有 res/ 出现位置，取第一个满足"前字符是 / 或 . 或串首"的（合法路径段）。
+    let mut start = 0usize;
+    while let Some(rel) = unified[start..].find(&prefix) {
+        let abs = start + rel; // prefix 在 unified 中的绝对起点
+        let before_ok = abs == 0 || matches!(unified.as_bytes()[abs - 1], b'/' | b'.');
+        if before_ok {
+            let stripped = &unified[abs + prefix.len()..];
+            if !stripped.is_empty() {
+                return Some(stripped.to_string());
+            }
+            // res/ 后空（如 "res/"）→ None
+            return None;
+        }
+        start = abs + 1; // 跳过本次误匹配，继续找下一个
+    }
+    None
+}
+
+/// 抽 HTML 的所有 CSS 合并成 stylesheet 串：
+/// - `<style>` 内联（取 text content，可多处）
+/// - `<link rel="stylesheet" href="...">` 引用的 .css 文件内容（base_dir.join(href) 读）
+///
+/// 行内 `style=""` 不抽——由 `resolve_styles` 直接 bake 进节点 style（spec §3.5 D6）。
+/// `base_dir` = HTML 文件所在目录，用于解析 `<link href>` 的相对路径。
+///
+/// **签名调整说明**：brief 伪写 `(tree: &DomTree, ...)`，但 `parse_html` 的围栏白名单
+/// （`FENCE_TAGS = div/span/img/button`）会拒绝 `<style>`/`<link>`，无法从已解析 ElementTree
+/// 取这俩节点。故直接吃原始 HTML 串、用 scraper 抽 `<style>`/`<link>`（与 dom.rs 同后端）。
+/// T3 打包器在调 `parse_html` 之前先调本函数抽 CSS（同一份 HTML 串两用）。
+#[cfg(feature = "parse")]
+pub fn extract_component_css(html: &str, base_dir: &std::path::Path) -> String {
+    use scraper::{Html, Selector};
+    let document = Html::parse_document(html);
+    let mut parts: Vec<String> = Vec::new();
+
+    // <style> 内联：text content 整段收（scraper 的 text() 拼所有文本节点）。
+    if let Ok(style_sel) = Selector::parse("style") {
+        for el in document.select(&style_sel) {
+            let text: String = el.text().collect();
+            let trimmed = text.trim();
+            if !trimmed.is_empty() {
+                parts.push(trimmed.to_string());
+            }
+        }
+    }
+
+    // <link rel="stylesheet" href="...">：读 href 文件内容。
+    // rel 值大小写不敏感、允许空格分隔多值（如 "stylesheet preload"）——含 "stylesheet" 即抽。
+    if let Ok(link_sel) = Selector::parse("link") {
+        for el in document.select(&link_sel) {
+            let rel_is_stylesheet = el
+                .value()
+                .attr("rel")
+                .map(|r| r.split_whitespace().any(|t| t.eq_ignore_ascii_case("stylesheet")))
+                .unwrap_or(false);
+            if !rel_is_stylesheet {
+                continue;
+            }
+            let Some(href) = el.value().attr("href") else { continue };
+            let path = base_dir.join(href);
+            if let Ok(content) = std::fs::read_to_string(&path) {
+                let trimmed = content.trim();
+                if !trimmed.is_empty() {
+                    parts.push(trimmed.to_string());
+                }
+            }
+            // 读失败（文件缺失/编码错）→ 静默跳过（打包期 warning 由调用方补，T3 事）
+        }
+    }
+
+    parts.join("\n")
+}
+
 /// 序列化 PackageInput → .pkg.bin bytes（v1.4-a 多组件格式）。
 ///
 /// 布局：Header(20B) + StringTable + ComponentTable + NodeBlock + PerComponentDynamicRules
@@ -938,5 +1028,95 @@ mod tests {
             asset_manifest: &[],
         };
         let _ = write_package(&input);
+    }
+
+    // —— T2: path 归一化 + CSS 归一化 ——
+
+    #[test]
+    fn normalize_path_strips_res_prefix() {
+        assert_eq!(normalize_path("res/icons/skin.png", "res"), Some("icons/skin.png".into()));
+        assert_eq!(normalize_path("./res/icons/skin.png", "res"), Some("icons/skin.png".into()));
+        assert_eq!(normalize_path("res\\icons\\skin.png", "res"), Some("icons/skin.png".into()), "Win 反斜杠");
+    }
+
+    #[test]
+    fn normalize_path_custom_res_dir() {
+        assert_eq!(normalize_path("assets/icons/skin.png", "assets"), Some("icons/skin.png".into()));
+    }
+
+    #[test]
+    fn normalize_path_outside_res_returns_none() {
+        // 不在 res 目录下 → None（打包期 warning，不入 manifest）
+        assert_eq!(normalize_path("other/foo.png", "res"), None);
+    }
+
+    #[test]
+    fn normalize_path_rejects_false_segment_match() {
+        // "pres/x" 含子串 "res/" 但 res 不是路径段 → None（边界检查）
+        assert_eq!(normalize_path("pres/icons/skin.png", "res"), None, "pres/ 不是 res/ 段");
+        // "ares/x" 同理
+        assert_eq!(normalize_path("ares/icons/skin.png", "res"), None, "ares/ 不是 res/ 段");
+    }
+
+    #[test]
+    fn normalize_path_leading_slash_res() {
+        // "/res/x" — 前缀前是串首（/ 后即 res 段）→ Some
+        assert_eq!(normalize_path("/res/icons/skin.png", "res"), Some("icons/skin.png".into()));
+    }
+
+    #[test]
+    fn normalize_path_empty_after_strip() {
+        // "res/" 剥前缀后空 → None（没有有效 path）
+        assert_eq!(normalize_path("res/", "res"), None);
+        assert_eq!(normalize_path("res", "res"), None, "res 无尾斜杠不构成段");
+    }
+
+    #[test]
+    fn extract_component_css_merges_style_and_link() {
+        // HTML 含 <style> + <link> → 合并成一个 stylesheet 串
+        // 行内 style="" 由 resolve_styles 直接 bake，不进本函数产物。
+        use std::io::Write;
+        let tmp = std::env::temp_dir().join(format!(
+            "loomgui_t2_css_{}.css",
+            std::process::id()
+        ));
+        {
+            let mut f = std::fs::File::create(&tmp).unwrap();
+            f.write_all(b".b { color: blue; }").unwrap();
+        }
+        let href = tmp.to_string_lossy().replace('\\', "/");
+        let html = format!(
+            r#"<style>.a {{ color: red; }}</style><div><link rel="stylesheet" href="{href}"></div>"#
+        );
+        let merged = extract_component_css(&html, tmp.parent().unwrap());
+        assert!(merged.contains(".a"), "merged 必含 <style> 内联规则 .a: {merged}");
+        assert!(merged.contains(".b"), "merged 必含 <link> 引用文件规则 .b: {merged}");
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn extract_component_css_no_style_returns_empty() {
+        // 无 <style>/<link> → 空串
+        let html = r#"<div class="x"><span>hi</span></div>"#;
+        let merged = extract_component_css(html, std::path::Path::new("."));
+        assert!(merged.is_empty(), "无 CSS 应返回空串，got: {merged}");
+    }
+
+    #[test]
+    fn extract_component_css_missing_link_file_skipped() {
+        // <link href> 指向不存在文件 → 跳过该 link（不 panic，<style> 仍抽）
+        let html = r#"<style>.a { color: red; }</style><link rel="stylesheet" href="nope.css">"#;
+        let merged = extract_component_css(html, std::path::Path::new("/nonexistent/dir"));
+        assert!(merged.contains(".a"), "<style> 内联仍抽出: {merged}");
+        assert!(!merged.contains("nope"), "缺失文件不进合并串: {merged}");
+    }
+
+    #[test]
+    fn extract_component_css_ignores_non_stylesheet_link() {
+        // <link rel="icon"> 非 stylesheet → 不抽
+        let html = r#"<link rel="icon" href="favicon.ico"><style>.a { color: red; }</style>"#;
+        let merged = extract_component_css(html, std::path::Path::new("."));
+        assert!(merged.contains(".a"));
+        assert!(!merged.contains("favicon"), "非 stylesheet 的 link 不抽: {merged}");
     }
 }
