@@ -16,3 +16,5 @@ BASE=7a01d77
 - T6: complete (commit pending) — Image RenderNode payload 改带 image_path (砍 texture/UV子区/tex_id/fit_uv/TextureRegistry/TexMeta/asset::texture.rs). layout solve 砍 textures 参数 (Image intrinsic 64×64 兜底). FrameBlob v7: tex_id 列→path_idx 列 + path string table arena. 556 workspace 测试全过 (486 core + 45 ffi + 余). FFI blob 同步改完 (非 T7 stub).
 - T6: complete (commits 3ac7a92..c4d488e, review clean after D17 fix) — Image payload path + 砍 TextureRegistry + D17 图尺寸表(打包期 PNG IHDR). spec 补 D17
 - T7: complete (commits c4d488e..262e0fb, review clean) — FFI load_package name + instantiate + 砍 atlas FFI + csbindgen regen + .dll. Unity LoomStage.cs 断裂 T8 修
+- T8: complete (commits 262e0fb..7223b95, review clean) — Unity path→Sprite + Sprite Atlas + 砍 LoadAtlas/_texMap. 旧 v4 测试/showcase driver T11/T12 还债
+- T9: complete (commit pending, 家里机编译验证) — Unity 包管理面板：LoomPackageSettings ScriptableObject + LoomPackageManagerWindow EditorWindow（智能识别/刷新/一键打包/资源校验）+ PkgManifestReader(C# 解析 pkg.bin AssetManifest). 本机无 Unity 工具链，C# 语法核对+grep 验证，家里机编译验证

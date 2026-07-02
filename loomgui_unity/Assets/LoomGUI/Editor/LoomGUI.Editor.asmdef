@@ -1,0 +1,9 @@
+{
+    "name": "LoomGUI.Editor",
+    "rootNamespace": "LoomGUI.Editor",
+    "references": ["LoomGUI.Runtime"],
+    "includePlatforms": ["Editor"],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "autoReferenced": true
+}
