@@ -1,6 +1,6 @@
 # LoomGUI — 主设计文档
 
-> 本文档是 LoomGUI 的**当前实现真相源**：设计意图 + v1 精确契约。v1.x/v2 的机制草稿、范围与路线在 `docs/roadmap/roadmap.md`；决策理由在 `docs/decisions/`；**围栏属性权威清单在 `docs/design/fence.md`**（其真相源是可执行测试 `loomgui_core/tests/fence_contract.rs`）。
+> 本文档是 LoomGUI 的**当前实现真相源**：设计意图 + v1 精确契约（决策理由体现在各章节设计说明里）。v1.x/v2 的机制草稿、范围与路线在 `docs/roadmap/roadmap.md`；**围栏属性权威清单在 `docs/design/fence.md`**（其真相源是可执行测试 `loomgui_core/tests/fence_contract.rs`）。
 > 设计原则：契约描述**渲染意图**而非引擎实现机制；核心（Rust）引擎无关；后端各引擎自选实现。
 > 参考实现：FairyGUI-unity（`temp/FairyGUI-unity/`，渲染/对象模型/动画的原理参考）。
 
