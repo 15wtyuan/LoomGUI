@@ -121,15 +121,19 @@ namespace LoomGUI.Tests
             var mm = new MaterialManager(shader);
             var pool = new MirrorPool();
 
+            // v1.4-a T8：Sync 新签名（SpriteResolver + fallback + font）。本测验 merged mesh 顶点数
+            //   （非纹理绑定），传 null SpriteResolver → path_idx=0/miss → fallback。完整 path→Sprite
+            //   round-trip 测试见 T12（手搓 v7 blob + mock SpriteAtlas）。
+            //   注：blob 仍是 v4 → v7 FrameBlob 拒绝（IsValid=false）→ Sync 早退。本测断言会失败，
+            //   T12 重写为 v7 blob 后恢复。本 task 仅保证编译通过。
             var tex = new Texture2D(16, 16);
-            var texMap = new Dictionary<uint, Texture2D> { { 1u, tex } };
 
             try
             {
                 var blob = new FrameBlob(BuildMergedBlob());
-                Assert.IsTrue(blob.IsValid, "v4 blob 应 IsValid");
+                Assert.IsTrue(blob.IsValid, "v4 blob 应 IsValid（注：v7 FrameBlob 拒绝 v4，T12 重写）");
                 Assert.AreEqual(1, blob.NodeCount, "merged blob 应含 1 节点");
-                pool.Sync(blob, root.transform, mm, texMap, Texture2D.whiteTexture, null);
+                pool.Sync(blob, root.transform, mm, null, Texture2D.whiteTexture, null);
 
                 // merged 1 节点 → 1 个 loom_node GO（非 2）。
                 var nodes = System.Array.FindAll(root.GetComponentsInChildren<MeshRenderer>(true),

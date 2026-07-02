@@ -320,31 +320,20 @@ namespace LoomGUI
                 : "background:#2a2f45;width:120px;height:90px;border-radius:8px");
         }
 
-        // 动态加载 bin：切到邮件界面（运行时 load_package 整体替换 scene）。
-        // 切后 EventHandler 清 listener（旧 NodeId 失效）——邮件界面无 showcase 按钮，不重订阅。
+        // 动态加载界面（v1.4-a T8：旧单包 LoadPackageFile 切换已砍，改多包 instantiate）。
+        // T11 showcase driver 重写：此处改走 LoadPackage(pkg, bytes) 进资源池 + Instantiate(pkg, comp)
+        // 挂 layer 的多页架构。本 task 仅保证编译通过——实参 pkg 文件 + 组件名待 T11 重写。
         void OnDynLoadMail(EventContext ctx)
         {
-            if (_dynLoadCurrent == MailPkg) return;
-            _stage.EventHandler.Clear();
-            if (_stage.LoadPackageFile(MailPkg))
-            {
-                _dynLoadCurrent = MailPkg;
-                Debug.Log("[Showcase] 切到邮件界面（load_package）");
-            }
+            // TODO(T11): _stage.LoadPackage("mail", bytes) + Instantiate("mail","main") + AppendChild(layer)
+            Debug.Log("[Showcase] OnDynLoadMail: 待 T11 重写为多包 instantiate");
         }
 
-        // 切回 showcase：load_package + 重新 SubscribeAll（scene 重建，事件重订阅）。
+        // 切回 showcase（T11 重写）。
         void OnDynLoadShowcase(EventContext ctx)
         {
-            if (_dynLoadCurrent == ShowcasePkg) return;
-            _stage.EventHandler.Clear();
-            _dynPanels.Clear();   // 旧 panel NodeId 全失效
-            if (_stage.LoadPackageFile(ShowcasePkg))
-            {
-                _dynLoadCurrent = ShowcasePkg;
-                SubscribeAll();   // 重新订阅 showcase 事件
-                Debug.Log("[Showcase] 切回 showcase（load_package + 重订阅）");
-            }
+            // TODO(T11): _stage.LoadPackage("showcase", bytes) + Instantiate + SubscribeAll
+            Debug.Log("[Showcase] OnDynLoadShowcase: 待 T11 重写为多包 instantiate");
         }
 
         // 0-255 RGB → 归一化 [0,1] RGBA float[4]（alpha=1）。Rust tween 直接写 anim 通道，须与 style 归一化一致。

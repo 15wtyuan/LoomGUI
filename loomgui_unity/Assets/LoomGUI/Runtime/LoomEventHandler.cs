@@ -129,7 +129,7 @@ namespace LoomGUI
         public void SetHandle(IntPtr handle) { _handle = handle; _parentCache.Clear(); }
 
         /// 清所有 listener（切 pkg 重建 scene 后，旧 NodeId 全失效，listener 指向悬空节点）。
-        /// LoadPackageFile 前调，避免 dict 堆积 + 重新 SubscribeAll 前干净态。
+        /// 业务 driver 切界面前调，避免 dict 堆积 + 重新 SubscribeAll 前干净态。
         public void Clear() { _listeners.Clear(); _parentCache.Clear(); }
 
         public void AddListener(uint nodeId, EventType type, EventCallback cb) => GetBridge(nodeId, type).Add(cb);

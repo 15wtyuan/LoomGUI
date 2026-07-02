@@ -45,7 +45,7 @@ namespace LoomGUI
         public int Count => _pool.Count;
 
         public void Sync(FrameBlob blob, Transform root, MaterialManager mm,
-                         Dictionary<uint, Texture2D> texMap, Texture fallback, Font font)
+                         SpriteResolver sprites, Texture fallback, Font font)
         {
             // 防御：陈旧/非当前 blob 直接早退（magic+version 校验）。不做清理——上一帧的 GO
             // 维持不动比误销毁更安全；调用方应自检 IsValid 再 Sync。
@@ -123,9 +123,32 @@ namespace LoomGUI
                     UploadMesh(ro, seg);
                     ro.Mesh.RecalculateBounds();
                     ro.LastFontVersion = TextRasterizer.FontVersion;
-                    // 按 tex_id 从 texMap 绑真纹理；0/缺失 → fallback（白占位）。
-                    uint tid = blob.TexId(i);
-                    Texture tex = (tid != 0 && texMap.TryGetValue(tid, out var t)) ? (Texture)t : fallback;
+                    // v1.4-a T8：按 path_idx 取 path → SpriteResolver.GetSprite → Sprite.texture + 打包 UV。
+                    //   path_idx=0（纯色无图）/ path 查不到 Sprite → fallback（whiteTexture）。
+                    //   blob mesh UV 是全图 [0,1]（T6 后核心不知图集，写全图 UV）；
+                    //   SpriteAtlas 把 Sprite 打进 atlas 子区 → 用 sprite.rect + texture 尺寸重映射 UV
+                    //   到 atlas 子区（保 blob 的 v 翻转：blob TL.v=1 → atlas 顶 rv1）。
+                    uint pathIdx = blob.PathIdx(i);
+                    Sprite sp = null;
+                    Texture tex = fallback;
+                    if (pathIdx != 0 && sprites != null)
+                    {
+                        string path = blob.ReadPath(pathIdx);
+                        if (!string.IsNullOrEmpty(path))
+                        {
+                            sp = sprites.GetSprite(path);
+                            if (sp != null) tex = sp.texture;
+                        }
+                    }
+                    // Sprite 命中 → 把 mesh UV 重映射到 Sprite 在 atlas 内的子区（packed UV）。
+                    //   blob UV 全 [0,1]（T6）；Sprite.rect 是 atlas 内像素矩形（Unity y-up）。
+                    //   packed_u = ru0 + blob_u*(ru1-ru0)；packed_v = rv0 + blob_v*(rv1-rv0)。
+                    //   blob 的 v 已翻转（TL.v=1→atlas 顶 rv1），线性重映射保翻转。
+                    //   九宫格切片 mesh UV 同基于 [0,1] → 同公式正确（slice 比例由 Rust 算进 blob UV）。
+                    if (sp != null && sp.texture != null)
+                    {
+                        RemapMeshUvToSprite(ro, sp, sp.texture);
+                    }
                     // program 来自 blob（v5 第 19 列）：0=img/无图 Container，2=Container+bg-image（CSS 合成，坑 79）。
                     var mat = mm.Get((int)blob.Program(i), tex, maskCtx, !pure);
                     if (!pure)
@@ -228,6 +251,34 @@ namespace LoomGUI
             ro.Mesh.SetUVs(0, uv);
             ro.Mesh.SetColors(c);
             ro.Mesh.SetTriangles(idx, 0);
+        }
+
+        /// v1.4-a T8：把 mesh UV（blob 写全图 [0,1]，T6 后核心不知图集）重映射到 Sprite 在 atlas 内的子区。
+        /// SpriteAtlas 把 Sprite 打进 atlas 纹理子区 → 需用 sprite.rect + texture 尺寸算 packed UV。
+        ///   packed_u = ru0 + blob_u*(ru1-ru0)；packed_v = rv0 + blob_v*(rv1-rv0)。
+        /// blob UV 已 v 翻转（TL.v=1 → atlas 顶 rv1），线性重映射保翻转不二次翻转。
+        /// 九宫格切片同基于 [0,1] blob UV → 同公式（slice 比例由 Rust 算进 blob UV）。
+        ///
+        /// 直接改 ro.Mesh 的 UV（SetUVs 后 in-place 重写）——避免再 SetUVs 一次（Mesh 已持数据）。
+        /// 用 Mesh.GetUVs 读回 List，原地改，SetUVs 写回（比重建 List 省 alloc——但每帧 image 节点少，简单优先）。
+        static void RemapMeshUvToSprite(RenderObj ro, Sprite sp, Texture2D tex)
+        {
+            if (sp == null || tex == null) return;
+            float tw = tex.width;
+            float th = tex.height;
+            if (tw <= 0f || th <= 0f) return;
+            var r = sp.rect;
+            float ru0 = r.xMin / tw, ru1 = r.xMax / tw;
+            float rv0 = r.yMin / th, rv1 = r.yMax / th;
+            float du = ru1 - ru0, dv = rv1 - rv0;
+
+            var uvs = new List<Vector2>();
+            ro.Mesh.GetUVs(0, uvs);
+            for (int i = 0; i < uvs.Count; i++)
+            {
+                uvs[i] = new Vector2(ru0 + uvs[i].x * du, rv0 + uvs[i].y * dv);
+            }
+            ro.Mesh.SetUVs(0, uvs);
         }
 
         /// _ObjectMatrix 经 MPB 传 shader。SetMatrix 对 CBUFFER 内非 Properties 字段不生效（MPB 只覆盖

@@ -1,23 +1,26 @@
 using System;
+using System.Text;   // Encoding.UTF8 for ReadPath
 using UnityEngine;
 
 namespace LoomGUI
 {
     /// 帧 blob 托管解析视图。解析 Rust build_blob 产出的 little-endian blob。
     ///
-    /// 布局（镜像 loomgui_ffi_c/src/blob.rs）：
-    ///   header (116B): magic(u32 LE), version(u32)=6, node_count(u32),
+    /// 布局（镜像 loomgui_ffi_c/src/blob.rs，v7）：
+    ///   header (124B): magic(u32 LE), version(u32)=7, node_count(u32),
     ///                 20× col_offset(u32, byte offset from blob start),
     ///                 mesh_arena_off(u32), mesh_arena_len(u32),
     ///                 text_arena_off(u32), text_arena_len(u32),
-    ///                 clip_table_off(u32), clip_table_len(u32)
-    ///   20 列 SOA（顺序见 ColOff 注释），随后 mesh_arena / text_arena / clip_table 段。
+    ///                 clip_table_off(u32), clip_table_len(u32),
+    ///                 path_table_off(u32), path_table_len(u32)     ← v7 新增
+    ///   20 列 SOA（顺序见 ColOff 注释），随后 mesh_arena / text_arena / clip_table / path_table 段。
     /// C# on Windows 是 little-endian，BitConverter 直读无需 byte swap。
     public readonly struct FrameBlob
     {
         public const uint Magic = 0x4D4F4F4C;
         /// blob 版本。magic+version 校验在 IsValid。
-        public const uint ExpectedVersion = 6;
+        /// v7：tex_id 列 → path_idx 列 + path string table arena（v1.4-a T6/T8「核心不知图集」）。
+        public const uint ExpectedVersion = 7;
 
         readonly byte[] _buf;
 
@@ -36,11 +39,11 @@ namespace LoomGUI
         //   12=payload_kind(u8, 0=Unchanged 1=Mesh 2=Text)
         //   13=mesh_off(u32) 14=mesh_len(u32)
         //   15=text_off(u32) 16=text_len(u32)
-        //   17=tex_id(u32)
+        //   17=path_idx(u32)  ← v7：原 tex_id → path_idx（path 表 1-based 索引，0=纯色无图）
         //   18=program(u8, 0=img/无图 1=Text 2=Container+bg-image 3=filter无bg-image 4=filter+bg-image)  ← v5 新增
         //   19=color_matrix([f32;20], 80B)
         int ColOff(int idx) => (int)ReadU32(12 + idx * 4);
-        // 三 arena header offset。20 列 col_offset 之后：mesh(2), text(2), clip(2) 各 off+len。
+        // 四 arena header offset。20 列 col_offset 之后：mesh(2), text(2), clip(2), path(2) 各 off+len。
         // mesh_arena_off @ 12+20*4 = 92；mesh_arena_len @ 96。
         int MeshArenaOff => (int)ReadU32(12 + 20 * 4);
         // text_arena_off @ 12+20*4+2*4 = 100；text_arena_len @ 104。
@@ -49,6 +52,9 @@ namespace LoomGUI
         // clip_table_off @ 12+20*4+4*4 = 108；clip_table_len @ 112。
         int ClipTableOff => (int)ReadU32(12 + 20 * 4 + 4 * 4);
         int ClipTableLen => (int)ReadU32(12 + 20 * 4 + 4 * 4 + 4);
+        // v7：path_table_off @ 12+20*4+6*4 = 116；path_table_len @ 120。
+        int PathTableOff => (int)ReadU32(12 + 20 * 4 + 6 * 4);
+        int PathTableLen => (int)ReadU32(12 + 20 * 4 + 6 * 4 + 4);
 
         public uint NodeId(int i) => ReadU32(ColOff(0) + i * 4);
         public int ParentId(int i) => (int)ReadU32(ColOff(1) + i * 4);
@@ -68,7 +74,9 @@ namespace LoomGUI
         uint MeshLen(int i) => ReadU32(ColOff(14) + i * 4);
         public uint TextOff(int i) => ReadU32(ColOff(15) + i * 4);
         public uint TextLen(int i) => ReadU32(ColOff(16) + i * 4);
-        public uint TexId(int i) => ReadU32(ColOff(17) + i * 4);
+        /// v7：第 18 列 path_idx（u32）。Mesh→path 表 1-based 索引（0=纯色无图），Text/Unchanged=0。
+        /// MirrorPool 读 path_idx → ReadPath(idx) 取 path → LoomStage.GetSprite(path) 查 Sprite。
+        public uint PathIdx(int i) => ReadU32(ColOff(17) + i * 4);
         /// 节点 i 的 program（u8 列，ColOff(18) + i）。0=img/无图 Container，1=Text，2=Container+bg-image，3=filter无bg-image，4=filter+bg-image。
         public byte Program(int i) => _buf[ColOff(18) + i];
 
@@ -87,6 +95,34 @@ namespace LoomGUI
         public bool IsPureTranslation(int i) =>
             Math.Abs(Ma(i) - 1f) < 1e-6f && Math.Abs(Mb(i)) < 1e-6f
             && Math.Abs(Mc(i)) < 1e-6f && Math.Abs(Md(i) - 1f) < 1e-6f;
+
+        // ===== v7 path string table（§5.2）：path_idx 列 1-based 索引此表。
+        // layout: path_count:u32 后跟 count × {path_len:u32, path_bytes:u8[path_len]}（length-prefixed UTF-8）。
+        // 镜像 Rust blob.rs::read_path / path_count。MirrorPool 读 path_idx → ReadPath(idx) 取 path 串。
+        /// path string table 的 path_count（path table 首 4B）。无 image_path scene 恒为 0。
+        public int PathCount => PathTableLen >= 4 ? (int)ReadU32(PathTableOff) : 0;
+
+        /// 读 path string table 第 idx（1-based）条 path。
+        /// idx=0 → null（纯色无图）；idx>0 → 读 path_table 内第 idx 条 length-prefixed UTF-8。
+        /// 越界 / 损坏 → null（调用方 fallback，不崩）。
+        public string ReadPath(uint idx)
+        {
+            if (idx == 0) return null;
+            int count = PathCount;
+            if (idx > count) return null;
+            int p = PathTableOff + 4;   // 跳 path_count
+            for (uint n = 1; n <= idx; n++)
+            {
+                int len = (int)ReadU32(p);
+                p += 4;
+                if (n == idx)
+                {
+                    return System.Text.Encoding.UTF8.GetString(_buf, p, len);
+                }
+                p += len;
+            }
+            return null;
+        }
 
         /// clip 表 entry 数（context>0 入表）。无 mask scene 恒为 0。
         /// clip 表段布局：clip_count(u32) + entries[count × {ctx,x,y,w,h}]。

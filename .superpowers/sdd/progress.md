@@ -15,3 +15,4 @@ BASE=7a01d77
 - T5: complete (commits fa19bc0..3ac7a92, review clean after fix) — instantiate 克隆子树 + 伪类去重 + 3 T4 测试债还清 + 多实例 hover 独立性测试
 - T6: complete (commit pending) — Image RenderNode payload 改带 image_path (砍 texture/UV子区/tex_id/fit_uv/TextureRegistry/TexMeta/asset::texture.rs). layout solve 砍 textures 参数 (Image intrinsic 64×64 兜底). FrameBlob v7: tex_id 列→path_idx 列 + path string table arena. 556 workspace 测试全过 (486 core + 45 ffi + 余). FFI blob 同步改完 (非 T7 stub).
 - T6: complete (commits 3ac7a92..c4d488e, review clean after D17 fix) — Image payload path + 砍 TextureRegistry + D17 图尺寸表(打包期 PNG IHDR). spec 补 D17
+- T7: complete (commits c4d488e..262e0fb, review clean) — FFI load_package name + instantiate + 砍 atlas FFI + csbindgen regen + .dll. Unity LoomStage.cs 断裂 T8 修
