@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>图片页</title>
+<style>
+/* page_image 组件 CSS（D6 组件隔离）——抽自旧 style.css 的 §3/§3.8/§3.9 + base */
+.root{width:1080px;height:1920px;background-color:#1a1d2e;}
+.header{background-color:#252839;border-bottom:2px solid #3a3f55;padding:20px;gap:14px;flex-direction:row;align-items:center;justify-content:space-between;}
+.title{color:#e0e0e0;font-size:32px;font-weight:700;}
+.back{background-color:#2d3148;border:1px solid #3a3f55;padding:10px 16px;color:#9aa0b4;font-size:18px;}
+.back:hover{background-color:#3a4258;color:#5fb2c4;border:1px solid #5fb2c4;}
+.back:active{transform:scale(0.96);}
+.scroll{flex-grow:1;overflow-y:scroll;}
+.content{gap:16px;padding:24px;}
+.sec{gap:16px;}
+.sec-h{color:#5fb2c4;font-size:28px;font-weight:700;border-bottom:1px solid #3a3f55;padding-bottom:8px;}
+.card{background-color:#252839;border:1px solid #3a3f55;padding:16px;gap:12px;}
+.card-h{flex-direction:row;justify-content:space-between;align-items:center;}
+.card-t{color:#e0e0e0;font-size:22px;font-weight:700;}
+.card-x{color:#9aa0b4;font-size:14px;}
+.card-b{flex-direction:row;gap:12px;flex-wrap:wrap;align-items:flex-start;}
+/* §3 视觉样式板 */
+.sw{width:60px;height:60px;}
+.op,.tr{width:80px;height:60px;background-color:#5fb2c4;color:#1a1d2e;font-size:16px;display:flex;align-items:center;justify-content:center;}
+.bg-demo{width:160px;height:120px;color:#e0e0e0;font-size:16px;display:flex;align-items:center;justify-content:center;overflow:hidden;background-repeat:no-repeat;}
+.br-demo{width:80px;height:80px;color:#e0e0e0;font-size:13px;display:flex;align-items:center;justify-content:center;overflow:hidden;background-repeat:no-repeat;}
+/* §3.8 ColorFilter：filter 函数演示。带 bg-image 让 filter 效果可见。 */
+.cf-demo{width:160px;height:60px;background-image:url(res/icons/home.png);background-size:cover;background-repeat:no-repeat;background-color:#5fb2c4;color:#1a1d2e;font-size:14px;display:flex;align-items:center;justify-content:center;}
+/* §3.9 九宫格：border-image-slice 皮肤缩放。 */
+.ns-demo{color:#e0e0e0;font-size:14px;display:flex;align-items:center;justify-content:center;background-repeat:no-repeat;border:1px solid #3a3f55;}
+.ns-sm{width:80px;height:60px;}
+.ns-lg{width:240px;height:120px;}
+</style>
+</head>
+<body>
+<div class="root">
+  <div class="header">
+    <div class="title">图片 · bg-image/九宫格/滤镜</div>
+    <div class="back" id="back-home">← 返回</div>
+  </div>
+  <div class="scroll" id="page-scroll">
+    <div class="content">
+      <div class="sec" id="sec-3">
+        <div class="sec-h">§3 视觉样式板</div>
+        <div class="card">
+          <div class="card-h"><span class="card-t">3.1 border</span><span class="card-x">预期: 边框样式</span></div>
+          <div class="card-b">
+            <div class="tr" style="border:2px solid #5fb2c4">solid</div>
+            <div class="tr" style="border:6px solid #6fa66c">thick</div>
+            <div class="tr" style="border:2px dashed #c2605a">dash</div>
+            <div class="tr" style="border-top:4px solid #e0e0e0">top</div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-h"><span class="card-t">3.2 opacity 阶梯</span><span class="card-x">预期: 1.0/0.7/0.4/0.2</span></div>
+          <div class="card-b">
+            <div class="op" style="opacity:1">1.0</div>
+            <div class="op" style="opacity:0.7">0.7</div>
+            <div class="op" style="opacity:0.4">0.4</div>
+            <div class="op" style="opacity:0.2">0.2</div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-h"><span class="card-t">3.3 transform</span><span class="card-x">预期: 平移/旋转/缩放/剪切</span></div>
+          <div class="card-b">
+            <div class="tr" style="transform:translate(20px,10px)">translate</div>
+            <div class="tr" style="transform:rotate(30deg)">rotate</div>
+            <div class="tr" style="transform:scale(1.4)">scale</div>
+            <div class="tr" style="transform:scale(2,1) rotate(20deg)">剪切</div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-h"><span class="card-t">3.5 调色板</span><span class="card-x">预期: 8 色横条序列</span></div>
+          <div class="card-b">
+            <div class="sw" style="background-color:#1a1d2e"></div>
+            <div class="sw" style="background-color:#252839"></div>
+            <div class="sw" style="background-color:#5fb2c4"></div>
+            <div class="sw" style="background-color:#6fa66c"></div>
+            <div class="sw" style="background-color:#c2605a"></div>
+            <div class="sw" style="background-color:#e0e0e0"></div>
+            <div class="sw" style="background-color:#9aa0b4"></div>
+            <div class="sw" style="background-color:#6c7080"></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-h"><span class="card-t">3.6 background-image</span><span class="card-x">预期: cover/contain/100% 含 bg-color + 无 bg-color</span></div>
+          <div class="card-b">
+            <div class="bg-demo" style="background-color:#1a1d2e;background-image:url(res/icons/home.png);background-size:cover">cover</div>
+            <div class="bg-demo" style="background-color:#5fb2c4;background-image:url(res/icons/home.png);background-size:contain">contain（透青底）</div>
+            <div class="bg-demo" style="background-color:#c2605a;background-image:url(res/icons/home.png);background-size:100%">100% 拉伸（透红底）</div>
+            <div class="bg-demo" style="background-image:url(res/icons/eye.png);background-size:cover">无底色 cover</div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-h"><span class="card-t">3.7 border-radius</span><span class="card-x">预期: 四角圆 / 不对称 / 椭圆角 / 50% 圆 / 与背景图共存</span></div>
+          <div class="card-b" style="flex-direction:row;gap:8px;width:100%;flex-wrap:wrap">
+            <div class="br-demo" style="background-color:#1a1d2e;border-radius:8px">8px</div>
+            <div class="br-demo" style="background-color:#5fb2c4;border-radius:16px">16px</div>
+            <div class="br-demo" style="background-color:#c2605a;border-radius:4px 12px">4 12</div>
+            <div class="br-demo" style="background-color:#7b6cd9;border-radius:20px / 10px">20/10</div>
+            <div class="br-demo" style="background-color:#3a8c5f;border-radius:50%">50%</div>
+            <div class="br-demo" style="background-image:url(res/icons/skin.png);background-size:cover;border-radius:12px">图+圆角</div>
+          </div>
+        </div>
+      </div>
+      <div class="sec" id="sec38">
+        <div class="sec-h">3.8 ColorFilter（filter）</div>
+        <div class="card">
+          <div class="card-h"><div class="card-t">filter 函数</div><div class="card-x">标准 CSS</div></div>
+          <div class="card-b">
+            <div class="cf-demo" style="filter:grayscale(1)">grayscale</div>
+            <div class="cf-demo" style="filter:brightness(1.5)">brightness 1.5</div>
+            <div class="cf-demo" style="filter:contrast(1.5)">contrast 1.5</div>
+            <div class="cf-demo" style="filter:saturate(2)">saturate 2</div>
+            <div class="cf-demo" style="filter:hue-rotate(90deg)">hue 90°</div>
+            <div class="cf-demo" style="filter:invert(1)">invert</div>
+            <div class="cf-demo" style="filter:grayscale(1) brightness(1.2)">gray+bright</div>
+          </div>
+        </div>
+      </div>
+      <div class="sec" id="sec39">
+        <div class="sec-h">3.9 九宫格 border-image-slice</div>
+        <div class="card">
+          <div class="card-h"><div class="card-t">slice 皮肤缩放</div><div class="card-x">四角不变形</div></div>
+          <div class="card-b">
+            <div class="ns-demo ns-sm" style="background-image:url(res/icons/skin.png);border-image-slice:16">小 80×60</div>
+            <div class="ns-demo ns-lg" style="background-image:url(res/icons/skin.png);border-image-slice:16">大 240×120</div>
+            <div class="ns-demo ns-sm" style="background-image:url(res/icons/skin.png);border-image-slice:16;border-radius:12">slice+radius</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

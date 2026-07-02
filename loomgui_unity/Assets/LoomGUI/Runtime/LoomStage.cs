@@ -5,6 +5,7 @@ using System.Runtime.InteropServices;
 using System.Text;
 using LoomGUI.Bindings;
 using UnityEngine;
+using UnityEngine.U2D;   // SpriteAtlas（v1.4-a T8 path→Sprite 查询）
 
 namespace LoomGUI
 {
@@ -15,8 +16,12 @@ namespace LoomGUI
 
     /// <summary>
     /// 集成入口：把 Rust Stage（tick→borrow_frame→blob）接到 Unity MirrorPool 渲染。
-    /// 挂场景即跑：Awake 建 stage+load_html+配置根/相机；LateUpdate 每帧
+    /// 挂场景即跑：Awake 建 stage+pool+SpriteResolver+配置根/相机；LateUpdate 每帧
     /// tick→borrow→Marshal.Copy→FrameBlob→MirrorPool.Sync。
+    ///
+    /// v1.4-a T8：包加载重构——Awake 不再自动 load 单包建 scene。业务 driver 调
+    /// CreateRoot 建 scene → LoadPackage(name, bytes) 进资源池 → Instantiate(pkg, comp) 建内容。
+    /// 图片走 path→Sprite（Sprite Atlas），不再 LoadAtlas/_texMap/tex_id。
     ///
     /// 设计坐标系：origin 左上、y-down，单位 design px（_designSize）。根 transform 一次做
     /// MatchWidthOrHeight 缩放 + y-flip（localScale=(sf,-sf,sf)）+ 平移到屏幕左上原点。
@@ -26,10 +31,6 @@ namespace LoomGUI
     [ExecuteAlways]
     public sealed unsafe class LoomStage : MonoBehaviour
     {
-        // 解析器不读 inline style=（见 layout/mod.rs 注释），用 class + 独立 CSS。
-        [SerializeField] string _html = "<div class=\"b\"></div>";
-        [SerializeField] string _css =
-            ".b{width:200px;height:100px;background-color:#ff0000;}";
         [SerializeField] Vector2 _designSize = new(1080, 1920);
         [SerializeField] Camera _uiCamera;
         // Unity 动态字体：与 Rust measure 的同一份 DejaVuSans.ttf（Assets/LoomGUI/Fonts/）。
@@ -41,16 +42,13 @@ namespace LoomGUI
         // 须与 _font（Unity 光栅用）是同一份 ttf（跨平台一致性）。
         [SerializeField] string _fontFile = "DejaVuSans.ttf";
 
-        // 从二进制包加载（true）vs inline _html/_css（false，默认）。
-        // true 时从 StreamingAssets/_pkgFile 读 .pkg.bin → loomgui_stage_load_package。
-        [SerializeField] bool _usePackage;
-        [SerializeField] string _pkgFile = "loom_atlas.pkg.bin";
+        // v1.4-a T8：Sprite Atlas 接入。开发者建 SpriteAtlas asset（把 res/ 下 Sprite 划进去），
+        // Inspector 拖入此列表。LoomStage Awake 时注册进 SpriteResolver，MirrorPool 按 path 查 Sprite。
+        // 多图集：path 路由到对应 atlas 是 Unity 内部事（核心不感知）。
+        [SerializeField] List<SpriteAtlas> _spriteAtlases = new();
 
-        // 500 节点静态压测 fixture：勾选 → Awake 覆盖 _html/_css 为程序生成的 ~500 节点
-        // （嵌套 flex column + 每行 colored div + text label，覆盖 mesh + text 双路径）。
-        // 默认 false。PlayMode 肉眼验无卡顿。
-        [SerializeField] bool _stress500;
-        // OnGUI 左上角 FPS 读数（1/Time.smoothDeltaTime + pool 节点数）。stress500 或本开关任一为真即显。
+        // on-screen FPS 读数。stress500 已砍（v1.4-a 改包加载模型，原内联 html fixture 无加载路径；
+        // stress 测试改用内存 pkg + instantiate）。本开关保留供 driver 手动开 FPS 显示。
         [SerializeField] bool _showFps;
 
         // safe-area 根 letterbox（默认 on）。on 时根 shrink-to-fit 到 Screen.safeArea，
@@ -63,12 +61,11 @@ namespace LoomGUI
         MaterialManager _mm;
         MirrorPool _pool;
         NativeHostManager _nhm;
+        // v1.4-a T8：path → Sprite 查询（替代 _texMap）。MirrorPool 按 path_idx→path→GetSprite 查。
+        SpriteResolver _sprites;
         // ArrayPool 租用（非 new）。Rent 返回 ≥len，只 copy/解析 len 字节。
         // OnDestroy 归还防泄漏。冷帧零 GC（ReadMesh per-node alloc 留观察，撞墙再上 List 复用）。
         byte[] _frameBuf;
-        // tex_id → Texture2D（LoadAtlas 填；Sync 按 blob.TexId 查此绑 atlas 纹理）。
-        // 同 atlas 的多个 sprite 共享同一 Texture2D（atlas.png）→ MaterialManager key 命中同实例 → batchable。
-        readonly Dictionary<uint, Texture2D> _texMap = new();
 
         // 输入采集 + 事件派发（Inspector 指定；为 null 时跳过输入/事件路径）。
         // _inputCollector 通常与本 MonoBehaviour 同 GO（Awake 时 GetComponent 兜底）。
@@ -181,11 +178,43 @@ namespace LoomGUI
             Native.loomgui_stage_clear_anim_prop(_stage, nodeId, (uint)prop);
         }
 
-        // ===== T8 动态树 API 封装（§7.2）：转调 FFI（T7 csbindgen 生成 Native.loomgui_stage_*）。
-        // kind/css/text/src = UTF-8 字节（fixed 钉住 + 指针+len，同 FindNodeById/LoadHtml 风格）。
+        // ===== v1.4-a T8 包加载 API（§4 load_package/instantiate）：转调 FFI（T7 csbindgen 生成）。
+        // 包 = 资源池里的组件模板库；load_package 只进资源池不建 scene；instantiate 克隆子树进 scene。
+        // 调用流程（业务 driver）：CreateRoot 建 scene → LoadPackage(name,bytes) 进资源池 →
+        // Instantiate(pkg,comp) 建内容 → AppendChild 挂 layer。
+
+        /// 加载包进 Stage 资源池（不建 scene）。多包共存（多次调，name 区分）。
+        /// name = 包名（UTF-8，对齐 T4 Stage::load_package(name, bytes)）；bytes = .pkg.bin 二进制。
+        /// 返 0=ok，-1=err（stage 未建 / native 解析失败）。包是 Rust-internal，C# 只透传 bytes（不解析）。
+        public int LoadPackage(string name, byte[] bytes)
+        {
+            if (_stage == null) return -1;
+            byte[] nb = Encoding.UTF8.GetBytes(name ?? "");
+            fixed (byte* np = nb, bp = bytes)
+            {
+                int r = Native.loomgui_stage_load_package(
+                    _stage, np, (nuint)nb.Length, bp, (nuint)(bytes?.Length ?? 0));
+                return r;
+            }
+        }
+
+        /// 从包克隆组件子树进当前 scene，返组件根 NodeId（孤立，调用方 AppendChild 挂 layer）。
+        /// pkg = 包名；comp = 组件名（HTML 文件名去 .html）。返 0xFFFF_FFFF = 失败（无 scene / 包/组件不存在）。
+        public uint Instantiate(string pkg, string comp)
+        {
+            if (_stage == null) return uint.MaxValue;
+            byte[] pb = Encoding.UTF8.GetBytes(pkg ?? "");
+            byte[] cb = Encoding.UTF8.GetBytes(comp ?? "");
+            fixed (byte* pp = pb, cp = cb)
+                return Native.loomgui_stage_instantiate(
+                    _stage, pp, (nuint)pb.Length, cp, (nuint)cb.Length);
+        }
+
+        // ===== 动态树 API 封装（§7.2）：转调 FFI（T7 csbindgen 生成 Native.loomgui_stage_*）。
+        // kind/css/text/src = UTF-8 字节（fixed 钉住 + 指针+len，同 FindNodeById 风格）。
         // create_root/create_node 返 uint NodeId（0xFFFF_FFFF = 失败）；其余返 int（0=ok，-1=err）。
         // 调用方：用返回的 NodeId 句柄，勿硬编码 0（slotmap idx 从 1 起 → 首节点 NodeId 非 0）。
-        // 前置：须先 load_html/load_package 建 scene（create_root 等需 self.scene Some）。
+        // 前置：须先 CreateRoot 建 scene（create_node 等需 self.scene Some）。
 
         /// 建根节点并设为 roots[0]。kind ∈ {div/l-container/button/img/span}；css = "w:100px;..."。
         /// 返 NodeId；0xFFFF_FFFF = 失败（无 scene / 未知 kind）。
@@ -295,28 +324,10 @@ namespace LoomGUI
             }
 
             // _stage 创建后即 SetHandle（handler.node_parent FFI 需 StageHandle*）。
-            // 每次 load 成功后还会再调（清 _parentCache——新 scene 的 parent 关系变了）。
             _eventHandler.SetHandle((System.IntPtr)_stage);
 
-            // stress fixture：勾选 → 程序生成 ~500 节点 html/css（mesh + text 双路径）。
-            if (_stress500) BuildStress500Fixture();
-
-            bool loaded;
-            if (_usePackage)
-            {
-                loaded = LoadPackage();
-            }
-            else
-            {
-                loaded = LoadHtml();
-            }
-            if (!loaded)
-            {
-                Debug.LogError("[LoomStage] load 失败");
-                FreeStage();
-                return;
-            }
-
+            // v1.4-a T8：不再自动 load 单包建 scene。业务 driver 调 CreateRoot 建 scene →
+            // LoadPackage(name,bytes) 进资源池 → Instantiate(pkg,comp) 建内容。Awake 只建基础设施。
             var shader = Shader.Find("LoomGUI/Unlit");
             if (shader == null)
             {
@@ -328,10 +339,11 @@ namespace LoomGUI
             _pool = new MirrorPool();
             _nhm = new NativeHostManager(); _nhm.Init(transform);
 
-            // collect atlas（atlas_count/info）→ load atlas.png → _texMap[atlas_tex_id]。
-            // 同 atlas 所有 sprite 共享 1 Texture2D（batchable）。inline 分支（_usePackage=false）
-            // 无 atlas 需加载——atlas_count 返 0，LoadAtlas 早退，_texMap 空（下游全 fallback）。
-            if (_usePackage) LoadAtlas();
+            // v1.4-a T8：path→Sprite 查询（替代 LoadAtlas/_texMap）。注册 Inspector 配的 SpriteAtlas。
+            // 开发者建 SpriteAtlas asset（res/ 下 Sprite 划进去），Inspector 拖入 _spriteAtlases。
+            // MirrorPool 按 blob path_idx→path→GetSprite 查 Sprite（懒查 + 缓存）。
+            _sprites = new SpriteResolver();
+            if (_spriteAtlases != null) _sprites.RegisterAtlases(_spriteAtlases);
 
             EnsureFont();
             // Font.textureRebuilt 是静态事件：atlas 异步 rebuild 时 glyph UV 变。
@@ -366,171 +378,19 @@ namespace LoomGUI
 #endif
         }
 
-        /// <summary>
-        /// load_html：UTF8 字节 + fixed 钉住。返回 native 码（0=ok）。
-        /// load 成功后 SetHandle 清 handler._parentCache（scene 重建，parent 关系变）。
-        /// </summary>
-        bool LoadHtml()
-        {
-            if (_stage == null) return false;
-            byte[] hb = string.IsNullOrEmpty(_html) ? Array.Empty<byte>() : Encoding.UTF8.GetBytes(_html);
-            byte[] cb = string.IsNullOrEmpty(_css) ? Array.Empty<byte>() : Encoding.UTF8.GetBytes(_css);
-            fixed (byte* hp = hb, cp = cb)
-            {
-                int r = Native.loomgui_stage_load_html(
-                    _stage, hp, (nuint)hb.Length, cp, (nuint)cb.Length);
-                if (r != 0) return false;
-            }
-            _eventHandler.SetHandle((System.IntPtr)_stage);
-            return true;
-        }
+        // v1.4-a T8：砍 LoadHtml / LoadPackage()（private）/ LoadPackageFile / LoadAtlas /
+        // BuildStress500Fixture。包加载改走 public LoadPackage(name, bytes) + Instantiate（见上）。
+        // 图片走 path→Sprite（SpriteResolver），不再 LoadAtlas/_texMap/tex_id。
+        // stress500 fixture 随 inline 路径一起砍——stress 测试改用内存 pkg + instantiate（T11 driver）。
 
         /// <summary>
-        /// 运行时切换 pkg.bin（动态加载 bin / 切界面）。
-        /// 改 _pkgFile → LoadPackage（重建 scene + 清 tween/scroll/hashes）→ 清旧 atlas/texMap →
-        /// 重 LoadAtlas（新 pkg 的 atlas）→ 清 MirrorPool（旧 RenderObj 全 stale，下帧重建）。
-        /// 返回 false = 文件不存在/load 失败（scene 已被清，UI 空白，调方应切回有效 pkg）。
-        /// </summary>
-        public bool LoadPackageFile(string pkgFile)
-        {
-            if (_stage == null) return false;
-            _pkgFile = pkgFile;
-            if (!LoadPackage()) return false;
-            // 旧 atlas/texMap 失效（新 pkg 的 tex_id 重新分配），清后重 collect。
-            _texMap.Clear();
-            LoadAtlas();
-            // 旧 RenderObj 指向旧 NodeId（scene 重建后 NodeId 复位），清池强制下帧全重建。
-            if (_pool != null) _pool.Clear();
-            return true;
-        }
-
-        /// <summary>
-        /// 从 StreamingAssets/_pkgFile 读 .pkg.bin → loomgui_stage_load_package。
-        /// 包是 Rust-internal，C# 只读文件透传 bytes（不解析）。editor/desktop 用 File.ReadAllBytes。
-        /// load 成功后 SetHandle 清 handler._parentCache（scene 重建，parent 关系变）。
-        /// </summary>
-        bool LoadPackage()
-        {
-            if (_stage == null) return false;
-            string pkgPath = System.IO.Path.Combine(Application.streamingAssetsPath, _pkgFile);
-            if (!System.IO.File.Exists(pkgPath))
-            {
-                Debug.LogError($"[LoomStage] 包文件不存在：{pkgPath}");
-                return false;
-            }
-            byte[] pkg = System.IO.File.ReadAllBytes(pkgPath);
-            fixed (byte* pp = pkg)
-            {
-                int r = Native.loomgui_stage_load_package(_stage, pp, (nuint)pkg.Length);
-                if (r != 0) return false;
-            }
-            _eventHandler.SetHandle((System.IntPtr)_stage);
-            return true;
-        }
-
-        /// <summary>
-        /// collect atlas（atlas_count/info）→ 读 atlas.png → _texMap[atlas_tex_id]。
-        /// 同 atlas 所有 sprite 共享 1 Texture2D（MaterialManager key=(program,tex,ctx) →
-        /// 同 atlas 的多个节点复用同一 Material 实例 → batchable）。缺图/坏图 → LogError 跳过
-        /// （下游 tex_id 缺 → texMap.TryGetValue miss → fallback 白占位，不阻塞渲染）。
-        ///
-        /// FFI 契约（atlas_count/info）：
-        ///   atlas_count(StageHandle*) → nuint（有 atlas scene 恒 1；无图 scene = 0）。
-        ///   atlas_info(StageHandle*, i, uint* tid, uint* w, uint* h, nuint* src_len) → byte*
-        ///     返 atlas filename UTF-8 串（**无尾 NUL**）+ *out_src_len = 字节长；
-        ///     *out_tex_id = core 分配（= i+1）；*out_w/*out_h = atlas 像素尺寸。
-        ///
-        /// string contract：返串**无尾 NUL** + out_len = 字节长。C# 必走
-        /// `Encoding.UTF8.GetString(p, (int)srcLen)`（len-based 读），**禁止** PtrToStringAnsi
-        /// （NUL-scan 会越过 stage 缓存末尾读未映射内存）。
-        /// </summary>
-        void LoadAtlas()
-        {
-            _texMap.Clear();
-            if (_stage == null) return;
-
-            nuint count;
-            unsafe { count = Native.loomgui_stage_atlas_count(_stage); }
-
-            for (nuint i = 0; i < count; i++)
-            {
-                byte* p = null;
-                nuint srcLen = 0;
-                uint tid = 0;
-                uint aw = 0;
-                uint ah = 0;
-                unsafe { p = Native.loomgui_stage_atlas_info(_stage, i, &tid, &aw, &ah, &srcLen); }
-                if (p == null || srcLen == 0) continue;
-
-                // len-based 读（string contract；禁止 NUL-scan / PtrToStringAnsi）。
-                string src = Encoding.UTF8.GetString(p, (int)srcLen);
-                string path = System.IO.Path.Combine(Application.streamingAssetsPath, src);
-
-                byte[] bytes;
-                try { bytes = System.IO.File.ReadAllBytes(path); }
-                catch (System.Exception e)
-                {
-                    Debug.LogError($"[LoomStage] atlas not found: {src} ({e.Message})");
-                    continue;
-                }
-
-                // 初始尺寸传 atlas 元数据 w/h（LoadImage 会按 PNG IHDR 重设，但构造时给合理值）。
-                var tex = new Texture2D((int)aw, (int)ah);
-                if (!tex.LoadImage(bytes))
-                {
-                    Debug.LogError($"[LoomStage] bad atlas png: {src}");
-                    // 全限定 UnityEngine.Object：using System 引入 System.Object，裸 Object 歧义。
-                    if (Application.isPlaying) UnityEngine.Object.Destroy(tex);
-                    else UnityEngine.Object.DestroyImmediate(tex);
-                    continue;
-                }
-
-                _texMap[tid] = tex;   // tid = i+1（core 分配）；同 atlas 所有 sprite 共享此 Texture2D
-            }
-        }
-
-        /// <summary>
-        /// stress fixture：程序生成 ~500 渲染节点的 html/css。
-        /// 结构：一个 flex column 容器，内含 N 行；每行 = 一个 colored div（mesh 路径）+
-        /// 一个 text label（text 路径）。每行约 2 渲染节点（div + text），250 行 ≈ 500 节点。
-        /// 颜色用行号取模分配（视觉可辨、避免全同色无法肉眼判卡顿）。
-        /// 解析器不读 inline style=（layout/mod.rs 注释），故全用 class + 独立 CSS。
-        /// </summary>
-        void BuildStress500Fixture()
-        {
-            const int Rows = 250;   // 每行 1 div + 1 text 子 → ~500 渲染节点。
-            var html = new StringBuilder(1 << 14);
-            html.Append("<div class=\"c\">");
-            for (int i = 0; i < Rows; i++)
-            {
-                // 裸文本（非 <p>——p 不在围栏元素 div/span/img/button 内，parse 白名单拒
-                // → load 失败 0 节点）。div 裸文本 → Text 子节点（scene/node.rs::build_text_child）。
-                html.Append("<div class=\"r").Append(i % 4).Append("\">row ").Append(i).Append("</div>");
-            }
-            html.Append("</div>");
-
-            // color/font-size 放 .c（继承到所有 text 子）；.rX 只管配色/尺寸/margin。
-            // 用 px 绝对值；行高 ~32px 容纳 250 行（超出 design 高度会溢出，
-            // 但本测关心的是渲染节点数与帧时间，不关心可视区域；Rust 仍 layout 全部节点）。
-            var css = new StringBuilder(1 << 12);
-            css.Append(".c{display:flex;flex-direction:column;width:1000px;color:#ffffff;font-size:20px;}");
-            css.Append(".r0{width:960px;height:28px;background-color:#c62828;margin:2px;}");
-            css.Append(".r1{width:960px;height:28px;background-color:#1565c0;margin:2px;}");
-            css.Append(".r2{width:960px;height:28px;background-color:#2e7d32;margin:2px;}");
-            css.Append(".r3{width:960px;height:28px;background-color:#6a1b9a;margin:2px;}");
-
-            _html = html.ToString();
-            _css = css.ToString();
-        }
-
-        /// <summary>
-        /// on-screen FPS 读数（_stress500 或 _showFps 任一为真时显示）。
+        /// on-screen FPS 读数（_showFps 为真时显示）。
         /// 1/Time.smoothDeltaTime 平滑帧率 + MirrorPool 当前节点数。最小实现（不做 profiler）。
         /// 用户在 PlayMode 肉眼判卡顿。
         /// </summary>
         void OnGUI()
         {
-            if (!_stress500 && !_showFps) return;
+            if (!_showFps) return;
             float fps = Time.smoothDeltaTime > 0f ? 1f / Time.smoothDeltaTime : 0f;
             int nodes = _pool?.Count ?? 0;
             string label = $"FPS {fps:F1}  nodes {nodes}";
@@ -656,7 +516,7 @@ namespace LoomGUI
                 Marshal.Copy((IntPtr)ptr, _frameBuf, 0, len);
 
                 var blob = new FrameBlob(_frameBuf);
-                _pool.Sync(blob, transform, _mm, _texMap, Texture2D.whiteTexture, _font);
+                _pool.Sync(blob, transform, _mm, _sprites, Texture2D.whiteTexture, _font);
                 _nhm.Sync(blob);
             }
 
@@ -677,17 +537,9 @@ namespace LoomGUI
             _pool?.Clear();
             _nhm?.Clear();
             _mm?.Clear();
-            // Dispose 真纹理。ExecuteAlways 下 OnDestroy 在 Edit/Play 都会跑——
-            // 必须按 Application.isPlaying 选 Destroy / DestroyImmediate（同 MirrorPool.TearDown 模式）。
-            if (_texMap != null)
-            {
-                foreach (var t in _texMap.Values)
-                {
-                    if (Application.isPlaying) UnityEngine.Object.Destroy(t);
-                    else UnityEngine.Object.DestroyImmediate(t);
-                }
-                _texMap.Clear();
-            }
+            // v1.4-a T8：SpriteResolver 是纯缓存（Dictionary + List<SpriteAtlas>），无 UnityEngine.Object
+            // 持有（SpriteAtlas/Sprite 由开发者 asset 持有，LoomStage 不销毁）。清缓存即可。
+            _sprites?.Clear();
             // 归还 ArrayPool 租用的 _frameBuf。
             if (_frameBuf != null)
             {

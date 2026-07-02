@@ -26,8 +26,9 @@ pub fn node_hash(rn: &RenderNode) -> u64 {
     // payload 摘要。
     match &rn.payload {
         NodePayload::Unchanged => 0u64,      // 防御；调用方不应对 Unchanged 调
-        NodePayload::Mesh { texture, verts, colors, uvs, program, color_matrix, .. } => {
-            texture.hash(&mut h);
+        NodePayload::Mesh { image_path, verts, colors, uvs, program, color_matrix, .. } => {
+            // v1.4-a T6：texture 砍，改 hash image_path（path 变 → 视觉变，须捕）。
+            image_path.hash(&mut h);
             // v1.3：捕 program 0/2→3/4 切换（filter 开关；3=filter 无 bg-image，4=filter+bg-image）与 color_matrix 值变（filter 参数改）。
             // 否则 filter on→off 或矩阵变时 hash 不变 → stale Unchanged → 视觉不更新。
             program.hash(&mut h);
@@ -96,7 +97,8 @@ mod tests {
     use crate::text::layout::{Glyph, GlyphRun, Line, TextLayout};
     use crate::transform::IDENTITY;
 
-    fn mesh_rn(tex: u32, alpha: f32, color0: [f32;4]) -> RenderNode {
+    /// v1.4-a T6：texture 砍，mesh_rn 改带 image_path（None=纯色，Some=图 path）。
+    fn mesh_rn(path: Option<&str>, alpha: f32, color0: [f32;4]) -> RenderNode {
         RenderNode {
             node_id: 0, parent_id: None, visible: true, alpha,
             grayed: false, color_tint: [1.0;4],
@@ -105,7 +107,7 @@ mod tests {
             payload: NodePayload::Mesh {
                 verts: vec![[0.0,0.0];4], uvs: vec![[0.0,0.0];4],
                 colors: vec![color0;4], indices: vec![0,1,2,0,2,3],
-                texture: tex, program: 0,
+                image_path: path.map(|s| s.to_string()), program: 0,
                 color_matrix: [0.0; 20],
             },
         }
@@ -113,44 +115,45 @@ mod tests {
 
     #[test]
     fn identical_nodes_same_hash() {
-        let a = mesh_rn(1, 1.0, [1.0,0.0,0.0,1.0]);
-        let b = mesh_rn(1, 1.0, [1.0,0.0,0.0,1.0]);
+        let a = mesh_rn(Some("a.png"), 1.0, [1.0,0.0,0.0,1.0]);
+        let b = mesh_rn(Some("a.png"), 1.0, [1.0,0.0,0.0,1.0]);
         assert_eq!(node_hash(&a), node_hash(&b), "全等节点 hash 相等");
     }
 
     #[test]
-    fn texture_change_changes_hash() {
-        let a = mesh_rn(1, 1.0, [1.0;4]);
-        let b = mesh_rn(2, 1.0, [1.0;4]);
-        assert_ne!(node_hash(&a), node_hash(&b), "texture 变 → hash 变");
+    fn image_path_change_changes_hash() {
+        // v1.4-a T6：image_path 变（换图）→ hash 变（视觉变）。
+        let a = mesh_rn(Some("a.png"), 1.0, [1.0;4]);
+        let b = mesh_rn(Some("b.png"), 1.0, [1.0;4]);
+        assert_ne!(node_hash(&a), node_hash(&b), "image_path 变 → hash 变");
     }
 
     #[test]
     fn color_change_changes_hash() {
-        let a = mesh_rn(1, 1.0, [1.0,0.0,0.0,1.0]);
-        let b = mesh_rn(1, 1.0, [0.0,1.0,0.0,1.0]);
+        let a = mesh_rn(Some("a.png"), 1.0, [1.0,0.0,0.0,1.0]);
+        let b = mesh_rn(Some("a.png"), 1.0, [0.0,1.0,0.0,1.0]);
         assert_ne!(node_hash(&a), node_hash(&b), "colors[0] 变 → hash 变");
     }
 
     #[test]
     fn alpha_change_changes_hash() {
-        let a = mesh_rn(1, 1.0, [1.0;4]);
-        let b = mesh_rn(1, 0.5, [1.0;4]);
+        let a = mesh_rn(Some("a.png"), 1.0, [1.0;4]);
+        let b = mesh_rn(Some("a.png"), 0.5, [1.0;4]);
         assert_ne!(node_hash(&a), node_hash(&b), "alpha 变 → hash 变");
     }
 
     #[test]
     fn world_matrix_change_changes_hash() {
-        let a = mesh_rn(1, 1.0, [1.0;4]);
-        let mut b = mesh_rn(1, 1.0, [1.0;4]);
+        let a = mesh_rn(Some("a.png"), 1.0, [1.0;4]);
+        let mut b = mesh_rn(Some("a.png"), 1.0, [1.0;4]);
         b.world_matrix = [1.0, 0.0, 0.0, 1.0, 5.0, 0.0]; // tx=5（scroll 平移）
         assert_ne!(node_hash(&a), node_hash(&b), "world_matrix 变（含 scroll_pos）→ hash 变");
     }
 
     #[test]
     fn verts_len_change_changes_hash() {
-        let a = mesh_rn(1, 1.0, [1.0;4]); // 4 verts
-        let mut b = mesh_rn(1, 1.0, [1.0;4]);
+        let a = mesh_rn(Some("a.png"), 1.0, [1.0;4]); // 4 verts
+        let mut b = mesh_rn(Some("a.png"), 1.0, [1.0;4]);
         if let NodePayload::Mesh { verts, .. } = &mut b.payload {
             verts.push([9.0, 9.0]); // 5 verts（尺寸变）
         }
@@ -159,7 +162,7 @@ mod tests {
 
     #[test]
     fn unchanged_returns_zero() {
-        let mut rn = mesh_rn(1, 1.0, [1.0;4]);
+        let mut rn = mesh_rn(Some("a.png"), 1.0, [1.0;4]);
         rn.payload = NodePayload::Unchanged;
         assert_eq!(node_hash(&rn), 0, "Unchanged 防御性返回 0");
     }
@@ -171,8 +174,8 @@ mod tests {
     // -----------------------------------------------------------------------
     #[test]
     fn mesh_quad_size_change_changes_hash() {
-        let a = mesh_rn(1, 1.0, [1.0,0.0,0.0,1.0]); // 4 verts 全 [0,0]（默认）
-        let mut b = mesh_rn(1, 1.0, [1.0,0.0,0.0,1.0]); // 同色/texture/alpha/world
+        let a = mesh_rn(Some("a.png"), 1.0, [1.0,0.0,0.0,1.0]); // 4 verts 全 [0,0]（默认）
+        let mut b = mesh_rn(Some("a.png"), 1.0, [1.0,0.0,0.0,1.0]); // 同色/texture/alpha/world
         if let NodePayload::Mesh { verts, .. } = &mut b.payload {
             // 改 quad 尺寸：TL=[0,0] BR=[100,100]（verts.len 仍 4，colors 不变，world 不变）。
             verts[2] = [100.0, 100.0];
@@ -183,8 +186,8 @@ mod tests {
     // 补：quad 位置变（TL 移动，尺寸不变）也应捕到。
     #[test]
     fn mesh_quad_position_change_changes_hash() {
-        let a = mesh_rn(1, 1.0, [1.0;4]);
-        let mut b = mesh_rn(1, 1.0, [1.0;4]);
+        let a = mesh_rn(Some("a.png"), 1.0, [1.0;4]);
+        let mut b = mesh_rn(Some("a.png"), 1.0, [1.0;4]);
         if let NodePayload::Mesh { verts, .. } = &mut b.payload {
             // 整体平移：verts[0] 移到 [50,50]（尺寸不变、color/world 不变）。
             verts[0] = [50.0, 50.0];
@@ -201,8 +204,8 @@ mod tests {
     fn mesh_uv_change_changes_hash() {
         // background-size 变（同纹理）→ fit_uv 重算 UV，但 texture/verts/colors 不变。
         // 须捕 UV 变否则 stale Unchanged（:hover 切 background-size 不生效）。
-        let a = mesh_rn(1, 1.0, [1.0;4]); // uvs 全 [0,0]（默认）
-        let mut b = mesh_rn(1, 1.0, [1.0;4]); // 同 texture/verts/colors
+        let a = mesh_rn(Some("a.png"), 1.0, [1.0;4]); // uvs 全 [0,0]（默认）
+        let mut b = mesh_rn(Some("a.png"), 1.0, [1.0;4]); // 同 texture/verts/colors
         if let NodePayload::Mesh { uvs, .. } = &mut b.payload {
             uvs[0] = [0.25, 0.75]; // 模拟 cover fit_uv 重算的 TL UV
         }
@@ -332,7 +335,7 @@ mod tests {
             mask_context: MaskContext(0), sort_key: 0,
             payload: NodePayload::Mesh {
                 verts, uvs, colors, indices,
-                texture: 1, program: 0,
+                image_path: Some("a.png".into()), program: 0,
                 color_matrix: [0.0; 20],
             },
         }

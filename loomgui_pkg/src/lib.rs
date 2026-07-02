@@ -1,186 +1,256 @@
-//! 打包器库：HTML+CSS+散图 → .pkg.bin + atlas.png。
-//! 复用 core parse/style/scene + asset::write_package；新加 image crate 解码/编码 PNG + shelf 打包。
+//! 打包器库：系统目录多 HTML → .pkg.bin（无 atlas）。
+//! v1.4-a：每个 HTML 独立 parse → resolve_styles → build_scene → 抽 TemplateNode；
+//! img src / background-image url 归一化进 asset_manifest；CSS bake 进 style_blob。
+//! 砍 image crate / shelf_pack / atlas.png（图集归 Unity，D8）。
+//!
+//! **D17（图尺寸）**：打包器对每个 manifest path 读 PNG IHDR（前 8 字节 magic + 13 字节 IHDR，
+//! width/height big-endian u32 at offset 16/20）填 `AssetEntry { path, w, h }`。非 PNG 或读失败 →
+//! w/h=0（核心 measure fallback 64×64）。不引 image crate——PNG header 解析 ~30 行即可。
 
-use loomgui_core::asset::{AtlasInfo, AtlasSection, AtlasSprite};
-use std::io::Cursor;
+use loomgui_core::asset::{AssetEntry, PackageInput, TemplateNode, extract_component_css, normalize_path};
+use loomgui_core::scene::NodeId;
+use scraper::{Html, Selector as ScraperSelector};
 use std::path::Path;
 
-/// 打包产物：.pkg.bin bytes + atlas.png bytes + atlas 相对文件名（写进 .pkg.bin header）。
+/// 打包产物：.pkg.bin bytes + asset_manifest（归一化 path + 图尺寸，供 Unity 校验 + 核心 measure/九宫格）。
+/// v1.4-a 砍 atlas_png/atlas_filename（图集归 Unity，D8）。
+/// D17：manifest 改 `Vec<AssetEntry>`（path + PNG IHDR 尺寸）。
 #[derive(Debug)]
 pub struct PackedPackage {
     pub pkg_bytes: Vec<u8>,
-    pub atlas_png: Vec<u8>,
-    pub atlas_filename: String,
+    pub asset_manifest: Vec<AssetEntry>,
 }
 
-/// 一个 sprite 在 shelf 打包后的位置（atlas 像素坐标，y-down）。
-#[derive(Debug)]
-struct PlacedSprite {
-    src: String,
-    x: u32,
-    y: u32,
-    w: u32,
-    h: u32,
-}
+/// 把单 scene 转 Vec<TemplateNode>（按 slotmap 插入序 = DFS 先序），同时把 img src +
+/// background-image url 归一化收进 manifest（去重）。None（src 不在 res 下）→ warning 不入 manifest。
+///
+/// parent_idx = 父节点在 Vec 中的位置（None=组件根）。slotmap values() 对无删除的全新 map
+/// 按槽位序迭代 = 插入序 = build_scene 的 DFS 先序，故 parent 总在 child 前出现，位置索引稳定。
+///
+/// **D17**：manifest 收 `AssetEntry { path, w:0, h:0 }`（此处只收 path，w/h 由 `pack` 后置
+/// 读 PNG IHDR 填——scene_to_template 不知 res 目录绝对路径，只有归一化 path）。
+fn scene_to_template(
+    scene: &loomgui_core::scene::Scene,
+    res_dir: &str,
+    manifest: &mut Vec<AssetEntry>,
+    seen: &mut std::collections::HashSet<String>,
+) -> Vec<TemplateNode> {
+    // NodeId → 在产物 Vec 中的位置（slotmap 插入序）。
+    let pos_of: std::collections::HashMap<NodeId, usize> = scene
+        .nodes
+        .values()
+        .enumerate()
+        .map(|(i, n)| (n.id, i))
+        .collect();
 
-/// 把 HTML+CSS+res_dir 下散图打成 .pkg.bin + atlas.png。
-/// res_dir = 解析 `<img src>` 的基准目录（CLI 传 html_path.parent()）。
-/// 无图 → 空 atlas（atlas_count=0，pkg.bin 仍可读，runtime 跳过 atlas 加载）。
-/// 缺图 → Err（build-time fail）。
-fn pack_inner(
-    html: &str,
-    css: &str,
-    root_size: (f32, f32),
-    res_dir: &Path,
-    atlas_name: &str,
-) -> Result<PackedPackage, String> {
-    let tree = loomgui_core::parse::dom::parse_html(html).map_err(|e| format!("parse_html: {e}"))?;
-    let sheet = loomgui_core::parse::css::parse_css(css).map_err(|e| format!("parse_css: {e}"))?;
-    let dynamic_rules = loomgui_core::asset::extract_dynamic_rules(&sheet);
-    let styles = loomgui_core::style::cascade::resolve_styles(&tree, &sheet);
-    let scene = loomgui_core::scene::build_scene(&tree, &styles);
-
-    // 1. 收集 Image src（DFS 先序去重）—— scene.nodes 已 DFS 先序。
-    let mut srcs: Vec<String> = Vec::new();
-    let mut seen = std::collections::HashSet::new();
+    let mut nodes: Vec<TemplateNode> = Vec::with_capacity(scene.nodes.len());
     for n in scene.nodes.values() {
-        if let loomgui_core::scene::NodeKind::Image { src } = &n.kind {
-            if seen.insert(src.as_str()) {
-                srcs.push(src.clone());
+        // img src 归一化进 manifest（去重）。归一化后回写节点 src，让 write_package 的
+        // StringTable 收归一化 path（非原 src）。
+        let mut kind = n.kind.clone();
+        if let loomgui_core::scene::NodeKind::Image { src } = &mut kind {
+            if !src.is_empty() {
+                match normalize_path(src, res_dir) {
+                    Some(norm) => {
+                        if seen.insert(norm.clone()) {
+                            manifest.push(AssetEntry { path: norm.clone(), w: 0, h: 0 });
+                        }
+                        *src = norm;
+                    }
+                    None => {
+                        eprintln!("warn: img src `{src}` 不在 res 目录 `{res_dir}` 下，跳过 manifest");
+                    }
+                }
             }
         }
-    }
-    // 1b. 收集 CSS background-image url（同 srcs/seen 去重，img+bg 同 url 只入一次）。
-    for n in scene.nodes.values() {
-        if let Some(url) = &n.style.background_image {
-            if seen.insert(url.as_str()) {
-                srcs.push(url.clone());
+        // background-image url 同样归一化进 manifest（去重；与 img src 同 url 只入一次）。
+        let mut style = n.style.clone();
+        if let Some(url) = &style.background_image {
+            if !url.is_empty() {
+                match normalize_path(url, res_dir) {
+                    Some(norm) => {
+                        if seen.insert(norm.clone()) {
+                            manifest.push(AssetEntry { path: norm.clone(), w: 0, h: 0 });
+                        }
+                        style.background_image = Some(norm);
+                    }
+                    None => {
+                        eprintln!("warn: background-image url `{url}` 不在 res 目录 `{res_dir}` 下，跳过 manifest");
+                    }
+                }
             }
         }
-    }
-
-    // 2. 无图 → 空 atlas。
-    if srcs.is_empty() {
-        let pkg = loomgui_core::asset::write_package(&scene, root_size, &AtlasSection::default(), &dynamic_rules);
-        return Ok(PackedPackage {
-            pkg_bytes: pkg,
-            atlas_png: Vec::new(),
-            atlas_filename: String::new(),
+        nodes.push(TemplateNode {
+            kind,
+            style,
+            parent_idx: n.parent.map(|p| pos_of[&p]),
+            classes: n.classes.clone(),
+            id_attr: n.id_attr.clone(),
+            draggable: n.draggable,
+            tabindex: n.tabindex,
         });
     }
+    nodes
+}
 
-    // 3. 解码每张 PNG（image crate）→ (src, w, h, RgbaImage)。
-    let mut decoded: Vec<(String, u32, u32, image::RgbaImage)> = Vec::with_capacity(srcs.len());
-    for src in &srcs {
-        let path = res_dir.join(src);
-        let img = image::open(&path).map_err(|e| format!("image not found: {src} ({e})"))?;
-        let rgba = img.to_rgba8();
-        let w = rgba.width();
-        let h = rgba.height();
-        decoded.push((src.clone(), w, h, rgba));
+/// 读 PNG IHDR chunk 取真实像素 width/height（D17）。
+///
+/// PNG 布局：8 字节 magic (`\x89PNG\r\n\x1a\n`) + IHDR chunk（4 字节长度 + 4 字节 "IHDR" +
+/// 13 字节数据：width(4 BE) + height(4 BE) + bit_depth(1) + color_type(1) + ...）。
+/// width 在 offset 16，height 在 offset 20（big-endian u32）。
+///
+/// 非 PNG（magic 不符）/ 文件过短 / 读失败 → `(0, 0)`（核心 measure fallback 64×64）。
+/// **不引 image crate**——PNG header 解析 ~30 行，无需完整 PNG 解码。
+fn read_png_size(path: &std::path::Path) -> (u32, u32) {
+    let bytes = match std::fs::read(path) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("warn: read png `{}` failed: {e}", path.display());
+            return (0, 0);
+        }
+    };
+    // PNG magic: \x89 P N G \r \n \x1a \n
+    const PNG_MAGIC: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+    if bytes.len() < 24 || bytes[..8] != PNG_MAGIC {
+        // 非 PNG（或过短）→ 0/0（核心 fallback 64×64）
+        return (0, 0);
     }
+    // IHDR chunk：offset 8 = length(4 BE) + "IHDR"(4) + data(width(4 BE) + height(4 BE) + ...)
+    // width at offset 16, height at offset 20（big-endian u32）。
+    let chunk_type = &bytes[12..16];
+    if chunk_type != b"IHDR" {
+        eprintln!("warn: `{}` first chunk not IHDR", path.display());
+        return (0, 0);
+    }
+    let w = u32::from_be_bytes([bytes[16], bytes[17], bytes[18], bytes[19]]);
+    let h = u32::from_be_bytes([bytes[20], bytes[21], bytes[22], bytes[23]]);
+    (w, h)
+}
 
-    // 4. shelf 打包。
-    let mut dims: Vec<(String, u32, u32)> = decoded
-        .iter()
-        .map(|(s, w, h, _)| (s.clone(), *w, *h))
-        .collect();
-    let (atlas_w, atlas_h, placed) = shelf_pack(&mut dims);
+/// 从 HTML 串剥掉所有 `<style>...</style>` 和 `<link ...>` 元素（含内容），返回干净 HTML。
+/// parse_html 的围栏白名单（div/span/img/button）拒绝 `<style>`/`<link>`，故打包器在
+/// 调 parse_html 前先抽 CSS（extract_component_css）再剥这俩 tag。用 scraper 重构文档树
+/// 后序列化回 HTML 字符串（与 parse_html 同后端，保证语义一致）。
+fn strip_style_and_link(html: &str) -> String {
+    let document = Html::parse_document(html);
+    let mut out = String::with_capacity(html.len());
+    // 遍历 body 子树，跳过 style/link 节点，重新拼 HTML。
+    let body_sel = ScraperSelector::parse("body").unwrap();
+    if let Some(body) = document.select(&body_sel).next() {
+        serialize_children(&body, &mut out);
+    } else {
+        // 无 body（scraper 对无 html/head 包裹的片段会合成）→ 退回原串（让 parse_html 报错）。
+        return html.to_string();
+    }
+    out
+}
 
-    // 5. blit 进 atlas buffer（RGBA8）。
-    let mut buf = vec![0u8; (atlas_w * atlas_h * 4) as usize];
-    for (src, _w, _h, rgba) in &decoded {
-        let p = placed
-            .iter()
-            .find(|p| &p.src == src)
-            .ok_or_else(|| format!("internal: placement missing for {src}"))?;
-        for row in 0..p.h {
-            for col in 0..p.w {
-                let px = rgba.get_pixel(col, row).0;
-                let di = (((p.y + row) * atlas_w + (p.x + col)) * 4) as usize;
-                buf[di..di + 4].copy_from_slice(&px);
+/// 递归序列化元素的子节点（跳过 style/link），拼回 HTML 字符串。
+fn serialize_children(el: &scraper::ElementRef, out: &mut String) {
+    for child in el.children() {
+        match child.value() {
+            scraper::node::Node::Text(t) => {
+                out.push_str(&t.text);
             }
+            scraper::node::Node::Element(e) => {
+                // 跳过 style/link（CSS 已由 extract_component_css 抽走）。
+                if e.name() == "style" || e.name() == "link" {
+                    continue;
+                }
+                if let Some(eref) = scraper::ElementRef::wrap(child) {
+                    out.push('<');
+                    out.push_str(e.name());
+                    for (k, v) in e.attrs() {
+                        out.push(' ');
+                        out.push_str(k);
+                        out.push_str("=\"");
+                        out.push_str(v);
+                        out.push('"');
+                    }
+                    out.push('>');
+                    serialize_children(&eref, out);
+                    out.push_str("</");
+                    out.push_str(e.name());
+                    out.push('>');
+                }
+            }
+            _ => {}
         }
     }
+}
 
-    // 6. 编码 atlas.png 到内存。
-    //    image 0.25 无 save_buffer_to_memory；用 RgbaImage::write_to(&mut Cursor<Vec<u8>>, Png)。
-    let atlas_img = image::RgbaImage::from_raw(atlas_w, atlas_h, buf)
-        .ok_or_else(|| String::from("atlas buffer size mismatch"))?;
-    let mut png_bytes: Vec<u8> = Vec::new();
-    atlas_img
-        .write_to(&mut Cursor::new(&mut png_bytes), image::ImageFormat::Png)
-        .map_err(|e| format!("encode atlas png: {e}"))?;
+/// 把系统目录下多个 HTML 打成 .pkg.bin（v1.4-a 多组件格式，无 atlas）。
+///
+/// - `source_dir`：包源目录（html + res 所在）。
+/// - `pkg_name`：包名（当前未进 pkg.bin header，供 CLI 日志用；未来版本号/元数据可扩展）。
+/// - `html_files`：要打包的 HTML 文件名列表（相对 sourceDir，含 .html 扩展名）。
+/// - `res_dir`：资源目录名（默认 res，对应 spec D10；归一化 path 去此前缀）。
+///
+/// 每 HTML 独立：抽 CSS → 剥 style/link → parse_html → parse_css → resolve_styles →
+/// build_scene → scene_to_template（归一化 src 进 manifest）→ 收 (组件名, nodes, dynamic_rules)。
+/// 组件名 = 文件名去 .html。最后 write_package 产 pkg_bytes。
+pub fn pack(
+    source_dir: &Path,
+    _pkg_name: &str,
+    html_files: &[String],
+    res_dir: &str,
+) -> Result<PackedPackage, String> {
+    // owned 生命周期：nodes/dynamic 需在 write_package 借用时存活，故先全部收集进 owned Vec。
+    let mut owned: Vec<(String, Vec<TemplateNode>, loomgui_core::style::dynamic::DynamicRuleTable)> =
+        Vec::with_capacity(html_files.len());
+    let mut manifest: Vec<AssetEntry> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
 
-    // 7. AtlasSection + write_package。
-    let atlas_section = AtlasSection {
-        atlases: vec![AtlasInfo {
-            filename: atlas_name.into(),
-            width: atlas_w,
-            height: atlas_h,
-        }],
-        sprites: placed
+    for hf in html_files {
+        let html_path = source_dir.join(hf);
+        let html = std::fs::read_to_string(&html_path)
+            .map_err(|e| format!("read {}: {e}", html_path.display()))?;
+        // 1. 抽 CSS（<style> + <link>）—— parse_html 前调（围栏白名单挡 style/link）。
+        let css = extract_component_css(&html, source_dir);
+        // 2. 剥 style/link 后再 parse_html（否则围栏报错）。
+        let stripped = strip_style_and_link(&html);
+        let tree = loomgui_core::parse::dom::parse_html(&stripped)
+            .map_err(|e| format!("parse_html {hf}: {e}"))?;
+        let sheet = loomgui_core::parse::css::parse_css(&css)
+            .map_err(|e| format!("parse_css {hf}: {e}"))?;
+        let dynamic = loomgui_core::asset::extract_dynamic_rules(&sheet);
+        let styles = loomgui_core::style::cascade::resolve_styles(&tree, &sheet);
+        let scene = loomgui_core::scene::build_scene(&tree, &styles);
+        let nodes = scene_to_template(&scene, res_dir, &mut manifest, &mut seen);
+        let comp_name = hf
+            .strip_suffix(".html")
+            .unwrap_or(hf)
+            .to_string();
+        owned.push((comp_name, nodes, dynamic));
+    }
+
+    // D17：对每个 manifest path 读 PNG IHDR 填真实尺寸 w/h。
+    // path 是相对 res_dir 的归一化路径（如 "icons/skin.png"），绝对路径 = source_dir/res_dir/path。
+    // 非 PNG / 读失败 → 0/0（核心 measure fallback 64×64）。
+    let res_root = source_dir.join(res_dir);
+    for entry in &mut manifest {
+        let abs = res_root.join(&entry.path);
+        let (w, h) = read_png_size(&abs);
+        entry.w = w;
+        entry.h = h;
+    }
+
+    // 组 PackageInput（借用 owned）→ write_package。
+    let comp_refs: Vec<(&str, &[TemplateNode], &loomgui_core::style::dynamic::DynamicRuleTable)> =
+        owned
             .iter()
-            .map(|p| AtlasSprite {
-                src: p.src.clone(),
-                x: p.x,
-                y: p.y,
-                w: p.w,
-                h: p.h,
-            })
-            .collect(),
+            .map(|(name, nodes, dyn_rules)| (name.as_str(), nodes.as_slice(), dyn_rules))
+            .collect();
+    let input = PackageInput {
+        components: comp_refs,
+        asset_manifest: &manifest,
     };
-    let pkg = loomgui_core::asset::write_package(&scene, root_size, &atlas_section, &dynamic_rules);
+    let pkg_bytes = loomgui_core::asset::write_package(&input);
 
     Ok(PackedPackage {
-        pkg_bytes: pkg,
-        atlas_png: png_bytes,
-        atlas_filename: atlas_name.into(),
+        pkg_bytes,
+        asset_manifest: manifest,
     })
-}
-
-/// atlas 名固定 "loom.atlas.png"（默认 sample 行为）。
-pub fn pack(html: &str, css: &str, root_size: (f32, f32), res_dir: &Path) -> Result<PackedPackage, String> {
-    pack_inner(html, css, root_size, res_dir, "loom.atlas.png")
-}
-
-/// 指定 atlas 文件名（多 sample 共存 StreamingAssets 时用独立名避免互相覆盖）。
-pub fn pack_named(html: &str, css: &str, root_size: (f32, f32), res_dir: &Path, atlas_name: &str) -> Result<PackedPackage, String> {
-    pack_inner(html, css, root_size, res_dir, atlas_name)
-}
-
-/// shelf 打包：按高降序、atlas_w=max(512,最宽)、逐行摆、超宽换行。NPOT。无旋转/trim。
-fn shelf_pack(sprites: &mut Vec<(String, u32, u32)>) -> (u32, u32, Vec<PlacedSprite>) {
-    // sprites 元组 = (src, w, h)。
-    const DEFAULT_ATLAS_W: u32 = 512;
-    sprites.sort_by(|a, b| b.2.cmp(&a.2)); // 按高 h 降序
-    let atlas_w = sprites
-        .iter()
-        .map(|(_, w, _)| *w)
-        .max()
-        .unwrap_or(0)
-        .max(DEFAULT_ATLAS_W);
-    let mut placed = Vec::with_capacity(sprites.len());
-    let mut x = 0u32;
-    let mut y = 0u32;
-    let mut shelf_h = 0u32;
-    for (src, w, h) in sprites.iter() {
-        if x + w > atlas_w {
-            y += shelf_h;
-            x = 0;
-            shelf_h = 0;
-        }
-        placed.push(PlacedSprite {
-            src: src.clone(),
-            x,
-            y,
-            w: *w,
-            h: *h,
-        });
-        x += w;
-        shelf_h = shelf_h.max(*h);
-    }
-    (atlas_w, y + shelf_h, placed)
 }
 
 #[cfg(test)]
@@ -188,98 +258,97 @@ mod tests {
     use super::*;
 
     #[test]
-    fn shelf_pack_no_overlap_within_bounds() {
-        let mut s = vec![
-            ("a".into(), 100, 50),
-            ("b".into(), 200, 80),
-            ("c".into(), 300, 30),
+    fn strip_style_and_link_removes_style_and_link_elements() {
+        let html = r#"<div class="a"><style>.a { color: red; }</style><span>hi</span><link rel="stylesheet" href="x.css"></div>"#;
+        let stripped = strip_style_and_link(html);
+        assert!(!stripped.contains("style"), "style 元素已剥: {stripped}");
+        assert!(!stripped.contains("link"), "link 元素已剥: {stripped}");
+        assert!(stripped.contains("hi"), "正文保留: {stripped}");
+        assert!(stripped.contains("<div"), "div 保留: {stripped}");
+        assert!(stripped.contains("<span"), "span 保留: {stripped}");
+    }
+
+    #[test]
+    fn strip_style_and_link_preserves_img_src() {
+        let html = r#"<div><img src="res/x.png"></div>"#;
+        let stripped = strip_style_and_link(html);
+        assert!(stripped.contains("res/x.png"), "img src 保留");
+    }
+
+    #[test]
+    fn scene_to_template_normalizes_img_src_and_collects_manifest() {
+        // 手搓 scene：root + img 子（src="res/icons/skin.png"）
+        use loomgui_core::scene::{NodeKind, Scene};
+        use loomgui_core::style::resolved::ResolvedStyle;
+        let entries: Vec<(Option<usize>, NodeKind, ResolvedStyle, Vec<String>, Option<String>, bool, Option<i32>)> = vec![
+            (None, NodeKind::Container, ResolvedStyle::default(), vec![], None, false, None),
+            (Some(0), NodeKind::Image { src: "res/icons/skin.png".into() }, ResolvedStyle::default(), vec![], None, false, None),
         ];
-        let (aw, ah, placed) = shelf_pack(&mut s);
-        // 不出界
-        for p in &placed {
-            assert!(p.x + p.w <= aw && p.y + p.h <= ah, "{p:?} out of bounds");
+        let scene = Scene::build(&entries);
+        let mut manifest: Vec<AssetEntry> = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        let nodes = scene_to_template(&scene, "res", &mut manifest, &mut seen);
+        // D17：scene_to_template 只收 path（w/h=0），w/h 由 pack 后置读 PNG IHDR 填
+        assert_eq!(manifest, vec![AssetEntry { path: "icons/skin.png".into(), w: 0, h: 0 }], "归一化 path 进 manifest");
+        // 节点 src 也被归一化
+        match &nodes[1].kind {
+            NodeKind::Image { src } => assert_eq!(src, "icons/skin.png", "节点 src 归一化"),
+            other => panic!("expected Image, got {other:?}"),
         }
-        // 两两不重叠
-        for i in 0..placed.len() {
-            for j in (i + 1)..placed.len() {
-                let (a, b) = (&placed[i], &placed[j]);
-                let overlap = a.x < b.x + b.w
-                    && b.x < a.x + a.w
-                    && a.y < b.y + b.h
-                    && b.y < a.y + a.h;
-                assert!(!overlap, "sprites {a:?} {b:?} overlap");
-            }
+    }
+
+    #[test]
+    fn scene_to_template_dedups_same_src_across_nodes() {
+        // 两 img 同 src → manifest 只入一次
+        use loomgui_core::scene::{NodeKind, Scene};
+        use loomgui_core::style::resolved::ResolvedStyle;
+        let entries: Vec<(Option<usize>, NodeKind, ResolvedStyle, Vec<String>, Option<String>, bool, Option<i32>)> = vec![
+            (None, NodeKind::Container, ResolvedStyle::default(), vec![], None, false, None),
+            (Some(0), NodeKind::Image { src: "res/a.png".into() }, ResolvedStyle::default(), vec![], None, false, None),
+            (Some(0), NodeKind::Image { src: "res/a.png".into() }, ResolvedStyle::default(), vec![], None, false, None),
+        ];
+        let scene = Scene::build(&entries);
+        let mut manifest: Vec<AssetEntry> = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        let _ = scene_to_template(&scene, "res", &mut manifest, &mut seen);
+        assert_eq!(manifest.len(), 1, "同 src 去重只入一次");
+    }
+
+    #[test]
+    fn scene_to_template_skips_src_outside_res_with_warning() {
+        // src 不在 res 下 → None → 不入 manifest（不 Err）
+        use loomgui_core::scene::{NodeKind, Scene};
+        use loomgui_core::style::resolved::ResolvedStyle;
+        let entries: Vec<(Option<usize>, NodeKind, ResolvedStyle, Vec<String>, Option<String>, bool, Option<i32>)> = vec![
+            (None, NodeKind::Container, ResolvedStyle::default(), vec![], None, false, None),
+            (Some(0), NodeKind::Image { src: "other/foo.png".into() }, ResolvedStyle::default(), vec![], None, false, None),
+        ];
+        let scene = Scene::build(&entries);
+        let mut manifest: Vec<AssetEntry> = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        let nodes = scene_to_template(&scene, "res", &mut manifest, &mut seen);
+        assert!(manifest.is_empty(), "res 外 src 不入 manifest");
+        // 节点 src 保持原样（未归一化）
+        match &nodes[1].kind {
+            NodeKind::Image { src } => assert_eq!(src, "other/foo.png", "未归一化的 src 保持原样"),
+            other => panic!("expected Image, got {other:?}"),
         }
-        // atlas_w 至少 = 最宽 sprite（300）
-        assert!(aw >= 300);
     }
 
     #[test]
-    fn shelf_pack_wraps_when_exceeding_atlas_w() {
-        // 两个 600×10 sprite：atlas_w=max(512,600)=600；第二个塞不下换行。
-        let mut s = vec![("a".into(), 600, 10), ("b".into(), 600, 10)];
-        let (aw, ah, placed) = shelf_pack(&mut s);
-        assert_eq!(aw, 600);
-        assert_eq!(ah, 20, "两行各 10px 高");
-        assert_eq!(placed[0].y, 0);
-        assert_eq!(placed[1].y, 10, "第二个换行到 y=10");
-    }
-
-    #[test]
-    fn shelf_pack_empty() {
-        let mut s: Vec<(String, u32, u32)> = vec![];
-        let (aw, ah, placed) = shelf_pack(&mut s);
-        assert_eq!(aw, 512, "空 → 默认宽");
-        assert_eq!(ah, 0);
-        assert!(placed.is_empty());
-    }
-
-    use std::fs;
-    use std::path::PathBuf;
-    use std::sync::atomic::{AtomicU64, Ordering};
-
-    static TEST_DIR_SEQ: AtomicU64 = AtomicU64::new(0);
-
-    /// 建临时 res_dir，写一张 300×4 红 PNG（宽度确保两图不能并排于 512 宽 atlas，便于测去重），返回 (res_dir, png_filename)。
-    fn write_tmp_png() -> (PathBuf, String) {
-        let seq = TEST_DIR_SEQ.fetch_add(1, Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!("loomgui_pkg_test_{}_{}", std::process::id(), seq));
-        fs::create_dir_all(&dir).unwrap();
-        let name = "red.png".to_string();
-        let img = image::RgbaImage::from_fn(300, 4, |_, _| image::Rgba([255, 0, 0, 255]));
-        img.save(dir.join(&name)).unwrap();
-        (dir, name)
-    }
-
-    #[test]
-    fn pack_collects_background_image_url_into_atlas() {
-        // 纯 background-image（无 img）→ atlas 含该 src
-        let (dir, name) = write_tmp_png();
-        let html = format!(
-            r#"<div style="background-image:url({})"></div>"#, name
-        );
-        let css = "";
-        let packed = pack_inner(&html, css, (100.0, 100.0), &dir, "test.atlas.png").unwrap();
-        assert!(!packed.atlas_png.is_empty(), "纯 bg-image → atlas 非空");
-        assert_eq!(packed.atlas_filename, "test.atlas.png");
-        // 清理
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn pack_dedupes_img_and_bg_same_url() {
-        // img + background-image 同 url → atlas 只入一次（去重）
-        let (dir, name) = write_tmp_png();
-        let html = format!(
-            r#"<div style="background-image:url({})"><img src="{}"></div>"#, name, name
-        );
-        let css = "";
-        let packed = pack_inner(&html, css, (100.0, 100.0), &dir, "test.atlas.png").unwrap();
-        // atlas 非空（含该图）；去重后只有一张 4×4
-        assert!(!packed.atlas_png.is_empty());
-        // 验证 atlas 尺寸 = 单张 4×4（shelf_pack：atlas_w=max(512,4)=512, h=4）
-        let atlas_img = image::load_from_memory(&packed.atlas_png).unwrap();
-        assert_eq!(atlas_img.height(), 4, "单图去重 → atlas 高=4");
-        let _ = fs::remove_dir_all(&dir);
+    fn scene_to_template_parent_idx_maps_to_position() {
+        // root(parent=None) + child(parent=root) → child parent_idx=Some(0)
+        use loomgui_core::scene::{NodeKind, Scene};
+        use loomgui_core::style::resolved::ResolvedStyle;
+        let entries: Vec<(Option<usize>, NodeKind, ResolvedStyle, Vec<String>, Option<String>, bool, Option<i32>)> = vec![
+            (None, NodeKind::Container, ResolvedStyle::default(), vec![], None, false, None),
+            (Some(0), NodeKind::Text { content: "hi".into() }, ResolvedStyle::default(), vec![], None, false, None),
+        ];
+        let scene = Scene::build(&entries);
+        let mut manifest: Vec<AssetEntry> = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        let nodes = scene_to_template(&scene, "res", &mut manifest, &mut seen);
+        assert_eq!(nodes[0].parent_idx, None, "root parent=None");
+        assert_eq!(nodes[1].parent_idx, Some(0), "child parent_idx=Some(0)");
     }
 }

@@ -3,13 +3,13 @@ using UnityEngine;
 namespace LoomGUI
 {
     /// <summary>
-    /// T8 动态建树演示（spec §11.2 验收场景）。挂在带 LoomStage 的 GameObject 上，
-    /// LoomStage.Awake 先用 inline _html/_css 建一个最小 scene（单空根 div，满足 create_root 等
-    /// 动态 API 的 scene 前置），本脚本 Start 再用 9 个动态 API 在其上纯动态建 UI：
+    /// 动态建树演示（spec §11.2 验收场景）。挂在带 LoomStage 的 GameObject 上，
+    /// Start 用动态 API 在空 stage 上建 UI（v1.4-a T8：LoomStage.Awake 不再自动 load 建 scene——
+    /// 本脚本 Start 的 CreateRoot 即建场景根，满足后续 create_node/append_child 的 scene 前置）：
     ///
-    /// 场景1 层级骨架：CreateRoot 建 stage 根（覆盖默认空根）+ CreateNode 建 layer 容器。
+    /// 场景1 层级骨架：CreateRoot 建 stage 根 + CreateNode 建 layer 容器。
     /// 场景2 锚点挂载：CreateNode 建 panel + title(span) + icon(img)，AppendChild 挂载，
-    ///                 SetText 填标题、SetSrc 填图源（无 atlas 时 fallback 白占位，不阻塞）。
+    ///                 SetText 填标题、SetSrc 填图源（无 Sprite Atlas 时 fallback 白占位，不阻塞）。
     /// 场景3 set_style 改样式：SetStyle 改 panel 底色（白→灰），下帧 rematch 生效。
     ///
     /// 用返回的 NodeId 句柄（勿硬编码 0——slotmap idx 从 1 起，首节点 NodeId 非 0）。

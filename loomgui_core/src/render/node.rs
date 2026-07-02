@@ -2,8 +2,13 @@
 //!
 //! `build_render_nodes` 遍历 solve 后的 `Scene`，为每个 `Node` 产一个 `RenderNode`；
 //! payload 按节点 kind 决定（Container/Button → Mesh quad 背景色；Image → Mesh quad +
-//! 占位 tex_id；Text → measure_text 产 TextLayout）。sort_key / mask_context 由
+//! image_path；Text → measure_text 产 TextLayout）。sort_key / mask_context 由
 //! `batch::assign_sort_keys` 后处理。stage 层负责把 `Vec<RenderNode>` diff 成 draw list / JSON。
+//!
+//! v1.4-a T6：核心不知图集。Mesh payload 带 `image_path: Option<String>`（Image 节点 /
+//! bg-image 容器填 path，纯色容器 None）。render 不再查 textures/atlas——path 推给 Unity，
+//! Unity 按 path 查 Sprite Atlas 拿 Sprite（含 UV+Texture）。UV 始终全图 (0,0)-(1,1)
+//! （Unity Sprite 自带真实 UV；核心无子区概念）。
 
 use serde::Serialize;
 
@@ -24,8 +29,11 @@ pub enum BlendMode {
 /// 节点渲染载荷。
 ///
 /// - `Unchanged`：脏标志未置（build_render_nodes 不产出，留作 stage 层 diff 结果）。
-/// - `Mesh`：quad 几何（背景色块 / 图片）。`texture`=0 表示纯色（无贴图），
-///   非 0 为已注册 tex_id（Image 节点，注册表查得；未注册=0 哨兵→白占位）。`program`=0 = Image shader（统一）。
+/// - `Mesh`：quad 几何（背景色块 / 图片）。`image_path`=None 表示纯色（无贴图），
+///   `Some(path)` 为 Image 节点 / bg-image 容器的归一化图片 path（核心不知图集，path 推给
+///   Unity 查 Sprite）。UV 始终 (0,0)-(1,1)（Unity Sprite 自带真实 UV；核心无子区）。
+///   `program`=0 = 纯色/无图 Image shader，2=Container+bg-image 合成，3=filter 无 bg-image，
+///   4=filter+bg-image。
 /// - `Text`：measure_text 产 TextLayout + 颜色。`program`=1 = Text shader。
 #[derive(Debug, Clone, Serialize)]
 pub enum NodePayload {
@@ -35,9 +43,9 @@ pub enum NodePayload {
         uvs: Vec<[f32; 2]>,
         colors: Vec<[f32; 4]>,
         indices: Vec<u32>,
-        texture: u32,
+        image_path: Option<String>,  // v1.4-a T6：None=纯色，Some=图片 path（核心不知图集）
         program: u32,
-        color_matrix: [f32; 20],   // v1.3 ColorFilter 矩阵；program≠3 全零
+        color_matrix: [f32; 20],   // v1.3 ColorFilter 矩阵；program≠3/4 全零
     },
     Text {
         layout: crate::text::layout::TextLayout,
@@ -91,7 +99,7 @@ mod serde_smoke_tests {
                 uvs: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
                 colors: vec![[1.0; 4]; 4],
                 indices: vec![0, 1, 2, 0, 2, 3],
-                texture: 7,
+                image_path: Some("icons/skin.png".into()),
                 program: 0,
                 color_matrix: [0.0; 20],
             },
@@ -99,7 +107,8 @@ mod serde_smoke_tests {
         let s = serde_json::to_string(&rn).expect("RenderNode must serialize");
         assert!(s.contains("\"sort_key\":5"));
         assert!(s.contains("\"mask_context\":2"));
-        assert!(s.contains("\"texture\":7"));
+        assert!(s.contains("\"image_path\""));
+        assert!(s.contains("icons/skin.png"));
         assert!(s.contains("\"Mesh\""));
     }
 }

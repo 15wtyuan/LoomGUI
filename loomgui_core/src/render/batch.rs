@@ -36,13 +36,14 @@ fn is_mergeable_mesh(rn: &RenderNode) -> bool {
         && crate::transform::is_pure_translation(&rn.world_matrix)
 }
 
-/// 可合并 Mesh 的 DrawState = (texture, mask_context)。
+/// 可合并 Mesh 的 DrawState = (image_path, mask_context)。
 /// （program 已由 is_mergeable_mesh 保证 0；blend 仅 Normal 不入 key。）
+/// v1.4-a T6：texture 字段砍，改用 image_path 做合并键（同 path 的图可合批）。
 /// 非 mergeable Mesh / Text / Unchanged → None。
-fn draw_state(rn: &RenderNode) -> Option<(u32, u32)> {
+fn draw_state(rn: &RenderNode) -> Option<(Option<String>, u32)> {
     match &rn.payload {
-        NodePayload::Mesh { texture, program, .. } if *program == 0 => {
-            Some((*texture, rn.mask_context.0))
+        NodePayload::Mesh { image_path, program, .. } if *program == 0 => {
+            (image_path.clone(), rn.mask_context.0).into()
         }
         _ => None,
     }
@@ -74,13 +75,14 @@ fn reorder_unit(scene: &Scene, nodes: &[RenderNode], unit: &mut Vec<usize>) {
         };
         let cur_aabb = aabb_of(cur);
         let mut k: Option<usize> = None; // 插入点（unit 内下标）
-        let mut last_ds: Option<(u32, u32)> = None;
+        let mut last_ds: Option<(Option<String>, u32)> = None;
         let mut m = i;
         for j in (0..i).rev() {
             let test = unit[j];
             let test_ds = draw_state(&nodes[test]).unwrap(); // 单元内必 mergeable
-            if last_ds != Some(test_ds) {
-                last_ds = Some(test_ds);
+            // v1.4-a T6：draw_state 含 Option<String>（非 Copy），用 ref 比较避免 move。
+            if last_ds.as_ref() != Some(&test_ds) {
+                last_ds = Some(test_ds.clone());
                 m = j + 1;
             }
             if cur_ds == test_ds {
@@ -426,7 +428,8 @@ mod tests {
     // 已由上方 use 语句导入；以下测直接使用。
 
     /// 构造 program=0 Mesh RenderNode（给 reorder_unit 直接喂 unit 索引对应的 nodes）。
-    fn mesh_rn(tex: u32, rect: Rect, mask: u32) -> RenderNode {
+    /// v1.4-a T6：texture 砍，改 image_path（None=纯色，Some=图片 path）。
+    fn mesh_rn(path: Option<&str>, rect: Rect, mask: u32) -> RenderNode {
         RenderNode {
             node_id: 0,
             parent_id: None,
@@ -444,7 +447,7 @@ mod tests {
                 uvs: vec![[0.0, 0.0]; 4],
                 colors: vec![[1.0; 4]; 4],
                 indices: vec![0, 1, 2, 0, 2, 3],
-                texture: tex,
+                image_path: path.map(|s| s.to_string()),
                 program: 0,
                 color_matrix: [0.0; 20],
             },
@@ -453,7 +456,7 @@ mod tests {
 
     #[test]
     fn reorder_unit_same_drawstate_disjoint_gathers() {
-        // [A(tex1, x=0), B(tex2, x=100), C(tex1, x=200)] 全不相交 → C 前移到 A 旁。
+        // [A(path a.png, x=0), B(path b.png, x=100), C(path a.png, x=200)] 全不相交 → C 前移到 A 旁。
         // reorder_unit 经 RenderNode.node_id 桥接回 scene NodeId 取 layout_rect。
         let mut a = Node::default(); a.layout_rect = Rect{x:0.0,y:0.0,w:10.0,h:10.0};
         let mut b = Node::default(); b.layout_rect = Rect{x:100.0,y:0.0,w:10.0,h:10.0};
@@ -461,23 +464,23 @@ mod tests {
         let scene = Scene::from_nodes(vec![a.clone(), b.clone(), c.clone()], vec![]);
         let ids: Vec<NodeId> = scene.nodes.values().map(|n| n.id).collect();
         let mut nodes = vec![
-            mesh_rn(1, Rect { x: 0.0, y: 0.0, w: 10.0, h: 10.0 }, 0),
-            mesh_rn(2, Rect { x: 100.0, y: 0.0, w: 10.0, h: 10.0 }, 0),
-            mesh_rn(1, Rect { x: 200.0, y: 0.0, w: 10.0, h: 10.0 }, 0),
+            mesh_rn(Some("a.png"), Rect { x: 0.0, y: 0.0, w: 10.0, h: 10.0 }, 0),
+            mesh_rn(Some("b.png"), Rect { x: 100.0, y: 0.0, w: 10.0, h: 10.0 }, 0),
+            mesh_rn(Some("a.png"), Rect { x: 200.0, y: 0.0, w: 10.0, h: 10.0 }, 0),
         ];
         nodes[0].node_id = ids[0].0;
         nodes[1].node_id = ids[1].0;
         nodes[2].node_id = ids[2].0;
         let mut unit = vec![0usize, 1, 2];
         reorder_unit(&scene, &nodes, &mut unit);
-        // A,C 同 tex1 聚拢：[A(0), C(2), B(1)]
+        // A,C 同 path a.png 聚拢：[A(0), C(2), B(1)]
         assert_eq!(unit, vec![0, 2, 1], "同 DrawState 不相交 → C 前移到 A 旁");
     }
 
     #[test]
     fn reorder_unit_overlapping_keeps_order() {
-        // A(tex1) B(tex2) C(tex1)，A 与 C AABB 相交 → C 仍前移到 A 旁（k=A 之后），
-        // 但不越过 A（保 A→C 绘制序，防遮挡）。B(tex2) 被推后。
+        // A(a.png) B(b.png) C(a.png)，A 与 C AABB 相交 → C 仍前移到 A 旁（k=A 之后），
+        // 但不越过 A（保 A→C 绘制序，防遮挡）。B(b.png) 被推后。
         // 注：fgui DoFairyBatching 语义非「相交=不动」，而是「向后扫到首个相交即停，
         // 但 k 已在相交前按同 material 聚拢点算出」——同 material 相交仍聚拢到紧邻。
         let mut a = Node::default(); a.layout_rect = Rect{x:0.0,y:0.0,w:50.0,h:50.0};
@@ -486,22 +489,22 @@ mod tests {
         let scene = Scene::from_nodes(vec![a, b, c], vec![]);
         let ids: Vec<NodeId> = scene.nodes.values().map(|n| n.id).collect();
         let mut nodes = vec![
-            mesh_rn(1, Rect { x: 0.0, y: 0.0, w: 50.0, h: 50.0 }, 0),
-            mesh_rn(2, Rect { x: 100.0, y: 0.0, w: 10.0, h: 10.0 }, 0),
-            mesh_rn(1, Rect { x: 10.0, y: 10.0, w: 50.0, h: 50.0 }, 0), // 与 A 相交
+            mesh_rn(Some("a.png"), Rect { x: 0.0, y: 0.0, w: 50.0, h: 50.0 }, 0),
+            mesh_rn(Some("b.png"), Rect { x: 100.0, y: 0.0, w: 10.0, h: 10.0 }, 0),
+            mesh_rn(Some("a.png"), Rect { x: 10.0, y: 10.0, w: 50.0, h: 50.0 }, 0), // 与 A 相交
         ];
         nodes[0].node_id = ids[0].0;
         nodes[1].node_id = ids[1].0;
         nodes[2].node_id = ids[2].0;
         let mut unit = vec![0usize, 1, 2];
         reorder_unit(&scene, &nodes, &mut unit);
-        // C 同 tex1 聚拢到 A 旁（k=A 之后=1），不越 A（保 A→C 序）；B 被推后。
+        // C 同 path a.png 聚拢到 A 旁（k=A 之后=1），不越 A（保 A→C 序）；B 被推后。
         assert_eq!(unit, vec![0, 2, 1], "同 DrawState 相交 → 聚拢到紧邻，不越目标");
     }
 
     /// helper：把 mesh_rn 包成 RenderNode 并设 node_id。
-    fn mesh_rn_into_rn(id: usize, tex: u32, _scene: &Scene) -> RenderNode {
-        let mut r = mesh_rn(tex, Rect { x: 0.0, y: 0.0, w: 10.0, h: 10.0 }, 0);
+    fn mesh_rn_into_rn(id: usize, path: Option<&str>, _scene: &Scene) -> RenderNode {
+        let mut r = mesh_rn(path, Rect { x: 0.0, y: 0.0, w: 10.0, h: 10.0 }, 0);
         r.node_id = id as u32;
         r
     }
@@ -517,7 +520,7 @@ mod tests {
 
     #[test]
     fn reorder_splits_at_text_break() {
-        // root > [A(tex1), Text, B(tex1)]：AABB 全不相交。Text 断单元 →
+        // root > [A(a.png), Text, B(a.png)]：AABB 全不相交。Text 断单元 →
         // A、B 分属两个单元，B 不能跨 Text 前移到 A 旁（保 Text 绘制序）。
         let mut root = Node::default();
         root.layout_rect = Rect { x: 0.0, y: 0.0, w: 300.0, h: 50.0 };
@@ -532,9 +535,9 @@ mod tests {
         // rns 顺 = scene.nodes.values() 顺（root, a, t, b）
         let mut rns: Vec<RenderNode> = vec![
             { let mut r = placeholder_rn(0); r.payload = NodePayload::Unchanged; r.mask_context = MaskContext(0); r.node_id = ids[0].0; r },
-            { let mut r = mesh_rn_into_rn(0, 1, &scene); r.node_id = ids[1].0; r }, // tex1
+            { let mut r = mesh_rn_into_rn(0, Some("a.png"), &scene); r.node_id = ids[1].0; r },
             { let mut r = text_rn(0); r.node_id = ids[2].0; r },
-            { let mut r = mesh_rn_into_rn(0, 1, &scene); r.node_id = ids[3].0; r }, // tex1
+            { let mut r = mesh_rn_into_rn(0, Some("a.png"), &scene); r.node_id = ids[3].0; r },
         ];
         // 先赋 DFS 序 sort_key（模拟 assign_sort_keys 输出）+ mask_context。
         for (k, r) in rns.iter_mut().enumerate() { r.sort_key = k as u32; r.mask_context = MaskContext(0); }
@@ -549,7 +552,7 @@ mod tests {
     #[test]
     fn reorder_splits_at_mask_context_boundary() {
         // 两个 mask_context 的 Mesh 不跨边界重排（不同 DrawState）。
-        // A(ctx0,tex1) B(ctx1,tex1) C(ctx0,tex1)：A、C 同 ctx0 但被 B(ctx1) 断开，
+        // A(ctx0,a.png) B(ctx1,a.png) C(ctx0,a.png)：A、C 同 ctx0 但被 B(ctx1) 断开，
         // 且 AABB 不相交。C 不应跨 ctx 边界前移到 A 旁。
         let root = Node::default();
         let mut n1 = Node::default(); n1.layout_rect = Rect{x:0.0,y:0.0,w:10.0,h:10.0};
@@ -559,9 +562,9 @@ mod tests {
         let ids: Vec<NodeId> = scene.nodes.values().map(|n| n.id).collect();
         // rns 顺 = A, B, C（跳过 root，root 不参与 reorder 单元——这里测只放 3 个 mesh）。
         let mut rns: Vec<RenderNode> = vec![
-            { let mut r = mesh_rn_into_rn(0, 1, &scene); r.node_id = ids[1].0; r },
-            { let mut r = mesh_rn_into_rn(0, 1, &scene); r.node_id = ids[2].0; r },
-            { let mut r = mesh_rn_into_rn(0, 1, &scene); r.node_id = ids[3].0; r },
+            { let mut r = mesh_rn_into_rn(0, Some("a.png"), &scene); r.node_id = ids[1].0; r },
+            { let mut r = mesh_rn_into_rn(0, Some("a.png"), &scene); r.node_id = ids[2].0; r },
+            { let mut r = mesh_rn_into_rn(0, Some("a.png"), &scene); r.node_id = ids[3].0; r },
         ];
         // sort_key = DFS 序；mask_context: 0→ctx0, 1→ctx1, 2→ctx0（模拟跨 clip 边界）。
         rns[0].sort_key = 0; rns[0].mask_context = MaskContext(0);

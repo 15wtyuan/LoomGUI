@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>文本页</title>
+<style>
+/* page_text 组件 CSS（D6 组件隔离）——抽自旧 style.css 的 §6 + §3.4 + base */
+.root{width:1080px;height:1920px;background-color:#1a1d2e;}
+.header{background-color:#252839;border-bottom:2px solid #3a3f55;padding:20px;gap:14px;flex-direction:row;align-items:center;justify-content:space-between;}
+.title{color:#e0e0e0;font-size:32px;font-weight:700;}
+.back{background-color:#2d3148;border:1px solid #3a3f55;padding:10px 16px;color:#9aa0b4;font-size:18px;}
+.back:hover{background-color:#3a4258;color:#5fb2c4;border:1px solid #5fb2c4;}
+.back:active{transform:scale(0.96);}
+.scroll{flex-grow:1;overflow-y:scroll;}
+.content{gap:16px;padding:24px;}
+.sec{gap:16px;}
+.sec-h{color:#5fb2c4;font-size:28px;font-weight:700;border-bottom:1px solid #3a3f55;padding-bottom:8px;}
+.card{background-color:#252839;border:1px solid #3a3f55;padding:16px;gap:12px;}
+.card-h{flex-direction:row;justify-content:space-between;align-items:center;}
+.card-t{color:#e0e0e0;font-size:22px;font-weight:700;}
+.card-x{color:#9aa0b4;font-size:14px;}
+.card-b{flex-direction:row;gap:12px;flex-wrap:wrap;align-items:flex-start;}
+/* §6 文本工坊 */
+.txt{color:#e0e0e0;font-size:20px;width:500px;background-color:#1a1d2e;padding:12px;}
+/* §3.4 文本样式全家 */
+.skip{color:#6c7080;font-size:14px;}
+</style>
+</head>
+<body>
+<div class="root">
+  <div class="header">
+    <div class="title">文本 · CJK/ASCII/混排/字距</div>
+    <div class="back" id="back-home">← 返回</div>
+  </div>
+  <div class="scroll" id="page-scroll">
+    <div class="content">
+      <div class="sec" id="sec-6">
+        <div class="sec-h">§6 文本工坊</div>
+        <div class="card">
+          <div class="card-h"><span class="card-t">6.1 CJK 逐字断行</span><span class="card-x">预期: 中文长段逐字可断</span></div>
+          <div class="card-b" style="width:100%"><div class="txt">这是一个用于测试中日韩文本逐字断行行为的长段落，LoomGUI 使用 unicode-linebreak UAX#14 算法对 CJK 字符逐字断行，应当在任意字符后换行而不留大片空白。本段刻意写得足够长以触发容器宽度方向的断行，验证每一个汉字都可独立成断点，而不像英文那样只能从词间空格处断开。</div></div>
+        </div>
+        <div class="card">
+          <div class="card-h"><span class="card-t">6.2 ASCII 按词</span><span class="card-x">预期: 英文长段按词断、不拆词</span></div>
+          <div class="card-b" style="width:100%"><div class="txt">The quick brown fox jumps over the lazy dog. The quick brown fox jumps over the lazy dog. The quick brown fox jumps over the lazy dog. The quick brown fox jumps over the lazy dog.</div></div>
+        </div>
+        <div class="card">
+          <div class="card-h"><span class="card-t">6.3 中英混排</span><span class="card-x">预期: CJK 逐字 + ASCII 按词混合</span></div>
+          <div class="card-b" style="width:100%"><div class="txt">LoomGUI 支持 mixed 中英混排文本 line breaking，CJK 逐字、ASCII 按词。这段文字 mixed 了 English words 和中文汉字，验证 unicode-linebreak 在同一段落内对两种字符类别采用不同的断行策略，最终呈现应当英文按词、中文逐字。</div></div>
+        </div>
+        <div class="card">
+          <div class="card-h"><span class="card-t">6.4 nowrap + 超长词</span><span class="card-x">预期: nowrap 单行不换 / 超长词逐字断</span></div>
+          <div class="card-b" style="flex-direction:column;gap:12px;width:100%">
+            <div class="txt" style="white-space:nowrap">this-is-a-single-line-that-should-not-wrap-overflowing-the-container</div>
+            <div class="txt">超长无空格词测试 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa，此处 ASCII 连续串无断点，理论上由 toMoveChars 逐字断行兜底。</div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-h"><span class="card-t">6.5 行高字距</span><span class="card-x">预期: line-height 1/2 + letter-spacing 差异</span></div>
+          <div class="card-b" style="flex-direction:column;gap:12px;width:100%">
+            <div class="txt" style="line-height:1">紧凑行距 line-height:1，多行文本行间几乎贴合，应当看出与下面松散行距的明显差异。</div>
+            <div class="txt" style="line-height:2">松散行距 line-height:2，多行文本行间留白明显增大，用于对比验证行高属性对排版的影响。</div>
+            <div class="txt" style="letter-spacing:6px">宽字距 letter-spacing:6px，每个汉字与英文字母之间都拉开间距，验证字距属性作用于整段文本。</div>
+          </div>
+        </div>
+      </div>
+      <div class="sec" id="sec-3-text">
+        <div class="sec-h">§3.4 文本样式全家</div>
+        <div class="card">
+          <div class="card-h"><span class="card-t">文本样式</span><span class="card-x">预期: 各样式生效（italic skip）</span></div>
+          <div class="card-b">
+            <span style="font-size:32px">font-size:32px</span>
+            <span style="font-weight:700">font-weight:700</span>
+            <span style="letter-spacing:4px">letter-spacing:4px</span>
+            <span style="text-align:center;width:100%">text-align:center</span>
+            <span style="line-height:2;width:100%">line-height:2 上下留白</span>
+            <span class="skip">font-style: italic（v1 gap，未落地）</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

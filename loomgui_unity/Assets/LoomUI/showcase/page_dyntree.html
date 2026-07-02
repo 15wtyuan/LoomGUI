@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>动态树页</title>
+<style>
+/* page_dyntree 组件 CSS（D6 组件隔离）——抽自旧 style.css 的 §4 hit + base */
+.root{width:1080px;height:1920px;background-color:#1a1d2e;}
+.header{background-color:#252839;border-bottom:2px solid #3a3f55;padding:20px;gap:14px;flex-direction:row;align-items:center;justify-content:space-between;}
+.title{color:#e0e0e0;font-size:32px;font-weight:700;}
+.back{background-color:#2d3148;border:1px solid #3a3f55;padding:10px 16px;color:#9aa0b4;font-size:18px;}
+.back:hover{background-color:#3a4258;color:#5fb2c4;border:1px solid #5fb2c4;}
+.back:active{transform:scale(0.96);}
+.scroll{flex-grow:1;overflow-y:scroll;}
+.content{gap:16px;padding:24px;}
+.sec{gap:16px;}
+.sec-h{color:#5fb2c4;font-size:28px;font-weight:700;border-bottom:1px solid #3a3f55;padding-bottom:8px;}
+.card{background-color:#252839;border:1px solid #3a3f55;padding:16px;gap:12px;}
+.card-h{flex-direction:row;justify-content:space-between;align-items:center;}
+.card-t{color:#e0e0e0;font-size:22px;font-weight:700;}
+.card-x{color:#9aa0b4;font-size:14px;}
+.card-b{flex-direction:row;gap:12px;flex-wrap:wrap;align-items:flex-start;}
+/* §4 hit（按钮） */
+.hit{background-color:#2d3148;border:1px solid #3a3f55;padding:16px 24px;color:#e0e0e0;font-size:18px;}
+.hit:hover{background-color:#3a4258;border:1px solid #5fb2c4;color:#5fb2c4;}
+.hit:active{background-color:#5fb2c4;transform:scale(0.96);color:#1a1d2e;}
+</style>
+</head>
+<body>
+<div class="root">
+  <div class="header">
+    <div class="title">动态树 · 建/删/批量/set_style</div>
+    <div class="back" id="back-home">← 返回</div>
+  </div>
+  <div class="scroll" id="page-scroll">
+    <div class="content">
+      <div class="sec" id="sec310">
+        <div class="sec-h">3.10 动态树（create_node / set_style / instantiate）</div>
+        <div class="card">
+          <div class="card-h"><div class="card-t">运行时建子树</div><div class="card-x">宿主 API 驱动</div></div>
+          <div class="card-b">
+            <button id="dyn-add">建 1 个 panel</button>
+            <button id="dyn-add20">建 20 个</button>
+            <button id="dyn-del">删除最后</button>
+            <button id="dyn-clear">清空</button>
+            <button id="dyn-style">toggle 末个样式</button>
+            <div id="dyn-anchor" style="flex-direction:row;flex-wrap:wrap;gap:8px;min-height:60px"></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-h"><div class="card-t">instantiate 组件（切界面）</div><div class="card-x">运行时 instantiate 同包 mail 组件</div></div>
+          <div class="card-b">
+            <button id="dyn-load-mail">instantiate 邮件界面</button>
+            <button id="dyn-load-showcase">切回 showcase（remove 邮件）</button>
+            <div id="dyn-load-status" style="font-size:14px;color:#5fb2c4">当前：showcase</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

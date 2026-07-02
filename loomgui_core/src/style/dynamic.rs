@@ -16,21 +16,23 @@ use serde::{Deserialize, Serialize};
 
 /// CSS 声明（prop + value）。序列化进 .pkg.bin DynamicRuleSection。
 /// 与 `parse::css::Declaration` 同型——parse feature 下 `parse::css` 重导出本类型保持路径兼容。
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// `PartialEq` 供 instantiate 伪类规则去重（同选择器 + 同声明视为重复规则）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Declaration {
     pub prop: String,
     pub value: String,
 }
 
 /// 选择器组合子：标签/类/id/后代/子代 + 伪类状态门（hover/active/disabled）。
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// `PartialEq` 供 instantiate 规则去重（结构相等 = 同选择器，含 raw/compound/specificity）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ParsedSelector {
     pub raw: String,
     pub compound: Vec<Compound>, // 复合选择器链（后代/子代分隔）
     pub specificity: Specificity,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Compound {
     pub tag: Option<String>,
     pub classes: Vec<String>,

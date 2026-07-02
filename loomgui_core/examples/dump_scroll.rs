@@ -13,7 +13,7 @@ fn main() {
         Ok(s) => s,
         Err(e) => { eprintln!("Stage::new: {}", e); return; }
     };
-    if let Err(e) = s.load_package(&pkg) {
+    if let Err(e) = s.load_package("showcase", &pkg) {
         eprintln!("load_package: {}", e); return;
     }
     s.tick_and_render();

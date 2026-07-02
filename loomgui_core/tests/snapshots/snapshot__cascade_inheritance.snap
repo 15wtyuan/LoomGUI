@@ -1,6 +1,5 @@
 ---
 source: loomgui_core/tests/snapshot.rs
-assertion_line: 56
 expression: json
 ---
 [
@@ -99,7 +98,7 @@ expression: json
           2,
           3
         ],
-        "texture": 0,
+        "image_path": null,
         "program": 0,
         "color_matrix": [
           0.0,

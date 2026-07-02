@@ -9,7 +9,7 @@ fn main() {
     let pkg_path = concat!(env!("CARGO_MANIFEST_DIR"), "/../loomgui_unity/Assets/StreamingAssets/loom_showcase.pkg.bin");
     let pkg = std::fs::read(pkg_path).expect("read pkg");
     let mut s = Stage::new(font, (1080.0, 1920.0)).expect("Stage::new");
-    s.load_package(&pkg).expect("load_package");
+    s.load_package("showcase", &pkg).expect("load_package");
     let frame = s.tick_and_render();
     let scene = s.scene.as_ref().unwrap();
 
@@ -36,7 +36,7 @@ fn main() {
             nid, n.classes.join(","), r.x, r.y, r.w, r.h, bg_img, bg_size, has_filter, has_slice
         );
         match &rn.payload {
-            NodePayload::Mesh { verts, uvs, colors, texture, program, color_matrix, .. } => {
+            NodePayload::Mesh { verts, uvs, colors, image_path, program, color_matrix, .. } => {
                 let c0 = colors.first().copied().unwrap_or([0.0; 4]);
                 let v0 = verts.first().copied().unwrap_or([0.0; 2]);
                 let (umin, umax, vmin, vmax) = uvs.iter().fold(
@@ -46,8 +46,8 @@ fn main() {
                 let cu = (umin + umax) / 2.0;
                 let cv = (vmin + vmax) / 2.0;
                 println!(
-                    "  program={} tex={} vcol=({:.0},{:.0},{:.0},{:.0}) uv u[{:.3},{:.3}] v[{:.3},{:.3}] center=({:.3},{:.3}) {} verts={} v0=({:.0},{:.0}) uv0=({:.3},{:.3})",
-                    program, texture,
+                    "  program={} path={:?} vcol=({:.0},{:.0},{:.0},{:.0}) uv u[{:.3},{:.3}] v[{:.3},{:.3}] center=({:.3},{:.3}) {} verts={} v0=({:.0},{:.0}) uv0=({:.3},{:.3})",
+                    program, image_path,
                     c0[0] * 255., c0[1] * 255., c0[2] * 255., c0[3],
                     umin, umax, vmin, vmax, cu, cv,
                     if (cv - 0.5).abs() > 0.02 { "<<v非居中>>" } else { "v居中" },

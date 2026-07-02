@@ -1,10 +1,10 @@
 //! 诊断：button :active{transform:scale(0.96)} 按下后 Text 子字消失。
 //! 打包伪类 → load → tick → Down → tick×2 → dump btn + Text payload + world_matrix。
-use loomgui_core::asset::{extract_dynamic_rules, write_package, AtlasSection};
+use loomgui_core::asset::{extract_dynamic_rules, write_package, PackageInput, TemplateNode};
 use loomgui_core::input::{PointerEvent, PointerKind};
 use loomgui_core::parse::css::parse_css;
 use loomgui_core::render::node::NodePayload;
-use loomgui_core::scene::node::build_scene;
+use loomgui_core::scene::node::{build_scene, NodeId};
 use loomgui_core::stage::Stage;
 use loomgui_core::style::cascade::resolve_styles;
 
@@ -78,10 +78,34 @@ fn main() {
     let styles = resolve_styles(&tree, &sheet);
     let scene = build_scene(&tree, &styles);
     let dynamic = extract_dynamic_rules(&sheet);
-    let pkg = write_package(&scene, (200.0, 100.0), &AtlasSection::default(), &dynamic);
+    // v1.4-a：write_package 接 PackageInput（多组件）。本 example 单 scene → 单组件桥接。
+    let pos_of: std::collections::HashMap<NodeId, usize> = scene
+        .nodes
+        .values()
+        .enumerate()
+        .map(|(i, n)| (n.id, i))
+        .collect();
+    let nodes: Vec<TemplateNode> = scene
+        .nodes
+        .values()
+        .map(|n| TemplateNode {
+            kind: n.kind.clone(),
+            style: n.style.clone(),
+            parent_idx: n.parent.map(|p| pos_of[&p]),
+            classes: n.classes.clone(),
+            id_attr: n.id_attr.clone(),
+            draggable: n.draggable,
+            tabindex: n.tabindex,
+        })
+        .collect();
+    let input = PackageInput {
+        components: vec![("scene", nodes.as_slice(), &dynamic)],
+        asset_manifest: &[],
+    };
+    let pkg = write_package(&input);
 
     let mut s = Stage::new(font, (200.0, 100.0)).unwrap();
-    s.load_package(&pkg).unwrap();
+    s.load_package("showcase", &pkg).unwrap();
     let btn = s.find_node_by_id("b1").expect("b1").0 as u32;
     let r = s.scene.as_ref().unwrap().get(loomgui_core::scene::node::NodeId(btn)).expect("live node").layout_rect;
     println!("btn={} rect=({:.0},{:.0},{:.0},{:.0})", btn, r.x, r.y, r.w, r.h);
