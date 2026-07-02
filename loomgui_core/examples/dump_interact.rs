@@ -105,7 +105,7 @@ fn main() {
     let pkg = write_package(&input);
 
     let mut s = Stage::new(font, (200.0, 100.0)).unwrap();
-    s.load_package(&pkg).unwrap();
+    s.load_package("showcase", &pkg).unwrap();
     let btn = s.find_node_by_id("b1").expect("b1").0 as u32;
     let r = s.scene.as_ref().unwrap().get(loomgui_core::scene::node::NodeId(btn)).expect("live node").layout_rect;
     println!("btn={} rect=({:.0},{:.0},{:.0},{:.0})", btn, r.x, r.y, r.w, r.h);

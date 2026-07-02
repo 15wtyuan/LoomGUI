@@ -9,7 +9,7 @@ fn main() {
     let pkg_path = concat!(env!("CARGO_MANIFEST_DIR"), "/../loomgui_unity/Assets/StreamingAssets/loom_showcase.pkg.bin");
     let pkg = std::fs::read(pkg_path).expect("read pkg");
     let mut s = Stage::new(font, (1080.0, 1920.0)).expect("Stage::new");
-    s.load_package(&pkg).expect("load_package");
+    s.load_package("showcase", &pkg).expect("load_package");
     let frame = s.tick_and_render();
     let scene = s.scene.as_ref().unwrap();
 

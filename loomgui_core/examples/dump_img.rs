@@ -1,5 +1,8 @@
 //! 诊断：dump 所有 Image 节点的 CSS size / layout_rect / 纹理注册情况。
 //! 定位 ① width:50% 压扁（高没等比）② width:auto 不渲染（rect 0? 未注册?）。
+//!
+//! v1.4-a T4：load_package 不再建 scene（进资源池）。本 example 暂只验 load_package 成功 +
+//! 包内 Image 节点 src（从 packages 字典读，非 scene）。T5 instantiate 后恢复 scene 转储。
 use loomgui_core::scene::node::NodeKind;
 use loomgui_core::stage::Stage;
 
@@ -14,21 +17,21 @@ fn main() {
         Ok(s) => s,
         Err(e) => { eprintln!("Stage::new: {}", e); return; }
     };
-    if let Err(e) = s.load_package(&pkg) { eprintln!("load_package: {}", e); return; }
-    s.tick_and_render();
-    let scene = s.scene.as_ref().unwrap();
-    println!("{:<22} {:<18} {:<16} {:<16} {:>8} {:>8} {:>10}", "id", "src", "css.w", "css.h", "rect.w", "rect.h", "tex(iw,ih)");
-    for n in scene.nodes.values() {
-        let src = match &n.kind { NodeKind::Image { src } => src.clone(), _ => continue };
-        let st = &n.style.taffy_style;
-        let css_w = format!("{:?}", st.size.width);
-        let css_h = format!("{:?}", st.size.height);
-        let tex = s.textures.get(&src);
-        let tex_s = tex.map(|m| format!("({},{})", m.width, m.height)).unwrap_or_else(|| "UNREGISTERED".into());
-        let id = n.id_attr.clone().unwrap_or_default();
-        println!(
-            "{:<22} {:<18} {:<16} {:<16} {:>8.1} {:>8.1} {:>10}",
-            id, src, css_w, css_h, n.layout_rect.w, n.layout_rect.h, tex_s,
-        );
+    // v1.4-a T4：load_package(name, bytes) 进资源池不建 scene。
+    if let Err(e) = s.load_package("showcase", &pkg) { eprintln!("load_package: {}", e); return; }
+    // v1.4-a T4：scene 未建（load_package 不建 scene）；从 packages 字典读组件模板节点。
+    // T5 instantiate 后改回 scene 转储。
+    println!("{:<22} {:<18} {:<16} {:<16}", "id", "src", "css.w", "css.h");
+    for pkg in s.packages.values() {
+        for comp in pkg.components.values() {
+            for n in &comp.nodes {
+                let src = match &n.kind { NodeKind::Image { src } => src.clone(), _ => continue };
+                let st = &n.style.taffy_style;
+                let css_w = format!("{:?}", st.size.width);
+                let css_h = format!("{:?}", st.size.height);
+                let id = n.id_attr.clone().unwrap_or_default();
+                println!("{:<22} {:<18} {:<16} {:<16}", id, src, css_w, css_h);
+            }
+        }
     }
 }

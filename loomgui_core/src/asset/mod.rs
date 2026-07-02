@@ -10,12 +10,16 @@
 //!   - PerComponentDynamicRules：每组件 dynamic_rules 的 bincode blob（紧跟 ComponentTable 段）。
 //!   - AssetManifest：本包所有 img path（Unity 校验 res 齐全用）。
 //! style 字段 = bincode(ResolvedStyle，已 bake)。img src 指向归一化 path 字符串（非 atlas sprite）。
+//!
+//! **v1.4-a T4 清理**：删 `AtlasSection`/`AtlasInfo`/`AtlasSprite`/`build_registry`（图集归 Unity，
+//! D8）。`asset/texture.rs` 的 `TextureRegistry`/`TexMeta` 暂留——render/layout 仍读（Image 查
+//! textures 走空 registry fallback），T6 改 Image payload 带 path 后彻底删。
 
 use crate::scene::NodeKind;
 use crate::style::dynamic::DynamicRuleTable;
 use crate::style::resolved::ResolvedStyle;
 
-pub mod texture; // 纹理注册表（src→TexMeta）—— v1.4-a 暂留（图集归 Unity，T4 删）
+pub mod texture; // TextureRegistry/TexMeta——T4 暂留（render/layout 仍读），T6 改 Image payload 后删
 
 pub const PKG_MAGIC: u32 = 0x474B504C; // 磁盘字节(LE) "LPKG"（不与 frame blob "LOOM" 撞）
 pub const PKG_FORMAT_VERSION: u32 = 11; // v1.4-a 多组件格式（ComponentTable + AssetManifest，砍 atlas/root_size，旧 v10 pkg 须重打）
@@ -27,71 +31,6 @@ const KIND_CONTAINER: u8 = 0;
 const KIND_BUTTON: u8 = 1;
 const KIND_IMAGE: u8 = 2;
 const KIND_TEXT: u8 = 3;
-
-/// atlas 元数据（.pkg.bin AtlasSection 的内存形）。
-/// 单图集：atlas.len()≤1，所有 sprite 属 atlas[0]（build_registry 硬编码 tex_id=1）。
-/// 多图集需 sprite 带 atlas_idx 才能分流——当前模型不支持。
-#[derive(Debug, Clone, PartialEq)]
-pub struct AtlasSection {
-    pub atlases: Vec<AtlasInfo>,   // len=1
-    pub sprites: Vec<AtlasSprite>, // 全部 sprite（都属 atlas 0）
-}
-impl Default for AtlasSection {
-    fn default() -> Self {
-        AtlasSection {
-            atlases: Vec::new(),
-            sprites: Vec::new(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct AtlasInfo {
-    pub filename: String,
-    pub width: u32,
-    pub height: u32,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct AtlasSprite {
-    pub src: String, // 原 Image src（NodeBlock image_src 一致）
-    pub x: u32,
-    pub y: u32,
-    pub w: u32,
-    pub h: u32,
-}
-
-/// 从 AtlasSection 建 TextureView registry。单图集：atlas[0] 得 tex_id=1，
-/// 所有 sprite 属它。空 atlas（inline / 空 package）→ 空 registry。
-/// （多图集需 sprite 带 atlas_idx 才能分流。）
-pub fn build_registry(section: &AtlasSection) -> crate::asset::texture::TextureRegistry {
-    let mut reg = crate::asset::texture::TextureRegistry::default();
-    if section.atlases.is_empty() {
-        return reg;
-    }
-    let atlas = &section.atlases[0];
-    let atlas_tex_id = 1u32;
-    let aw = atlas.width as f32;
-    let ah = atlas.height as f32;
-    for spr in &section.sprites {
-        // UV 存 Unity 约定（v=0 底 / v=1 顶）：PNG y=0 顶 ↔ Unity v=1，故 v 翻转。
-        // 旧用 PNG y-down（uv_min[1]=spr.y/ah），sprite 不占整高时 design 顶↔PNG 底（上下错位）；
-        // v1.3 加 108px skin.png 打破 atlas 高度（icon 不再占满高）首次暴露。
-        let uv_min = [spr.x as f32 / aw, (ah - (spr.y + spr.h) as f32) / ah];
-        let uv_max = [(spr.x + spr.w) as f32 / aw, (ah - spr.y as f32) / ah];
-        reg.insert(
-            &spr.src,
-            crate::asset::texture::TexMeta {
-                tex_id: atlas_tex_id,
-                uv_min,
-                uv_max,
-                width: spr.w,
-                height: spr.h,
-            },
-        );
-    }
-    reg
-}
 
 // ── v1.4-a 多组件包数据结构 ──────────────────────────────────────────────
 
@@ -876,32 +815,6 @@ mod tests {
         };
         let pkg = read_package(&write_package(&input)).unwrap();
         assert_eq!(pkg.asset_manifest, vec!["a/x.png".to_string(), "b/y.png".to_string()]);
-    }
-
-    // —— build_registry / AtlasSection 旧结构测试保留（v1.4-a 暂留这些类型，T4 删）——
-
-    #[test]
-    fn build_registry_maps_sprites_to_atlas_zero_tex_id_one() {
-        let section = AtlasSection {
-            atlases: vec![AtlasInfo { filename: "a.png".into(), width: 512, height: 256 }],
-            sprites: vec![
-                AtlasSprite { src: "s1.png".into(), x: 0, y: 0, w: 64, h: 32 },
-                AtlasSprite { src: "s2.png".into(), x: 64, y: 32, w: 100, h: 200 },
-            ],
-        };
-        let reg = build_registry(&section);
-        let m1 = reg.get("s1.png").expect("s1 registered");
-        assert_eq!(m1.tex_id, 1);
-        assert_eq!(m1.uv_min, [0.0, (256.0 - 32.0) / 256.0]);
-        assert_eq!(m1.uv_max, [64.0 / 512.0, (256.0 - 0.0) / 256.0]);
-        assert_eq!((m1.width, m1.height), (64, 32));
-    }
-
-    #[test]
-    fn build_registry_empty_atlases_returns_empty() {
-        let section = AtlasSection::default();
-        let reg = build_registry(&section);
-        assert!(reg.is_empty());
     }
 
     // —— 防御 malformed ComponentTable 测试（review fix）——

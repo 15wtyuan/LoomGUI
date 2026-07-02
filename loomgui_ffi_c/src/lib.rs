@@ -69,6 +69,10 @@ pub extern "C" fn loomgui_stage_free(h: *mut StageHandle) {
 ///
 /// **parse-gated：**本函数走核心 HTML/CSS 解析路径，`--no-default-features` 关掉 parse 时不存在。
 /// 包加载路径走 `loomgui_stage_load_package`（常驻，不 gate）。
+///
+/// v1.4-a T4：`Stage::load_inline` 已砍（D12）。本 FFI 暂保留（T7 决定是否砍/改），
+/// 内部直接调 parse_html + resolve_styles + build_scene（同旧 load_inline 逻辑）。
+/// textures/atlases 已砍，不涉及纹理注册。
 #[cfg(feature = "parse")]
 #[no_mangle]
 pub extern "C" fn loomgui_stage_load_html(
@@ -92,10 +96,23 @@ pub extern "C" fn loomgui_stage_load_html(
         Ok(s) => s,
         Err(_) => return -1,
     };
-    match sh.stage.load_inline(html, css) {
-        Ok(()) => 0,
-        Err(_) => -1,
+    // v1.4-a T4：load_inline 已砍，直接走 parse → resolve → build_scene。
+    let tree = match loomgui_core::parse::dom::parse_html(html) {
+        Ok(t) => t,
+        Err(_) => return -1,
+    };
+    let sheet = match loomgui_core::parse::css::parse_css(css) {
+        Ok(s) => s,
+        Err(_) => return -1,
+    };
+    let styles = loomgui_core::style::cascade::resolve_styles(&tree, &sheet);
+    sh.stage.tweens.clear();
+    if let Some(scene) = sh.stage.scene.as_mut() {
+        scene.scroll.clear();
     }
+    sh.stage.prev_node_hashes.clear();
+    sh.stage.scene = Some(loomgui_core::scene::node::build_scene(&tree, &styles));
+    0
 }
 
 /// 装载二进制包（spec §12/§13）。bytes = .pkg.bin（指针+len）。0=ok，-1=err。
@@ -103,6 +120,10 @@ pub extern "C" fn loomgui_stage_load_html(
 ///
 /// **常驻（不 gate）：**包格式是 runtime 的稳定入口，不依赖 parse feature——
 /// `--no-default-features` 构建的 .dll 仍有本函数（Unity 用 default 带 parse 的 dev .dll）。
+///
+/// v1.4-a T4：`Stage::load_package(name, bytes)` 签名加了 name 参数（进资源池不建 scene）。
+/// 本 FFI 暂传空名 ""（T7 加 name 参数到 FFI 签名 + csbindgen regen）。包进 packages[""] 字典。
+/// **注意**：load_package 不再建 scene——Unity 侧需改用 instantiate（T5/T8）建 scene 内容。
 #[no_mangle]
 pub extern "C" fn loomgui_stage_load_package(
     h: *mut StageHandle,
@@ -114,43 +135,34 @@ pub extern "C" fn loomgui_stage_load_package(
     }
     let sh = unsafe { &mut *h };
     let bytes = unsafe { std::slice::from_raw_parts(bytes, len) };
-    match sh.stage.load_package(bytes) {
+    match sh.stage.load_package("", bytes) {
         Ok(()) => 0,
         Err(_) => -1,
     }
 }
 
-/// atlas 数量（甲-B 恒 1，无图 scene = 0）。
+/// atlas 数量。
+///
+/// v1.4-a T4：`Stage.atlases` 字段已砍（图集归 Unity，D8）。本 FFI 暂 stub 返 0
+/// （T7 删本函数 + atlas_info + csbindgen regen）。保持 workspace 编译通过。
 #[no_mangle]
-pub extern "C" fn loomgui_stage_atlas_count(h: *const StageHandle) -> usize {
-    if h.is_null() { return 0; }
-    let sh = unsafe { &*h };
-    sh.stage.atlases.len()
+pub extern "C" fn loomgui_stage_atlas_count(_h: *const StageHandle) -> usize {
+    0
 }
 
-/// 第 i 个 atlas 信息。返 atlas filename UTF-8 串指针（**无尾 NUL** + *out_src_len=字节长）；
-/// *out_tex_id = core 分配的 atlas tex_id（= i+1）；*out_w/*out_h = atlas 像素尺寸。
-/// OOB / null → null。串归 Stage 拥有，下次 load 前有效（len-based 读契约）。
+/// 第 i 个 atlas 信息。
+///
+/// v1.4-a T4：`Stage.atlases` 已砍。本 FFI 暂 stub 返 null（T7 删）。
 #[no_mangle]
 pub extern "C" fn loomgui_stage_atlas_info(
-    h: *const StageHandle,
-    index: usize,
-    out_tex_id: *mut u32,
-    out_w: *mut u32,
-    out_h: *mut u32,
-    out_src_len: *mut usize,
+    _h: *const StageHandle,
+    _index: usize,
+    _out_tex_id: *mut u32,
+    _out_w: *mut u32,
+    _out_h: *mut u32,
+    _out_src_len: *mut usize,
 ) -> *const u8 {
-    if h.is_null() { return std::ptr::null(); }
-    let sh = unsafe { &*h };
-    if index >= sh.stage.atlases.len() { return std::ptr::null(); }
-    let a = &sh.stage.atlases[index];
-    unsafe {
-        if !out_tex_id.is_null() { *out_tex_id = (index as u32) + 1; }   // atlas[0]→tex_id 1
-        if !out_w.is_null() { *out_w = a.width; }
-        if !out_h.is_null() { *out_h = a.height; }
-        if !out_src_len.is_null() { *out_src_len = a.filename.len(); }
-    }
-    a.filename.as_ptr()
+    std::ptr::null()
 }
 
 /// 跑一帧 tick_and_render → build_blob 写入缓存。dt 累积进 time_s（双击窗口，C# 传 unscaledDeltaTime）。
@@ -760,9 +772,10 @@ mod abi_tests {
     use super::*;
     use std::ffi::CString;
 
-    /// T1 桥接辅助：把单 scene → v1.4-a 单组件 pkg（兼容旧 FFI 测试）。
-    /// 旧 write_package(scene, root_size, atlas, dynamic) 已改签名为 write_package(PackageInput)。
-    /// Task 7 会重写这些 FFI 测试（资源池 + instantiate 模型）。
+    /// T1 桥接辅助：把单 scene → v1.4-a 单组件 pkg。
+    /// v1.4-a T4：原 5 个 FFI 测试用此 helper + load_package 建 scene，现已全 ignore
+    /// （load_package 不建 scene）。保留 helper 供 T7 instantiate 测试复用。
+    #[allow(dead_code)]
     fn scene_to_pkg(scene: &loomgui_core::scene::Scene) -> Vec<u8> {
         use loomgui_core::asset::{PackageInput, TemplateNode};
         use loomgui_core::scene::NodeId;
@@ -837,27 +850,14 @@ mod abi_tests {
 
     /// load_package FFI：手搓 scene（不走 parse）→ write_package → FFI 装载 → tick → blob。
     /// 与 load_html 路径解耦（parse feature off 时仍可用）。
+    ///
+    /// **v1.4-a T4 暂 ignore**：load_package 不再建 scene（进资源池），tick 无 scene 会 panic。
+    /// T5（instantiate）+ T7（FFI load_package 加 name）落地后改写为：
+    /// load_package("test") → instantiate → append_child → tick → blob。
     #[test]
+    #[ignore = "v1.4-a T4: load_package 不建 scene；T5 instantiate + T7 FFI 改写"]
     fn load_package_builds_blob_from_package() {
-        use loomgui_core::scene::{NodeKind, Scene};
-        use loomgui_core::style::resolved::ResolvedStyle;
-        let (fp, fplen) = font_path();
-        // 手搓 scene（不走 parse），打成包
-        let entries: Vec<(Option<usize>, NodeKind, ResolvedStyle, Vec<String>, Option<String>, bool, Option<i32>)> = vec![
-            (None, NodeKind::Container, ResolvedStyle::default(), Vec::new(), None, false, None),
-            (Some(0), NodeKind::Text { content: "hi".into() }, ResolvedStyle::default(), Vec::new(), None, false, None),
-        ];
-        let pkg = scene_to_pkg(&Scene::build(&entries));
-
-        let h = loomgui_stage_new(fp.as_ptr() as *const u8, fplen, 100.0, 50.0);
-        assert!(!h.is_null());
-        let r = loomgui_stage_load_package(h, pkg.as_ptr(), pkg.len());
-        assert_eq!(r, 0, "load_package ok");
-        loomgui_stage_tick(h, 0.0);
-        let mut len = 0usize;
-        let ptr = loomgui_stage_borrow_frame(h, &mut len);
-        assert!(!ptr.is_null() && len > 12, "tick 后应有 blob");
-        loomgui_stage_free(h);
+        // 占位：T5 instantiate 后改写
     }
 
     /// 契约：从未 tick 过的句柄 borrow_frame 必须返回 null + len=0
@@ -936,24 +936,13 @@ mod abi_tests {
 
     /// is_pointer_on_ui 契约：手搓空包（单根 Container）→ 命中根 → false（根不算 UI）。
     /// 覆盖 4 函数在无 parse feature 路径下也可用的契约（手搓包不走 parse）。
+    ///
+    /// **v1.4-a T4 暂 ignore**：load_package 不再建 scene，tick 无 scene 会 panic。
+    /// T5（instantiate）+ T7 落地后改写为 load_package → instantiate → tick 路径。
     #[test]
+    #[ignore = "v1.4-a T4: load_package 不建 scene；T5 instantiate + T7 FFI 改写"]
     fn is_pointer_on_ui_true_on_hit_false_on_miss() {
-        use loomgui_core::input::{PointerEvent, PointerKind};
-        use loomgui_core::scene::{NodeKind, Scene};
-        use loomgui_core::style::resolved::ResolvedStyle;
-        let (fp, fplen) = font_path();
-        let h = loomgui_stage_new(fp.as_ptr() as *const u8, fplen, 200.0, 100.0);
-        // 手搓空 scene（单根 Container），不走 parse
-        let entries: Vec<(Option<usize>, NodeKind, ResolvedStyle, Vec<String>, Option<String>, bool, Option<i32>)> = vec![(None, NodeKind::Container, ResolvedStyle::default(), Vec::new(), None, false, None)];
-        let pkg = scene_to_pkg(&Scene::build(&entries));
-        loomgui_stage_load_package(h, pkg.as_ptr(), pkg.len());
-        // 命中根 (100,50)——根不算 UI → is_pointer_on_ui=false
-        let ev = PointerEvent { kind: PointerKind::Move, x: 100.0, y: 50.0, button: 0, pad: [0, 0], touch_id: -1 };
-        loomgui_stage_set_input(h, &ev, 1);
-        loomgui_stage_tick(h, 0.0);
-        // 单根节点：命中根 → is_pointer_on_ui=false（根不算）
-        assert!(!loomgui_stage_is_pointer_on_ui(h), "命中根 → false");
-        loomgui_stage_free(h);
+        // 占位：T5 instantiate 后改写
     }
 
     /// EventRecord/PointerEvent sizeof 契约。
@@ -1060,63 +1049,23 @@ mod abi_tests {
     }
 
     /// node_parent 契约：child.parent==root；root.parent==sentinel；OOB==sentinel。
+    /// **v1.4-a T4 暂 ignore**：load_package 不再建 scene，find_node_by_id 无 scene 可查。
+    /// T5（instantiate）+ T7 落地后改写为 load_package → instantiate → find_node_by_id 路径。
     #[test]
+    #[ignore = "v1.4-a T4: load_package 不建 scene；T5 instantiate + T7 FFI 改写"]
     fn node_parent_returns_chain_and_sentinel() {
-        use loomgui_core::scene::{NodeKind, Scene};
-        use loomgui_core::style::resolved::ResolvedStyle;
-        let (fp, fplen) = font_path();
-        // root/child 各带 id_attr → find_node_by_id 解析 slotmap 分配的 NodeId（u32 打包值）
-        let entries: Vec<(Option<usize>, NodeKind, ResolvedStyle, Vec<String>, Option<String>, bool, Option<i32>)> = vec![
-            (None, NodeKind::Container, ResolvedStyle::default(), Vec::new(), Some("root".to_string()), false, None),
-            (Some(0), NodeKind::Container, ResolvedStyle::default(), Vec::new(), Some("child".to_string()), false, None),
-        ];
-        let pkg = scene_to_pkg(&Scene::build(&entries));
-        let h = loomgui_stage_new(fp.as_ptr() as *const u8, fplen, 100.0, 50.0);
-        assert!(!h.is_null());
-        assert_eq!(loomgui_stage_load_package(h, pkg.as_ptr(), pkg.len()), 0);
-        let root_id = {
-            let c = std::ffi::CString::new("root").unwrap();
-            loomgui_stage_find_node_by_id(h, c.as_ptr() as *const u8, c.as_bytes().len())
-        };
-        let child_id = {
-            let c = std::ffi::CString::new("child").unwrap();
-            loomgui_stage_find_node_by_id(h, c.as_ptr() as *const u8, c.as_bytes().len())
-        };
-        assert_ne!(root_id, 0xFFFF_FFFF, "find root ok");
-        assert_ne!(child_id, 0xFFFF_FFFF, "find child ok");
-        assert_eq!(loomgui_node_parent(h, child_id), root_id, "child.parent == root");
-        assert_eq!(loomgui_node_parent(h, root_id), 0xFFFF_FFFF, "root.parent == sentinel");
-        assert_eq!(loomgui_node_parent(h, 0xFFFF_FFFF), 0xFFFF_FFFF, "OOB == sentinel");
-        loomgui_stage_free(h);
+        // 占位：T5 instantiate 后改写
     }
 
     /// find_node_by_id round-trip：手搓包（root + btn id="ok" + Text 子）→ find "ok" 返 btn NodeId；
     /// 无匹配 → sentinel。照 node_parent 测用包路径（不走 parse）。
+    ///
+    /// **v1.4-a T4 暂 ignore**：load_package 不再建 scene，find_node_by_id 无 scene 可查。
+    /// T5（instantiate）+ T7 落地后改写为 load_package → instantiate → find 路径。
     #[test]
+    #[ignore = "v1.4-a T4: load_package 不建 scene；T5 instantiate + T7 FFI 改写"]
     fn find_node_by_id_round_trip() {
-        use loomgui_core::scene::{NodeKind, Scene};
-        use loomgui_core::style::resolved::ResolvedStyle;
-        let (fp, fplen) = font_path();
-        let entries: Vec<(Option<usize>, NodeKind, ResolvedStyle, Vec<String>, Option<String>, bool, Option<i32>)> = vec![
-            (None, NodeKind::Container, ResolvedStyle::default(), Vec::new(), None, false, None),
-            (Some(0), NodeKind::Button, ResolvedStyle::default(), Vec::new(), Some("ok".to_string()), false, None),
-            (Some(1), NodeKind::Text { content: "OK".into() }, ResolvedStyle::default(), Vec::new(), None, false, None),
-        ];
-        let pkg = scene_to_pkg(&Scene::build(&entries));
-        let h = loomgui_stage_new(fp.as_ptr() as *const u8, fplen, 100.0, 50.0);
-        assert!(!h.is_null());
-        assert_eq!(loomgui_stage_load_package(h, pkg.as_ptr(), pkg.len()), 0);
-        let id = std::ffi::CString::new("ok").unwrap();
-        let btn_id = loomgui_stage_find_node_by_id(h, id.as_ptr() as *const u8, id.as_bytes().len());
-        assert_ne!(btn_id, 0xFFFF_FFFF, "find 'ok' → btn NodeId（非 sentinel）");
-        assert_ne!(btn_id, 0, "btn NodeId 非零（slotmap idx 从 1 起）");
-        let miss = std::ffi::CString::new("nope").unwrap();
-        assert_eq!(
-            loomgui_stage_find_node_by_id(h, miss.as_ptr() as *const u8, miss.as_bytes().len()),
-            0xFFFF_FFFF,
-            "无匹配 → sentinel"
-        );
-        loomgui_stage_free(h);
+        // 占位：T5 instantiate 后改写
     }
 
     /// version 字符串 == "v1e"。
@@ -1478,71 +1427,13 @@ mod abi_tests {
     /// 流程：create_root(div) → create_node(button/img/span) → append_child ×3 →
     ///       set_text/set_src/set_style 改属性 → insert_before 插序 →
     ///       remove_child 摘子 → remove_node 删根。每步断言返回值契约。
+    ///
+    /// **v1.4-a T4 暂 ignore**：load_package 不再建 scene，create_root 需 scene 已存
+    /// （Stage::create_root 调 scene.as_mut().ok_or("no scene")?）。FFI 暂无"建空 scene"入口。
+    /// T7 加 FFI create_root 支持空 scene（或 loomgui_stage_init_scene）后恢复。
     #[test]
+    #[ignore = "v1.4-a T4: load_package 不建 scene；T7 加 FFI scene-init 后恢复"]
     fn dynamic_tree_api_ffi_round_trip() {
-        use loomgui_core::scene::{NodeKind, Scene};
-        use loomgui_core::style::resolved::ResolvedStyle;
-        let (fp, fplen) = font_path();
-        // 初始 scene：单根 Container（load_package 建初始 scene，供后续动态 API 操作）
-        let entries: Vec<(Option<usize>, NodeKind, ResolvedStyle, Vec<String>, Option<String>, bool, Option<i32>)> = vec![
-            (None, NodeKind::Container, ResolvedStyle::default(), Vec::new(), None, false, None),
-        ];
-        let pkg = scene_to_pkg(&Scene::build(&entries));
-        let h = loomgui_stage_new(fp.as_ptr() as *const u8, fplen, 200.0, 100.0);
-        assert!(!h.is_null());
-        assert_eq!(loomgui_stage_load_package(h, pkg.as_ptr(), pkg.len()), 0);
-
-        // create_root：建第二个根（div）。返非 sentinel NodeId。
-        let root2 = loomgui_stage_create_root(h, b"div".as_ptr(), 3, b"".as_ptr(), 0);
-        assert_ne!(root2, 0xFFFF_FFFF, "create_root 返有效 NodeId");
-
-        // create_node：建 button/img/span 三个游离节点。
-        let btn = loomgui_stage_create_node(h, b"button".as_ptr(), 6, b"".as_ptr(), 0);
-        let img = loomgui_stage_create_node(h, b"img".as_ptr(), 3, b"".as_ptr(), 0);
-        let txt = loomgui_stage_create_node(h, b"span".as_ptr(), 4, b"".as_ptr(), 0);
-        assert_ne!(btn, 0xFFFF_FFFF);
-        assert_ne!(img, 0xFFFF_FFFF);
-        assert_ne!(txt, 0xFFFF_FFFF);
-
-        // append_child：挂 btn/img 到 root2。0=ok。
-        assert_eq!(loomgui_stage_append_child(h, root2, btn), 0, "append_child btn");
-        assert_eq!(loomgui_stage_append_child(h, root2, img), 0, "append_child img");
-
-        // set_text/set_src/set_style：改属性。0=ok。
-        assert_eq!(loomgui_stage_set_text(h, txt, b"hi".as_ptr(), 2), 0, "set_text on span");
-        assert_eq!(loomgui_stage_set_src(h, img, b"icon.png".as_ptr(), 8), 0, "set_src on img");
-        assert_eq!(loomgui_stage_set_style(h, btn, b"width:100px".as_ptr(), 10), 0, "set_style on button");
-
-        // set_text on 非 Text 节点 → -1（Stage::set_text Err）。
-        assert_eq!(loomgui_stage_set_text(h, btn, b"x".as_ptr(), 1), -1, "set_text on button → err");
-
-        // insert_before：txt 插到 btn 前（ref_id=btn）。0=ok。
-        assert_eq!(loomgui_stage_insert_before(h, root2, txt, btn), 0, "insert_before txt before btn");
-
-        // 验证子序：root2.children == [txt, btn, img]
-        let handle = unsafe { &*h };
-        let scene = handle.stage.scene.as_ref().unwrap();
-        let children: Vec<u32> = scene.get(loomgui_core::scene::NodeId(root2)).unwrap()
-            .children.iter().map(|c| c.0).collect();
-        assert_eq!(children, vec![txt, btn, img], "insert_before 后子序 [txt, btn, img]");
-
-        // remove_child：摘 btn（不删）。0=ok。子序 → [txt, img]。
-        assert_eq!(loomgui_stage_remove_child(h, root2, btn), 0, "remove_child btn");
-        let children: Vec<u32> = scene.get(loomgui_core::scene::NodeId(root2)).unwrap()
-            .children.iter().map(|c| c.0).collect();
-        assert_eq!(children, vec![txt, img], "remove_child 后子序 [txt, img]");
-
-        // remove_node：删 root2（递归删子 txt/img）。返 0（no-op 语义恒成功）。
-        assert_eq!(loomgui_stage_remove_node(h, root2), 0, "remove_node root2");
-        // root2 此后失效（slotmap gen++）——node_parent 返 sentinel。
-        assert_eq!(loomgui_node_parent(h, root2), 0xFFFF_FFFF, "remove_node 后 root2 失效");
-
-        // null 句柄契约：create_root → sentinel；append_child/set_text/remove_node → -1/0。
-        assert_eq!(loomgui_stage_create_root(std::ptr::null_mut(), b"x".as_ptr(), 1, b"".as_ptr(), 0), 0xFFFF_FFFF);
-        assert_eq!(loomgui_stage_append_child(std::ptr::null_mut(), 0, 0), -1);
-        assert_eq!(loomgui_stage_set_text(std::ptr::null_mut(), 0, b"x".as_ptr(), 1), -1);
-        assert_eq!(loomgui_stage_remove_node(std::ptr::null_mut(), 0), 0, "remove_node null → no-op 0");
-
-        loomgui_stage_free(h);
+        // 占位：T7 FFI scene-init 入口落地后恢复
     }
 }

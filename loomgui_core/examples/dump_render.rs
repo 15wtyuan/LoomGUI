@@ -1,8 +1,15 @@
 //! 诊断：dump showcase 每节点 payload + style bg + layout_rect，定位"蓝底不显示"。
 //! 首帧 prev_hashes 空 → 全 emit（无 Unchanged），看到每节点真实 payload。
 //! 用 inline 路径（读 showcase HTML+CSS）验 parse 修复（绕过 pkg 缓存）。
+//!
+//! v1.4-a T4：load_inline 已砍，此处直接调 parse_html + build_scene（test helper 之外的
+//! parse 管线；本 example 是 dev 诊断工具，T10 showcase 重做时可能更新）。
+use loomgui_core::parse::css::parse_css;
+use loomgui_core::parse::dom::parse_html;
 use loomgui_core::render::node::NodePayload;
+use loomgui_core::scene::node::build_scene;
 use loomgui_core::stage::Stage;
+use loomgui_core::style::cascade::resolve_styles;
 
 fn main() {
     let font = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/DejaVuSans.ttf");
@@ -17,7 +24,11 @@ fn main() {
     let html = std::fs::read_to_string(html_path).expect("read html");
     let css = std::fs::read_to_string(css_path).expect("read css");
     let mut s = Stage::new(font, (1080.0, 1920.0)).expect("Stage::new");
-    s.load_inline(&html, &css).expect("load_inline");
+    // v1.4-a：load_inline 已砍，直接走 parse → resolve → build_scene（同 load_inline 旧逻辑）。
+    let tree = parse_html(&html).expect("parse_html");
+    let sheet = parse_css(&css).expect("parse_css");
+    let styles = resolve_styles(&tree, &sheet);
+    s.scene = Some(build_scene(&tree, &styles));
     let frame = s.tick_and_render();
     let scene = s.scene.as_ref().unwrap();
     println!(
