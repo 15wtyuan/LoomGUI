@@ -69,3 +69,5 @@ desktop.ini
 # editor init 注入生成物（samples/ 自测注入）
 samples/CLAUDE.md
 samples/.claude/
+samples/*/*.artifact.json
+samples/.od-skills
