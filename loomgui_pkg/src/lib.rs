@@ -2,18 +2,23 @@
 //! v1.4-a：每个 HTML 独立 parse → resolve_styles → build_scene → 抽 TemplateNode；
 //! img src / background-image url 归一化进 asset_manifest；CSS bake 进 style_blob。
 //! 砍 image crate / shelf_pack / atlas.png（图集归 Unity，D8）。
+//!
+//! **D17（图尺寸）**：打包器对每个 manifest path 读 PNG IHDR（前 8 字节 magic + 13 字节 IHDR，
+//! width/height big-endian u32 at offset 16/20）填 `AssetEntry { path, w, h }`。非 PNG 或读失败 →
+//! w/h=0（核心 measure fallback 64×64）。不引 image crate——PNG header 解析 ~30 行即可。
 
-use loomgui_core::asset::{PackageInput, TemplateNode, extract_component_css, normalize_path};
+use loomgui_core::asset::{AssetEntry, PackageInput, TemplateNode, extract_component_css, normalize_path};
 use loomgui_core::scene::NodeId;
 use scraper::{Html, Selector as ScraperSelector};
 use std::path::Path;
 
-/// 打包产物：.pkg.bin bytes + asset_manifest（归一化 path 列表，供 Unity 校验 res 齐全）。
+/// 打包产物：.pkg.bin bytes + asset_manifest（归一化 path + 图尺寸，供 Unity 校验 + 核心 measure/九宫格）。
 /// v1.4-a 砍 atlas_png/atlas_filename（图集归 Unity，D8）。
+/// D17：manifest 改 `Vec<AssetEntry>`（path + PNG IHDR 尺寸）。
 #[derive(Debug)]
 pub struct PackedPackage {
     pub pkg_bytes: Vec<u8>,
-    pub asset_manifest: Vec<String>,
+    pub asset_manifest: Vec<AssetEntry>,
 }
 
 /// 把单 scene 转 Vec<TemplateNode>（按 slotmap 插入序 = DFS 先序），同时把 img src +
@@ -21,10 +26,13 @@ pub struct PackedPackage {
 ///
 /// parent_idx = 父节点在 Vec 中的位置（None=组件根）。slotmap values() 对无删除的全新 map
 /// 按槽位序迭代 = 插入序 = build_scene 的 DFS 先序，故 parent 总在 child 前出现，位置索引稳定。
+///
+/// **D17**：manifest 收 `AssetEntry { path, w:0, h:0 }`（此处只收 path，w/h 由 `pack` 后置
+/// 读 PNG IHDR 填——scene_to_template 不知 res 目录绝对路径，只有归一化 path）。
 fn scene_to_template(
     scene: &loomgui_core::scene::Scene,
     res_dir: &str,
-    manifest: &mut Vec<String>,
+    manifest: &mut Vec<AssetEntry>,
     seen: &mut std::collections::HashSet<String>,
 ) -> Vec<TemplateNode> {
     // NodeId → 在产物 Vec 中的位置（slotmap 插入序）。
@@ -45,7 +53,7 @@ fn scene_to_template(
                 match normalize_path(src, res_dir) {
                     Some(norm) => {
                         if seen.insert(norm.clone()) {
-                            manifest.push(norm.clone());
+                            manifest.push(AssetEntry { path: norm.clone(), w: 0, h: 0 });
                         }
                         *src = norm;
                     }
@@ -62,7 +70,7 @@ fn scene_to_template(
                 match normalize_path(url, res_dir) {
                     Some(norm) => {
                         if seen.insert(norm.clone()) {
-                            manifest.push(norm.clone());
+                            manifest.push(AssetEntry { path: norm.clone(), w: 0, h: 0 });
                         }
                         style.background_image = Some(norm);
                     }
@@ -83,6 +91,40 @@ fn scene_to_template(
         });
     }
     nodes
+}
+
+/// 读 PNG IHDR chunk 取真实像素 width/height（D17）。
+///
+/// PNG 布局：8 字节 magic (`\x89PNG\r\n\x1a\n`) + IHDR chunk（4 字节长度 + 4 字节 "IHDR" +
+/// 13 字节数据：width(4 BE) + height(4 BE) + bit_depth(1) + color_type(1) + ...）。
+/// width 在 offset 16，height 在 offset 20（big-endian u32）。
+///
+/// 非 PNG（magic 不符）/ 文件过短 / 读失败 → `(0, 0)`（核心 measure fallback 64×64）。
+/// **不引 image crate**——PNG header 解析 ~30 行，无需完整 PNG 解码。
+fn read_png_size(path: &std::path::Path) -> (u32, u32) {
+    let bytes = match std::fs::read(path) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("warn: read png `{}` failed: {e}", path.display());
+            return (0, 0);
+        }
+    };
+    // PNG magic: \x89 P N G \r \n \x1a \n
+    const PNG_MAGIC: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+    if bytes.len() < 24 || bytes[..8] != PNG_MAGIC {
+        // 非 PNG（或过短）→ 0/0（核心 fallback 64×64）
+        return (0, 0);
+    }
+    // IHDR chunk：offset 8 = length(4 BE) + "IHDR"(4) + data(width(4 BE) + height(4 BE) + ...)
+    // width at offset 16, height at offset 20（big-endian u32）。
+    let chunk_type = &bytes[12..16];
+    if chunk_type != b"IHDR" {
+        eprintln!("warn: `{}` first chunk not IHDR", path.display());
+        return (0, 0);
+    }
+    let w = u32::from_be_bytes([bytes[16], bytes[17], bytes[18], bytes[19]]);
+    let h = u32::from_be_bytes([bytes[20], bytes[21], bytes[22], bytes[23]]);
+    (w, h)
 }
 
 /// 从 HTML 串剥掉所有 `<style>...</style>` 和 `<link ...>` 元素（含内容），返回干净 HTML。
@@ -156,7 +198,7 @@ pub fn pack(
     // owned 生命周期：nodes/dynamic 需在 write_package 借用时存活，故先全部收集进 owned Vec。
     let mut owned: Vec<(String, Vec<TemplateNode>, loomgui_core::style::dynamic::DynamicRuleTable)> =
         Vec::with_capacity(html_files.len());
-    let mut manifest: Vec<String> = Vec::new();
+    let mut manifest: Vec<AssetEntry> = Vec::new();
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     for hf in html_files {
@@ -180,6 +222,17 @@ pub fn pack(
             .unwrap_or(hf)
             .to_string();
         owned.push((comp_name, nodes, dynamic));
+    }
+
+    // D17：对每个 manifest path 读 PNG IHDR 填真实尺寸 w/h。
+    // path 是相对 res_dir 的归一化路径（如 "icons/skin.png"），绝对路径 = source_dir/res_dir/path。
+    // 非 PNG / 读失败 → 0/0（核心 measure fallback 64×64）。
+    let res_root = source_dir.join(res_dir);
+    for entry in &mut manifest {
+        let abs = res_root.join(&entry.path);
+        let (w, h) = read_png_size(&abs);
+        entry.w = w;
+        entry.h = h;
     }
 
     // 组 PackageInput（借用 owned）→ write_package。
@@ -232,10 +285,11 @@ mod tests {
             (Some(0), NodeKind::Image { src: "res/icons/skin.png".into() }, ResolvedStyle::default(), vec![], None, false, None),
         ];
         let scene = Scene::build(&entries);
-        let mut manifest = Vec::new();
+        let mut manifest: Vec<AssetEntry> = Vec::new();
         let mut seen = std::collections::HashSet::new();
         let nodes = scene_to_template(&scene, "res", &mut manifest, &mut seen);
-        assert_eq!(manifest, vec!["icons/skin.png".to_string()], "归一化 path 进 manifest");
+        // D17：scene_to_template 只收 path（w/h=0），w/h 由 pack 后置读 PNG IHDR 填
+        assert_eq!(manifest, vec![AssetEntry { path: "icons/skin.png".into(), w: 0, h: 0 }], "归一化 path 进 manifest");
         // 节点 src 也被归一化
         match &nodes[1].kind {
             NodeKind::Image { src } => assert_eq!(src, "icons/skin.png", "节点 src 归一化"),
@@ -254,7 +308,7 @@ mod tests {
             (Some(0), NodeKind::Image { src: "res/a.png".into() }, ResolvedStyle::default(), vec![], None, false, None),
         ];
         let scene = Scene::build(&entries);
-        let mut manifest = Vec::new();
+        let mut manifest: Vec<AssetEntry> = Vec::new();
         let mut seen = std::collections::HashSet::new();
         let _ = scene_to_template(&scene, "res", &mut manifest, &mut seen);
         assert_eq!(manifest.len(), 1, "同 src 去重只入一次");
@@ -270,7 +324,7 @@ mod tests {
             (Some(0), NodeKind::Image { src: "other/foo.png".into() }, ResolvedStyle::default(), vec![], None, false, None),
         ];
         let scene = Scene::build(&entries);
-        let mut manifest = Vec::new();
+        let mut manifest: Vec<AssetEntry> = Vec::new();
         let mut seen = std::collections::HashSet::new();
         let nodes = scene_to_template(&scene, "res", &mut manifest, &mut seen);
         assert!(manifest.is_empty(), "res 外 src 不入 manifest");
@@ -291,7 +345,7 @@ mod tests {
             (Some(0), NodeKind::Text { content: "hi".into() }, ResolvedStyle::default(), vec![], None, false, None),
         ];
         let scene = Scene::build(&entries);
-        let mut manifest = Vec::new();
+        let mut manifest: Vec<AssetEntry> = Vec::new();
         let mut seen = std::collections::HashSet::new();
         let nodes = scene_to_template(&scene, "res", &mut manifest, &mut seen);
         assert_eq!(nodes[0].parent_idx, None, "root parent=None");

@@ -20,6 +20,11 @@ pub struct Stage {
     /// 资源池：pkg_name → Package（多包共存）。load_package 填，instantiate 读。
     /// v1.4-a：load_package 不建 scene，只填本字典（spec §4.1 D3）。
     pub packages: std::collections::HashMap<String, crate::asset::Package>,
+    /// D17 图尺寸表：归一化 path → (w, h) 像素（打包期 PNG IHDR 静态数据）。
+    /// `load_package` 时从所有包的 `asset_manifest` 合并填入（多包共存，path 全局唯一）。
+    /// `solve`/`build_render_nodes` 查此表算 Image intrinsic 尺寸（measure 三档）+ 九宫格 UV。
+    /// path 缺失或 w/h=0 → fallback 64×64（核心不知图集，但知图尺寸）。
+    pub image_sizes: std::collections::HashMap<String, (u32, u32)>,
     /// 单指针状态机（hover/active 状态 + 命中 diff + 产事件）。
     pub pointer_state: PointerState,
     /// set_input 缓存的本帧输入；tick_and_render 消费后 clear。
@@ -53,6 +58,7 @@ impl Stage {
             font: Arc::new(font),
             root_size,
             packages: std::collections::HashMap::new(),
+            image_sizes: std::collections::HashMap::new(),
             pointer_state: PointerState::new(),
             pending_input: Vec::new(),
             last_events: Vec::new(),
@@ -71,11 +77,27 @@ impl Stage {
     /// 存进 `self.packages[name]`。**不建 scene**——加载与实例化解耦（fgui/Unity prefab 模型）。
     /// scene 由 `create_root`/`create_node` 建；组件实例化由 `instantiate`（Task 5）做。
     /// `root_size` 归 Stage（不从包来，D9）；图集归 Unity（核心不知图集，D8）。
+    ///
+    /// **D17（图尺寸）**：同步把本包 `asset_manifest` 的 `path → (w,h)` 合并进 `self.image_sizes`
+    /// （多包共存，path 全局唯一）。`solve`/`build_render_nodes` 查此表算 Image intrinsic +
+    /// 九宫格 UV。重复 load 同名包 → 旧包的 path 条目被新包覆盖（path 全局唯一，语义安全）。
     pub fn load_package(&mut self, name: &str, bytes: &[u8]) -> Result<(), String> {
         let mut pkg = crate::asset::read_package(bytes).map_err(|e| e.to_string())?;
         pkg.name = name.to_string(); // read_package 填空串，这里覆盖为真实包名
+        // D17：把本包 manifest 的 path → (w,h) 合并进全局尺寸表。
+        // 重复 load 同名包前，先清旧包的 path 条目（避免旧 path 残留——虽然 path 全局唯一，
+        // 但若旧包有 path 而新包没有，旧条目会悬空）。简单实现：直接 extend 覆盖（同 path 后写赢）。
+        for entry in &pkg.asset_manifest {
+            self.image_sizes.insert(entry.path.clone(), (entry.w, entry.h));
+        }
         self.packages.insert(name.to_string(), pkg);
         Ok(())
+    }
+
+    /// D17：查图尺寸（path → (w, h) 像素）。供 layout/render 用。
+    /// path 缺失或 w/h=0 → None（调用方 fallback 64×64）。
+    pub fn image_size(&self, path: &str) -> Option<(u32, u32)> {
+        self.image_sizes.get(path).copied().filter(|(w, h)| *w != 0 && *h != 0)
     }
 
     /// 缓存本帧指针输入（tick 前调；覆盖式——每帧全量替换 pending_input）。
@@ -408,9 +430,9 @@ impl Stage {
             crate::input::focus_node(scene, req, &mut out);
         }
         // 1. solve（先解 layout_rect，hit_test 要用）
-        // v1.4-a T6：核心不知图集。render/layout 不再查 textures——Image intrinsic 尺寸用 64 兜底，
-        // path 推给 Unity 查 Sprite（T8）。solve 不再接 textures 参数。
-        solve(scene, &self.font, self.root_size);
+        // D17：核心知图尺寸（打包期 PNG IHDR 静态，存 Stage.image_sizes）。solve 查尺寸表算
+        // Image intrinsic（三档：CSS > 真实像素 > 64×64）。不知图集（运行时纹理/UV 归 Unity）。
+        solve(scene, &self.font, self.root_size, &self.image_sizes);
         // 2. content_size 填充（solve 后 content_size/viewport/overlap）
         crate::scroll::refresh_content_sizes(scene);
         // 3. process（仲裁 + 拖拽跟手写 scroll_pos）
@@ -437,9 +459,9 @@ impl Stage {
         rematch_pseudo_classes(scene);
         // 8. 渲染（+ 合成 scrollbar）。传上帧 hash 基线，未变节点 emit Unchanged；
         //    返回新 hash 存 self.prev_node_hashes 供下帧比。
-        // v1.4-a T6：核心不知图集。build_render_nodes 不接 textures——Image payload 带 path，
-        // UV 全图 (0,0)-(1,1)，Unity 查 Sprite 拿真实 UV/Texture（T8）。
-        let (frame, new_hashes) = build_render_nodes(scene, &self.font, &self.prev_node_hashes);
+        // D17：build_render_nodes 查 Stage.image_sizes 算九宫格 UV（slice_px / src_px）。
+        // Image payload 带 path，UV 全图 (0,0)-(1,1)（无 atlas 子区），Unity 查 Sprite 拿真实 UV（T8）。
+        let (frame, new_hashes) = build_render_nodes(scene, &self.font, &self.prev_node_hashes, &self.image_sizes);
         self.prev_node_hashes = new_hashes;
         frame
     }
@@ -553,19 +575,26 @@ mod tests {
         for root in &tree.roots {
             gather_template_nodes(&tree, &styles, *root, None, &mut nodes);
         }
-        // asset_manifest：扫所有 Image 节点的 src（已归一化路径——测试用 src 直接作 path）
-        let manifest: Vec<String> = nodes
+        // asset_manifest：扫所有 Image 节点的 src（已归一化路径——测试用 src 直接作 path）。
+        // D17：图尺寸测试 helper 无 PNG 文件 → w/h=0（核心 measure fallback 64×64）。
+        // 真实尺寸由 loomgui_pkg 打包器读 PNG IHDR 填（见 pkg 测试）。
+        let manifest: Vec<crate::asset::AssetEntry> = nodes
             .iter()
             .filter_map(|tn| match &tn.kind {
-                NodeKind::Image { src } if !src.is_empty() => Some(src.clone()),
+                NodeKind::Image { src } if !src.is_empty() => Some(crate::asset::AssetEntry {
+                    path: src.clone(),
+                    w: 0,
+                    h: 0,
+                }),
                 _ => None,
             })
             .collect();
+        let manifest_paths: Vec<String> = manifest.iter().map(|e| e.path.clone()).collect();
         let input = PackageInput {
             components: vec![("scene", nodes.as_slice(), &dynamic)],
             asset_manifest: &manifest,
         };
-        (crate::asset::write_package(&input), manifest)
+        (crate::asset::write_package(&input), manifest_paths)
     }
 
     /// 黄金等价（最强门）：inline 渲染 == 包渲染。
@@ -1425,5 +1454,172 @@ mod instantiate_tests {
             sc.get(btn2).unwrap().style.background_color,
             "两实例 :hover 状态独立（btn1 蓝 / btn2 灰）"
         );
+    }
+}
+
+/// D17 集成测试：打包期 PNG IHDR 尺寸 → load_package 建尺寸表 → measure 用真实尺寸。
+/// 验证端到端链路：打包器填 AssetEntry.w/h → pkg.bin 存 → read_package 读 → Stage.image_sizes
+/// 建 → solve 查表算 Image intrinsic（三档：CSS > 真实像素 > 64×64）。
+#[cfg(test)]
+mod d17_image_size_tests {
+    use super::*;
+    use crate::asset::{AssetEntry, PackageInput, TemplateNode};
+    use crate::scene::NodeKind;
+    use crate::style::resolved::ResolvedStyle;
+    use taffy::style::Dimension;
+
+    /// 辅助：建带 Image 子的 pkg（root Container + Image leaf，src=path）。
+    /// AssetEntry 带真实 w/h（模拟打包器读 PNG IHDR 填）。
+    fn make_pkg_with_image_size(src: &str, w: u32, h: u32) -> Vec<u8> {
+        let mut img_style = ResolvedStyle::default();
+        // align_self=FlexStart 防 column 容器 stretch 把 cross 轴宽拉满
+        img_style.taffy_style.align_self = Some(taffy::style::AlignSelf::FlexStart);
+        let nodes = [
+            TemplateNode {
+                kind: NodeKind::Container,
+                style: ResolvedStyle::default(),
+                parent_idx: None,
+                classes: vec![],
+                id_attr: None,
+                draggable: false,
+                tabindex: None,
+            },
+            TemplateNode {
+                kind: NodeKind::Image { src: src.into() },
+                style: img_style,
+                parent_idx: Some(0),
+                classes: vec![],
+                id_attr: None,
+                draggable: false,
+                tabindex: None,
+            },
+        ];
+        let rules = crate::style::dynamic::DynamicRuleTable::default();
+        let manifest = [AssetEntry { path: src.into(), w, h }];
+        let input = PackageInput {
+            components: vec![("comp1", &nodes, &rules)],
+            asset_manifest: &manifest,
+        };
+        crate::asset::write_package(&input)
+    }
+
+    /// D17 端到端：40×20 图打包进 pkg → load_package 建尺寸表 → instantiate → solve
+    /// → Image measure 用真实 40×20（非 64×64 兜底）。
+    #[test]
+    fn load_package_builds_size_table_and_measure_uses_real_dims() {
+        let pkg_bytes = make_pkg_with_image_size("icons/wide.png", 40, 20);
+        let mut s = Stage::new_for_test();
+        s.create_root("div", "width:300px;height:300px").unwrap();
+        s.load_package("bag", &pkg_bytes).unwrap();
+        // D17：load_package 后 Stage.image_sizes 含 path → (w,h)
+        assert_eq!(s.image_size("icons/wide.png"), Some((40, 20)),
+            "load_package 建尺寸表：path→(40,20)");
+
+        let comp_root = s.instantiate("bag", "comp1").unwrap();
+        s.append_child(s.scene.as_ref().unwrap().roots[0], comp_root).unwrap();
+        s.tick_and_render();
+
+        // Image 是 comp_root 的首个子（gather: root[0] + img[1]，img parent_idx=0）
+        let scene = s.scene.as_ref().unwrap();
+        let img_id = scene.get(comp_root).unwrap().children[0];
+        let r = &scene.get(img_id).unwrap().layout_rect;
+        // 无 CSS 尺寸 → 用尺寸表真实像素 40×20（三档第二档）
+        assert!((r.w - 40.0).abs() < 0.1, "measure 用真实 w=40（非 64 兜底），got {}", r.w);
+        assert!((r.h - 20.0).abs() < 0.1, "measure 用真实 h=20（非 64 兜底），got {}", r.h);
+    }
+
+    /// D17：pkg 的 AssetEntry w/h=0（非 PNG / 读失败）→ 尺寸表无有效条目 → measure fallback 64×64。
+    #[test]
+    fn load_package_zero_dims_falls_back_to_64() {
+        let pkg_bytes = make_pkg_with_image_size("icons/zero.png", 0, 0);
+        let mut s = Stage::new_for_test();
+        s.create_root("div", "width:300px;height:300px").unwrap();
+        s.load_package("bag", &pkg_bytes).unwrap();
+        // w/h=0 → image_size 返 None（filter 掉 0/0）
+        assert_eq!(s.image_size("icons/zero.png"), None, "w/h=0 → None（fallback 64×64）");
+
+        let comp_root = s.instantiate("bag", "comp1").unwrap();
+        s.append_child(s.scene.as_ref().unwrap().roots[0], comp_root).unwrap();
+        s.tick_and_render();
+
+        let scene = s.scene.as_ref().unwrap();
+        let img_id = scene.get(comp_root).unwrap().children[0];
+        let r = &scene.get(img_id).unwrap().layout_rect;
+        assert!((r.w - 64.0).abs() < 0.1, "w/h=0 → fallback w=64，got {}", r.w);
+        assert!((r.h - 64.0).abs() < 0.1, "w/h=0 → fallback h=64，got {}", r.h);
+    }
+
+    /// D17：CSS 尺寸赢过真实像素（三档第一档）。
+    /// 40×20 图 + CSS width:80px → w=80（CSS），height 等比 = 40（80×20/40，2:1 真实 aspect）。
+    #[test]
+    fn css_length_overrides_real_image_size() {
+        let mut img_style = ResolvedStyle::default();
+        img_style.taffy_style.size.width = Dimension::Length(80.0);
+        img_style.taffy_style.align_self = Some(taffy::style::AlignSelf::FlexStart);
+        let nodes = [
+            TemplateNode {
+                kind: NodeKind::Container,
+                style: ResolvedStyle::default(),
+                parent_idx: None,
+                classes: vec![],
+                id_attr: None,
+                draggable: false,
+                tabindex: None,
+            },
+            TemplateNode {
+                kind: NodeKind::Image { src: "icons/wide.png".into() },
+                style: img_style,
+                parent_idx: Some(0),
+                classes: vec![],
+                id_attr: None,
+                draggable: false,
+                tabindex: None,
+            },
+        ];
+        let rules = crate::style::dynamic::DynamicRuleTable::default();
+        let manifest = [AssetEntry { path: "icons/wide.png".into(), w: 40, h: 20 }];
+        let input = PackageInput {
+            components: vec![("comp1", &nodes, &rules)],
+            asset_manifest: &manifest,
+        };
+        let pkg_bytes = crate::asset::write_package(&input);
+
+        let mut s = Stage::new_for_test();
+        s.create_root("div", "width:300px;height:300px").unwrap();
+        s.load_package("bag", &pkg_bytes).unwrap();
+        let comp_root = s.instantiate("bag", "comp1").unwrap();
+        s.append_child(s.scene.as_ref().unwrap().roots[0], comp_root).unwrap();
+        s.tick_and_render();
+
+        let scene = s.scene.as_ref().unwrap();
+        let img_id = scene.get(comp_root).unwrap().children[0];
+        let r = &scene.get(img_id).unwrap().layout_rect;
+        // CSS width:80px 赢（三档第一档）；height 等比用真实 2:1 aspect = 80×20/40 = 40
+        assert!((r.w - 80.0).abs() < 0.1, "CSS width 赢：w=80，got {}", r.w);
+        assert!((r.h - 40.0).abs() < 0.1, "height 等比=40（80×20/40 真实 2:1），got {}", r.h);
+    }
+
+    /// D17：多包 load_package 合并尺寸表（path 全局唯一）。
+    #[test]
+    fn multi_package_merges_size_tables() {
+        let pkg_a = make_pkg_with_image_size("icons/a.png", 10, 20);
+        let pkg_b = make_pkg_with_image_size("icons/b.png", 30, 40);
+        let mut s = Stage::new_for_test();
+        s.load_package("a", &pkg_a).unwrap();
+        s.load_package("b", &pkg_b).unwrap();
+        assert_eq!(s.image_size("icons/a.png"), Some((10, 20)), "包 a 的 path 进表");
+        assert_eq!(s.image_size("icons/b.png"), Some((30, 40)), "包 b 的 path 进表（多包合并）");
+    }
+
+    /// D17：重复 load 同名包 → 新包尺寸覆盖旧包（path 全局唯一，后写赢）。
+    #[test]
+    fn reload_package_overwrites_size_entry() {
+        let pkg_v1 = make_pkg_with_image_size("icons/x.png", 10, 10);
+        let pkg_v2 = make_pkg_with_image_size("icons/x.png", 50, 50);
+        let mut s = Stage::new_for_test();
+        s.load_package("bag", &pkg_v1).unwrap();
+        assert_eq!(s.image_size("icons/x.png"), Some((10, 10)), "首次 load");
+        s.load_package("bag", &pkg_v2).unwrap();
+        assert_eq!(s.image_size("icons/x.png"), Some((50, 50)), "重 load 覆盖（新尺寸）");
     }
 }

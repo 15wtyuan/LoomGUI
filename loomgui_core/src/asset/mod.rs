@@ -1,4 +1,4 @@
-//! 包格式（.pkg.bin，当前 version=11）：Rust-internal（packager 写、runtime 读，C# 不解析）。
+//! 包格式（.pkg.bin，当前 version=12）：Rust-internal（packager 写、runtime 读，C# 不解析）。
 //!
 //! v1.4-a 多组件格式（推翻 v1 单树）：一个 pkg.bin = 多个具名组件（ComponentTable 切分）。
 //! 布局：Header(20B) + StringTable + ComponentTable + NodeBlock + PerComponentDynamicRules +
@@ -8,21 +8,24 @@
 //!   - ComponentTable：每组件 {name_idx, root_node_idx, node_count, dynamic_rules_blob_len}。
 //!   - NodeBlock：所有组件节点平铺，parent_idx 用 -1 表组件根（全局位置索引）。
 //!   - PerComponentDynamicRules：每组件 dynamic_rules 的 bincode blob（紧跟 ComponentTable 段）。
-//!   - AssetManifest：本包所有 img path（Unity 校验 res 齐全用）。
+//!   - AssetManifest：本包所有 img path + 图尺寸（D17：打包期 PNG IHDR 静态数据，核心 measure/
+//!     九宫格 UV 用；Unity 校验 res 齐全 + Sprite 查询也用）。
 //! style 字段 = bincode(ResolvedStyle，已 bake)。img src 指向归一化 path 字符串（非 atlas sprite）。
 //!
 //! **v1.4-a T4 清理**：删 `AtlasSection`/`AtlasInfo`/`AtlasSprite`/`build_registry`（图集归 Unity，D8）。
 //! **v1.4-a T6 清理**：删 `asset/texture.rs`（`TextureRegistry`/`TexMeta`）——render/layout 不再查
 //! textures，Image payload 改带 path，核心彻底不知图集。
+//! **v1.4-a D17 修复**：AssetManifest 从 `Vec<String>` 改 `Vec<AssetEntry { path, w, h }>`——
+//! 核心知图尺寸（打包期 PNG IHDR 静态）+ 不知图集（运行时纹理/UV 归 Unity）。bump version 11→12。
 
 use crate::scene::NodeKind;
 use crate::style::dynamic::DynamicRuleTable;
 use crate::style::resolved::ResolvedStyle;
 
 pub const PKG_MAGIC: u32 = 0x474B504C; // 磁盘字节(LE) "LPKG"（不与 frame blob "LOOM" 撞）
-pub const PKG_FORMAT_VERSION: u32 = 11; // v1.4-a 多组件格式（ComponentTable + AssetManifest，砍 atlas/root_size，旧 v10 pkg 须重打）
-pub(crate) const MIN_VERSION: u32 = 11;
-pub(crate) const MAX_VERSION: u32 = 11;
+pub const PKG_FORMAT_VERSION: u32 = 12; // v1.4-a D17：AssetManifest 改 path+w+h（PNG IHDR 尺寸），旧 v11 pkg 须重打
+pub(crate) const MIN_VERSION: u32 = 12;
+pub(crate) const MAX_VERSION: u32 = 12;
 const NULL_IDX: u16 = 0xFFFF;
 
 const KIND_CONTAINER: u8 = 0;
@@ -32,12 +35,24 @@ const KIND_TEXT: u8 = 3;
 
 // ── v1.4-a 多组件包数据结构 ──────────────────────────────────────────────
 
+/// AssetManifest 条目：归一化 path + 打包期 PNG IHDR 读出的真实像素尺寸（D17）。
+///
+/// `w`/`h` = PNG 原始像素（非图集/纹理运行时尺寸）。非 PNG 或读失败 → 0（核心 measure/九宫格
+/// fallback 64×64）。核心 `Stage` 在 `load_package` 时建 `path → (w,h)` 查询表供 layout/render 用。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AssetEntry {
+    pub path: String,
+    pub w: u32,
+    pub h: u32,
+}
+
 /// 一个已加载的包（资源池条目）。`name` read 时填空串，由 `Stage::load_package(name, ..)` 覆盖。
 #[derive(Debug, Clone)]
 pub struct Package {
     pub name: String,
     pub components: std::collections::HashMap<String, ComponentTemplate>,
-    pub asset_manifest: Vec<String>, // 本包用到的所有 img path（去重）
+    /// 本包用到的所有 img path + 图尺寸（D17：打包期 PNG IHDR 静态，核心 measure/九宫格用）。
+    pub asset_manifest: Vec<AssetEntry>,
 }
 
 /// 一个组件的模板（instantiate 的克隆源）。
@@ -64,7 +79,8 @@ pub struct TemplateNode {
 /// write_package 的输入（打包器构造，已归一化：path 已相对、style 已 bake）。
 pub struct PackageInput<'a> {
     pub components: Vec<(&'a str, &'a [TemplateNode], &'a DynamicRuleTable)>,
-    pub asset_manifest: &'a [String], // 已去重归一化的 path
+    /// 已去重归一化的 path + PNG IHDR 尺寸（D17：打包器读 PNG header 填，核心 measure/九宫格用）。
+    pub asset_manifest: &'a [AssetEntry],
 }
 
 #[derive(Debug)]
@@ -288,11 +304,11 @@ pub fn write_package(input: &PackageInput) -> Vec<u8> {
         comp_records.push((name_idx, comp_base, node_count, dynamic_blob));
         global_node_offset += node_count;
     }
-    // intern asset_manifest path（供 AssetManifest 段引用 idx）
-    let manifest_idx: Vec<u16> = input
+    // intern asset_manifest path（供 AssetManifest 段引用 idx）+ 收 w/h（D17）。
+    let manifest_idx: Vec<(u16, u32, u32)> = input
         .asset_manifest
         .iter()
-        .map(|p| intern(p, &mut strings, &mut idx_of))
+        .map(|e| (intern(&e.path, &mut strings, &mut idx_of), e.w, e.h))
         .collect();
 
     let mut out: Vec<u8> = Vec::new();
@@ -336,10 +352,12 @@ pub fn write_package(input: &PackageInput) -> Vec<u8> {
     for (_, _, _, dynamic_blob) in &comp_records {
         out.extend_from_slice(&dynamic_blob);
     }
-    // AssetManifest: path_count(u32) + path_idx[](u16)
+    // AssetManifest: entry_count(u32) + count × {path_idx(u16), w(u32), h(u32)}（D17：path + 图尺寸）
     out.extend_from_slice(&(manifest_idx.len() as u32).to_le_bytes());
-    for &pidx in &manifest_idx {
+    for &(pidx, w, h) in &manifest_idx {
         out.extend_from_slice(&pidx.to_le_bytes());
+        out.extend_from_slice(&w.to_le_bytes());
+        out.extend_from_slice(&h.to_le_bytes());
     }
     out
 }
@@ -456,12 +474,14 @@ pub fn read_package(bytes: &[u8]) -> Result<Package, PkgError> {
         }
         components.insert(name.clone(), ComponentTemplate { name, nodes, dynamic_rules });
     }
-    // AssetManifest: path_count(u32) + path_idx[](u16)
-    let path_count = r.u32("manifest_path_count")? as usize;
-    let mut asset_manifest: Vec<String> = Vec::with_capacity(path_count);
-    for _ in 0..path_count {
+    // AssetManifest: entry_count(u32) + count × {path_idx(u16), w(u32), h(u32)}（D17：path + 图尺寸）
+    let entry_count = r.u32("manifest_entry_count")? as usize;
+    let mut asset_manifest: Vec<AssetEntry> = Vec::with_capacity(entry_count);
+    for _ in 0..entry_count {
         let pidx = r.u16("manifest_path_idx")?;
-        asset_manifest.push(string_at(&strings, pidx)?);
+        let w = r.u32("manifest_w")?;
+        let h = r.u32("manifest_h")?;
+        asset_manifest.push(AssetEntry { path: string_at(&strings, pidx)?, w, h });
     }
     Ok(Package { name: String::new(), components, asset_manifest })
 }
@@ -571,7 +591,7 @@ mod tests {
         let comp1_nodes = vec![tn_root, tn_child];
         let comp2_nodes = vec![tn(NodeKind::Container)];
         let rules = empty_rules();
-        let manifest = ["icons/skin.png".to_string()];
+        let manifest = [AssetEntry { path: "icons/skin.png".into(), w: 64, h: 32 }];
         let input = PackageInput {
             components: vec![
                 ("comp1", comp1_nodes.as_slice(), &rules),
@@ -587,7 +607,7 @@ mod tests {
             pkg.components["comp1"].nodes[1].parent_idx == Some(0),
             "child parent=root"
         );
-        assert_eq!(pkg.asset_manifest, vec!["icons/skin.png".to_string()]);
+        assert_eq!(pkg.asset_manifest, vec![AssetEntry { path: "icons/skin.png".into(), w: 64, h: 32 }]);
     }
 
     #[test]
@@ -676,7 +696,7 @@ mod tests {
         txt.parent_idx = Some(0);
         let nodes = [tn(NodeKind::Container), tn(NodeKind::Button), img, txt];
         let rules = empty_rules();
-        let manifest = ["icons/a.png".to_string()];
+        let manifest = [AssetEntry { path: "icons/a.png".into(), w: 0, h: 0 }];
         let input = PackageInput {
             components: vec![("c", &nodes, &rules)],
             asset_manifest: &manifest,
@@ -687,7 +707,7 @@ mod tests {
         assert!(matches!(ns[1].kind, NodeKind::Button));
         assert!(matches!(&ns[2].kind, NodeKind::Image { src } if src == "icons/a.png"));
         assert!(matches!(&ns[3].kind, NodeKind::Text { content } if content == "hello"));
-        assert_eq!(pkg.asset_manifest, vec!["icons/a.png".to_string()]);
+        assert_eq!(pkg.asset_manifest, vec![AssetEntry { path: "icons/a.png".into(), w: 0, h: 0 }]);
     }
 
     #[test]
@@ -806,13 +826,38 @@ mod tests {
             tn(NodeKind::Image { src: "b/y.png".into() }),
         ];
         let rules = empty_rules();
-        let manifest = ["a/x.png".to_string(), "b/y.png".to_string()];
+        let manifest = [
+            AssetEntry { path: "a/x.png".into(), w: 40, h: 20 },
+            AssetEntry { path: "b/y.png".into(), w: 128, h: 128 },
+        ];
         let input = PackageInput {
             components: vec![("c", &nodes, &rules)],
             asset_manifest: &manifest,
         };
         let pkg = read_package(&write_package(&input)).unwrap();
-        assert_eq!(pkg.asset_manifest, vec!["a/x.png".to_string(), "b/y.png".to_string()]);
+        assert_eq!(pkg.asset_manifest, vec![
+            AssetEntry { path: "a/x.png".into(), w: 40, h: 20 },
+            AssetEntry { path: "b/y.png".into(), w: 128, h: 128 },
+        ]);
+    }
+
+    /// D17：图尺寸非对称（w≠h）通过 roundtrip 保留——measure 三档 + 九宫格 UV 依赖真实尺寸。
+    /// 40×20 图 → manifest 存 w=40 h=20（非 0/0 兜底）。0/0 仍合法（非 PNG / 读失败 fallback）。
+    #[test]
+    fn asset_manifest_preserves_non_square_dims() {
+        let nodes = [tn(NodeKind::Image { src: "wide.png".into() })];
+        let rules = empty_rules();
+        let manifest = [AssetEntry { path: "wide.png".into(), w: 40, h: 20 }];
+        let input = PackageInput {
+            components: vec![("c", &nodes, &rules)],
+            asset_manifest: &manifest,
+        };
+        let pkg = read_package(&write_package(&input)).unwrap();
+        assert_eq!(pkg.asset_manifest.len(), 1);
+        let e = &pkg.asset_manifest[0];
+        assert_eq!(e.path, "wide.png");
+        assert_eq!(e.w, 40, "w 保留 40（非 0 兜底）");
+        assert_eq!(e.h, 20, "h 保留 20（非 0 兜底）");
     }
 
     // —— 防御 malformed ComponentTable 测试（review fix）——

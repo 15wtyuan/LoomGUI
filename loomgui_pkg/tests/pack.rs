@@ -1,4 +1,4 @@
-use loomgui_core::asset::{read_package, PKG_MAGIC};
+use loomgui_core::asset::{read_package, AssetEntry, PKG_MAGIC};
 use loomgui_pkg::pack;
 use std::fs;
 use std::path::PathBuf;
@@ -33,14 +33,35 @@ fn make_tmp_dir_with_html(html_names: &[&str], res_files: &[&str]) -> PathBuf {
     dir
 }
 
+/// 写一个最小合法 PNG header（w×h IHDR）到 path。用于 D17 测 read_png_size 取真实尺寸。
+/// 只写 magic + IHDR chunk（read_png_size 只读前 24 字节，不需 IDAT/IEND）。
+/// PNG = magic(8) + IHDR chunk: length(4 BE)=13 + "IHDR" + data(13) + CRC(4, 写 0 不校验)。
+/// IHDR data: w(4 BE) + h(4 BE) + bit_depth(1)=8 + color_type(1)=2(RGB) + compression(1)=0
+///            + filter(1)=0 + interlace(1)=0。
+fn write_minimal_png(path: &std::path::Path, w: u32, h: u32) {
+    use std::io::Write;
+    let mut buf: Vec<u8> = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+    let ihdr_data: Vec<u8> = [
+        &w.to_be_bytes()[..],
+        &h.to_be_bytes()[..],
+        &[8u8, 2u8, 0u8, 0u8, 0u8],
+    ]
+    .concat();
+    buf.extend_from_slice(&(ihdr_data.len() as u32).to_be_bytes());
+    buf.extend_from_slice(b"IHDR");
+    buf.extend_from_slice(&ihdr_data);
+    buf.extend_from_slice(&[0u8; 4]); // CRC（read_png_size 不校验）
+    let mut f = std::fs::File::create(path).unwrap();
+    f.write_all(&buf).unwrap();
+}
+
 #[test]
 fn pack_multi_html_no_atlas() {
     // tmp 目录：a.html + b.html + res/x.png（不读 x.png 像素，只记 path）
     // pack 后：pkg_bytes 非空，atlas 字段已砍（PackedPackage 只剩 pkg_bytes + asset_manifest）
     // read_package(pkg_bytes).components 含 "a"、"b"
-    // asset_manifest 含归一化 path（"x.png"）
+    // asset_manifest 含归一化 path（"x.png"）。D17：空文件 → w/h=0（非 PNG）。
     let dir = make_tmp_dir_with_html(&["a", "b"], &["res/x.png"]);
-    // a.html 引用 res/x.png（img src），让 manifest 收到归一化 path
     fs::write(
         dir.join("a.html"),
         r#"<div class="a"><img src="res/x.png"></div>"#,
@@ -54,8 +75,10 @@ fn pack_multi_html_no_atlas() {
     )
     .expect("pack ok");
     assert!(!packed.pkg_bytes.is_empty(), "pkg_bytes 非空");
-    // atlas 字段已砍：PackedPackage 只有 pkg_bytes + asset_manifest
-    assert!(packed.asset_manifest.contains(&"x.png".to_string()));
+    assert!(
+        packed.asset_manifest.iter().any(|e| e.path == "x.png"),
+        "manifest 含归一化 path x.png"
+    );
     assert_eq!(
         u32::from_le_bytes(packed.pkg_bytes[0..4].try_into().unwrap()),
         PKG_MAGIC
@@ -65,7 +88,7 @@ fn pack_multi_html_no_atlas() {
     assert!(pkg.components.contains_key("a"), "组件名 a（文件名去 .html）");
     assert!(pkg.components.contains_key("b"), "组件名 b");
     assert!(
-        pkg.asset_manifest.contains(&"x.png".to_string()),
+        pkg.asset_manifest.iter().any(|e| e.path == "x.png"),
         "manifest 含归一化 path x.png（去 res 前缀）"
     );
     let _ = fs::remove_dir_all(&dir);
@@ -74,42 +97,33 @@ fn pack_multi_html_no_atlas() {
 #[test]
 fn pack_path_normalization_in_manifest() {
     // HTML img src="res/icons/skin.png" → manifest 含 "icons/skin.png"
-    // 断言归一化生效，不含 res/ 前缀
     let dir = make_tmp_dir_with_html(&["c"], &["res/icons/skin.png"]);
     fs::write(
         dir.join("c.html"),
         r#"<div class="c"><img src="res/icons/skin.png"></div>"#,
     )
     .unwrap();
-    let packed = pack(
-        &dir,
-        "test",
-        &["c.html".to_string()],
-        "res",
-    )
-    .expect("pack ok");
+    let packed = pack(&dir, "test", &["c.html".to_string()], "res").expect("pack ok");
     assert!(
-        packed.asset_manifest.contains(&"icons/skin.png".to_string()),
-        "归一化后 manifest 含 icons/skin.png，不含 res/ 前缀"
+        packed.asset_manifest.iter().any(|e| e.path == "icons/skin.png"),
+        "归一化后 manifest 含 icons/skin.png，不含 res 前缀"
     );
     assert!(
-        !packed.asset_manifest.iter().any(|p| p.contains("res/")),
+        !packed.asset_manifest.iter().any(|e| e.path.contains("res/")),
         "manifest 不应含 res/ 前缀 path: {:?}",
         packed.asset_manifest
     );
     let pkg = read_package(&packed.pkg_bytes).expect("read ok");
     assert!(
-        pkg.asset_manifest.contains(&"icons/skin.png".to_string()),
+        pkg.asset_manifest.iter().any(|e| e.path == "icons/skin.png"),
         "read_package 后 manifest 仍含归一化 path"
     );
     let _ = fs::remove_dir_all(&dir);
 }
 
 /// v1.4-a：pkg 不再带 atlas（图集归 Unity，D8）。原 atlas section 测试已删（T3 砍 atlas）。
-/// pack_produces_valid_package_roundtrips 旧签名 pack(html,css,root_size,res_dir) 已改 pack(source_dir,pkg_name,html_files,res_dir)。
 #[test]
 fn pack_single_html_roundtrips() {
-    // 无图单 HTML：pack 产 v1.4-a 单组件 pkg，read_package round-trip。
     let dir = make_tmp_dir_with_html(&["scene"], &[]);
     let packed = pack(&dir, "test", &["scene.html".to_string()], "res").expect("pack ok");
     assert!(!packed.pkg_bytes.is_empty());
@@ -125,9 +139,101 @@ fn pack_single_html_roundtrips() {
 
 #[test]
 fn pack_missing_html_file_errors() {
-    // html_files 指向不存在的文件 → Err（build-time fail）
     let dir = make_tmp_dir_with_html(&["a"], &[]);
     let r = pack(&dir, "test", &["nope.html".to_string()], "res");
     assert!(r.is_err(), "缺 HTML 文件应 Err");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+// ── D17：打包期 PNG IHDR 图尺寸 ──────────────────────────────
+
+/// D17：打包器读 PNG IHDR → manifest AssetEntry.w/h = 真实像素尺寸。
+/// 40×20 PNG → AssetEntry { path, w:40, h:20 }（非 0/0 兜底）。
+#[test]
+fn pack_reads_png_ihdr_dimensions_into_manifest() {
+    let dir = make_tmp_dir_with_html(&["c"], &["res/wide.png"]);
+    write_minimal_png(&dir.join("res/wide.png"), 40, 20);
+    fs::write(
+        dir.join("c.html"),
+        r#"<div class="c"><img src="res/wide.png"></div>"#,
+    )
+    .unwrap();
+    let packed = pack(&dir, "test", &["c.html".to_string()], "res").expect("pack ok");
+    let entry = packed
+        .asset_manifest
+        .iter()
+        .find(|e| e.path == "wide.png")
+        .expect("manifest 含 wide.png");
+    assert_eq!(entry.w, 40, "PNG IHDR width=40 读进 manifest");
+    assert_eq!(entry.h, 20, "PNG IHDR height=20 读进 manifest");
+    // roundtrip 保留
+    let pkg = read_package(&packed.pkg_bytes).expect("read ok");
+    let entry2 = pkg
+        .asset_manifest
+        .iter()
+        .find(|e| e.path == "wide.png")
+        .expect("read 后 manifest 含 wide.png");
+    assert_eq!((entry2.w, entry2.h), (40, 20), "roundtrip 保留 40×20");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// D17：非 PNG 文件（空占位）→ w/h=0（核心 measure fallback 64×64）。
+#[test]
+fn pack_non_png_returns_zero_dims() {
+    let dir = make_tmp_dir_with_html(&["c"], &["res/notpng.png"]);
+    // make_tmp_dir_with_html 已写空文件（非 PNG magic）→ read_png_size 返 (0,0)
+    fs::write(
+        dir.join("c.html"),
+        r#"<div class="c"><img src="res/notpng.png"></div>"#,
+    )
+    .unwrap();
+    let packed = pack(&dir, "test", &["c.html".to_string()], "res").expect("pack ok");
+    let entry = packed
+        .asset_manifest
+        .iter()
+        .find(|e| e.path == "notpng.png")
+        .expect("manifest 含 notpng.png");
+    assert_eq!((entry.w, entry.h), (0, 0), "非 PNG → 0/0（fallback 64×64）");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// D17：PNG 缺失文件 → w/h=0（不 panic，warning 跳过）。
+#[test]
+fn pack_missing_png_file_returns_zero_dims() {
+    let dir = make_tmp_dir_with_html(&["c"], &[]); // 不建 res/missing.png
+    fs::write(
+        dir.join("c.html"),
+        r#"<div class="c"><img src="res/missing.png"></div>"#,
+    )
+    .unwrap();
+    let packed = pack(&dir, "test", &["c.html".to_string()], "res").expect("pack ok");
+    let entry = packed
+        .asset_manifest
+        .iter()
+        .find(|e| e.path == "missing.png")
+        .expect("manifest 含 missing.png（归一化仍收，读 PNG 失败 w/h=0）");
+    assert_eq!((entry.w, entry.h), (0, 0), "PNG 缺失 → 0/0（不 panic）");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// D17：用已有 fixture a.png(4×4) + b.png(2×2) 验 read_png_size 读真实尺寸。
+#[test]
+fn pack_reads_fixture_png_dimensions() {
+    let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    let dir = make_tmp_dir_with_html(&["c"], &[]);
+    // 复制 fixture 到 tmp res/（pack 按 res_dir/path 找文件）
+    fs::create_dir_all(dir.join("res")).unwrap();
+    fs::copy(fixtures.join("a.png"), dir.join("res/a.png")).unwrap();
+    fs::copy(fixtures.join("b.png"), dir.join("res/b.png")).unwrap();
+    fs::write(
+        dir.join("c.html"),
+        r#"<div class="c"><img src="res/a.png"><img src="res/b.png"></div>"#,
+    )
+    .unwrap();
+    let packed = pack(&dir, "test", &["c.html".to_string()], "res").expect("pack ok");
+    let a = packed.asset_manifest.iter().find(|e| e.path == "a.png").expect("a.png in manifest");
+    let b = packed.asset_manifest.iter().find(|e| e.path == "b.png").expect("b.png in manifest");
+    assert_eq!((a.w, a.h), (4, 4), "fixture a.png = 4×4");
+    assert_eq!((b.w, b.h), (2, 2), "fixture b.png = 2×2");
     let _ = fs::remove_dir_all(&dir);
 }
