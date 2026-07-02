@@ -6,13 +6,14 @@
 
 use crate::render::node::{NodePayload, RenderNode};
 
-/// DrawState 键（texture, program, mask_context）。program=0 Mesh 才参与合并。
-fn mesh_key(rn: &RenderNode) -> Option<(u32, u32, u32)> {
+/// DrawState 键（image_path, program, mask_context）。program=0 Mesh 才参与合并。
+/// v1.4-a T6：texture 砍，改 image_path（同 path 的图可合批；None=纯色块可互合）。
+fn mesh_key(rn: &RenderNode) -> Option<(Option<String>, u32, u32)> {
     match &rn.payload {
-        NodePayload::Mesh { texture, program, .. }
+        NodePayload::Mesh { image_path, program, .. }
             if *program == 0 && crate::transform::is_pure_translation(&rn.world_matrix) =>
         {
-            Some((*texture, *program, rn.mask_context.0))
+            Some((image_path.clone(), *program, rn.mask_context.0))
         }
         _ => None,
     }
@@ -38,9 +39,10 @@ pub fn merge_meshes(nodes: Vec<RenderNode>) -> Vec<RenderNode> {
         }
         let key = key.unwrap();
         // 收集连续同 key 的 Mesh。
+        // v1.4-a T6：key 含 Option<String>（非 Copy），用 ref 比较避免 move。
         let mut batch_idx: Vec<usize> = vec![idx];
         let mut j = i + 1;
-        while j < order.len() && mesh_key(&nodes[order[j]]) == Some(key) {
+        while j < order.len() && mesh_key(&nodes[order[j]]).as_ref() == Some(&key) {
             batch_idx.push(order[j]);
             j += 1;
         }
@@ -94,9 +96,9 @@ fn merge_batch(nodes: &[RenderNode], batch: &[usize]) -> RenderNode {
         sort_key: last.sort_key,
         payload: NodePayload::Mesh {
             verts, uvs, colors, indices,
-            texture: match &last.payload {
-                NodePayload::Mesh { texture, .. } => *texture,
-                _ => 0,
+            image_path: match &last.payload {
+                NodePayload::Mesh { image_path, .. } => image_path.clone(),
+                _ => None,
             },
             program: 0,
             color_matrix: [0.0; 20],
@@ -109,7 +111,8 @@ mod tests {
     use super::*;
     use crate::render::node::{BlendMode, MaskContext};
 
-    fn mesh_node(id: u32, tex: u32, sort_key: u32, alpha: f32, rect_off: f32) -> RenderNode {
+    /// v1.4-a T6：texture 砍，mesh_node 改带 image_path（None=纯色，Some=图 path）。
+    fn mesh_node(id: u32, path: Option<&str>, sort_key: u32, alpha: f32, rect_off: f32) -> RenderNode {
         RenderNode {
             node_id: id, parent_id: None, visible: true, alpha,
             grayed: false, color_tint: [1.0; 4],
@@ -121,7 +124,8 @@ mod tests {
                 uvs: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
                 colors: vec![[1.0, 1.0, 1.0, 1.0]; 4],
                 indices: vec![0, 1, 2, 0, 2, 3],
-                texture: tex, program: 0,
+                image_path: path.map(|s| s.to_string()),
+                program: 0,
                 color_matrix: [0.0; 20],
             },
         }
@@ -129,18 +133,18 @@ mod tests {
 
     #[test]
     fn two_same_drawstate_merge_into_one() {
-        // A(tex1,sk0) B(tex1,sk1) → 1 merged：8 verts / 12 indices / colors alpha 烤制。
+        // A(a.png,sk0) B(a.png,sk1) → 1 merged：8 verts / 12 indices / colors alpha 烤制。
         let nodes = vec![
-            mesh_node(5, 1, 0, 1.0, 0.0),
-            mesh_node(3, 1, 1, 0.5, 100.0), // alpha=0.5
+            mesh_node(5, Some("a.png"), 0, 1.0, 0.0),
+            mesh_node(3, Some("a.png"), 1, 0.5, 100.0), // alpha=0.5
         ];
         let out = merge_meshes(nodes);
         assert_eq!(out.len(), 1, "2 同 DrawState → 1 merged");
         match &out[0].payload {
-            NodePayload::Mesh { verts, indices, colors, texture, .. } => {
+            NodePayload::Mesh { verts, indices, colors, image_path, .. } => {
                 assert_eq!(verts.len(), 8, "2×4 verts");
                 assert_eq!(indices.len(), 12, "2×6 indices");
-                assert_eq!(*texture, 1);
+                assert_eq!(*image_path, Some("a.png".to_string()));
                 // 第二个节点（alpha=0.5）的 4 顶点 colors[4..8].a == 0.5。
                 for c in &colors[4..8] {
                     assert!((c[3] - 0.5).abs() < 1e-6, "第二节点 alpha=0.5 烤进 colors.a");
@@ -163,9 +167,9 @@ mod tests {
     fn index_offset_correct_for_three_nodes() {
         // 3 节点同 DrawState → merged indices 第二组 +4、第三组 +8。
         let nodes = vec![
-            mesh_node(1, 1, 0, 1.0, 0.0),
-            mesh_node(2, 1, 1, 1.0, 50.0),
-            mesh_node(3, 1, 2, 1.0, 100.0),
+            mesh_node(1, Some("a.png"), 0, 1.0, 0.0),
+            mesh_node(2, Some("a.png"), 1, 1.0, 50.0),
+            mesh_node(3, Some("a.png"), 2, 1.0, 100.0),
         ];
         let out = merge_meshes(nodes);
         assert_eq!(out.len(), 1);
@@ -177,27 +181,27 @@ mod tests {
 
     #[test]
     fn different_drawstate_stay_separate() {
-        // A(tex1) B(tex2) 同 mask_context 但 texture 不同 → 不合并。
-        let nodes = vec![mesh_node(1, 1, 0, 1.0, 0.0), mesh_node(2, 2, 1, 1.0, 100.0)];
+        // A(a.png) B(b.png) 同 mask_context 但 path 不同 → 不合并。
+        let nodes = vec![mesh_node(1, Some("a.png"), 0, 1.0, 0.0), mesh_node(2, Some("b.png"), 1, 1.0, 100.0)];
         let out = merge_meshes(nodes);
-        assert_eq!(out.len(), 2, "不同 texture → 各自独立");
+        assert_eq!(out.len(), 2, "不同 image_path → 各自独立");
     }
 
     #[test]
     fn non_pure_translation_node_does_not_merge() {
         // 两同 DrawState Mesh，其一 world_matrix 非纯平移（旋转）→ 不合并
         use crate::transform;
-        let mut a = mesh_node(1, 1, 0, 1.0, 0.0);
+        let mut a = mesh_node(1, Some("a.png"), 0, 1.0, 0.0);
         a.world_matrix = transform::from_rotate(0.5); // 非纯平移
-        let b = mesh_node(2, 1, 1, 1.0, 100.0); // 纯平移（IDENTITY）
+        let b = mesh_node(2, Some("a.png"), 1, 1.0, 100.0); // 纯平移（IDENTITY）
         let out = merge_meshes(vec![a, b]);
         assert_eq!(out.len(), 2, "非纯平移节点 break merge");
     }
 
     #[test]
     fn text_node_stays_separate() {
-        let mesh = mesh_node(1, 1, 0, 1.0, 0.0);
-        let mut text = mesh_node(2, 1, 1, 1.0, 100.0);
+        let mesh = mesh_node(1, Some("a.png"), 0, 1.0, 0.0);
+        let mut text = mesh_node(2, Some("a.png"), 1, 1.0, 100.0);
         text.payload = NodePayload::Text {
             layout: crate::text::layout::TextLayout { text_width: 0.0, text_height: 0.0, lines: vec![] },
             font_size: 16.0, color: [1.0; 4], program: 1,

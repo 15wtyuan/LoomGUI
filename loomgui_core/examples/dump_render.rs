@@ -79,12 +79,12 @@ fn main() {
 
 fn payload_str(p: &NodePayload) -> String {
     match p {
-        NodePayload::Mesh { verts, colors, texture, .. } => {
+        NodePayload::Mesh { verts, colors, image_path, .. } => {
             let c0 = colors.first().copied().unwrap_or([0.0; 4]);
             format!(
-                "Mesh v{} tex{} c0({:.0},{:.0},{:.0},{:.0})",
+                "Mesh v{} path={:?} c0({:.0},{:.0},{:.0},{:.0})",
                 verts.len(),
-                texture,
+                image_path,
                 c0[0] * 255.0,
                 c0[1] * 255.0,
                 c0[2] * 255.0,

@@ -11,15 +11,13 @@
 //!   - AssetManifest：本包所有 img path（Unity 校验 res 齐全用）。
 //! style 字段 = bincode(ResolvedStyle，已 bake)。img src 指向归一化 path 字符串（非 atlas sprite）。
 //!
-//! **v1.4-a T4 清理**：删 `AtlasSection`/`AtlasInfo`/`AtlasSprite`/`build_registry`（图集归 Unity，
-//! D8）。`asset/texture.rs` 的 `TextureRegistry`/`TexMeta` 暂留——render/layout 仍读（Image 查
-//! textures 走空 registry fallback），T6 改 Image payload 带 path 后彻底删。
+//! **v1.4-a T4 清理**：删 `AtlasSection`/`AtlasInfo`/`AtlasSprite`/`build_registry`（图集归 Unity，D8）。
+//! **v1.4-a T6 清理**：删 `asset/texture.rs`（`TextureRegistry`/`TexMeta`）——render/layout 不再查
+//! textures，Image payload 改带 path，核心彻底不知图集。
 
 use crate::scene::NodeKind;
 use crate::style::dynamic::DynamicRuleTable;
 use crate::style::resolved::ResolvedStyle;
-
-pub mod texture; // TextureRegistry/TexMeta——T4 暂留（render/layout 仍读），T6 改 Image payload 后删
 
 pub const PKG_MAGIC: u32 = 0x474B504C; // 磁盘字节(LE) "LPKG"（不与 frame blob "LOOM" 撞）
 pub const PKG_FORMAT_VERSION: u32 = 11; // v1.4-a 多组件格式（ComponentTable + AssetManifest，砍 atlas/root_size，旧 v10 pkg 须重打）

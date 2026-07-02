@@ -408,10 +408,9 @@ impl Stage {
             crate::input::focus_node(scene, req, &mut out);
         }
         // 1. solve（先解 layout_rect，hit_test 要用）
-        // v1.4-a T4：textures 字段已砍（图集归 Unity，T6 改 render 不再查 textures）。
-        // 传空 TextureRegistry → Image 走未注册 fallback（tex_id=0 占位，不崩）。T6 彻底改 payload 带 path。
-        let empty_textures = crate::asset::texture::TextureRegistry::default();
-        solve(scene, &self.font, self.root_size, &empty_textures);
+        // v1.4-a T6：核心不知图集。render/layout 不再查 textures——Image intrinsic 尺寸用 64 兜底，
+        // path 推给 Unity 查 Sprite（T8）。solve 不再接 textures 参数。
+        solve(scene, &self.font, self.root_size);
         // 2. content_size 填充（solve 后 content_size/viewport/overlap）
         crate::scroll::refresh_content_sizes(scene);
         // 3. process（仲裁 + 拖拽跟手写 scroll_pos）
@@ -438,8 +437,9 @@ impl Stage {
         rematch_pseudo_classes(scene);
         // 8. 渲染（+ 合成 scrollbar）。传上帧 hash 基线，未变节点 emit Unchanged；
         //    返回新 hash 存 self.prev_node_hashes 供下帧比。
-        // v1.4-a T4：textures 已砍，传空 registry（Image fallback tex_id=0，不崩）。T6 改 payload 带 path。
-        let (frame, new_hashes) = build_render_nodes(scene, &self.font, &empty_textures, &self.prev_node_hashes);
+        // v1.4-a T6：核心不知图集。build_render_nodes 不接 textures——Image payload 带 path，
+        // UV 全图 (0,0)-(1,1)，Unity 查 Sprite 拿真实 UV/Texture（T8）。
+        let (frame, new_hashes) = build_render_nodes(scene, &self.font, &self.prev_node_hashes);
         self.prev_node_hashes = new_hashes;
         frame
     }

@@ -1,6 +1,5 @@
 ---
 source: loomgui_core/tests/snapshot.rs
-assertion_line: 74
 expression: json
 ---
 [
@@ -11,9 +10,9 @@ expression: json
     "alpha": 1.0,
     "grayed": false,
     "color_tint": [
-      1.0,
-      1.0,
-      1.0,
+      0.0,
+      0.0,
+      0.0,
       1.0
     ],
     "world_matrix": [
@@ -26,7 +25,7 @@ expression: json
     ],
     "blend": "Normal",
     "mask_context": 0,
-    "sort_key": 1,
+    "sort_key": 0,
     "payload": {
       "Mesh": {
         "verts": [
@@ -45,41 +44,9 @@ expression: json
           [
             0.0,
             200.0
-          ],
-          [
-            0.0,
-            0.0
-          ],
-          [
-            100.0,
-            0.0
-          ],
-          [
-            100.0,
-            80.0
-          ],
-          [
-            0.0,
-            80.0
           ]
         ],
         "uvs": [
-          [
-            0.0,
-            1.0
-          ],
-          [
-            1.0,
-            1.0
-          ],
-          [
-            1.0,
-            0.0
-          ],
-          [
-            0.0,
-            0.0
-          ],
           [
             0.0,
             1.0
@@ -121,7 +88,105 @@ expression: json
             0.0,
             0.0,
             0.0
+          ]
+        ],
+        "indices": [
+          0,
+          1,
+          2,
+          0,
+          2,
+          3
+        ],
+        "image_path": null,
+        "program": 0,
+        "color_matrix": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ]
+      }
+    }
+  },
+  {
+    "node_id": 8193,
+    "parent_id": 4097,
+    "visible": true,
+    "alpha": 1.0,
+    "grayed": false,
+    "color_tint": [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ],
+    "world_matrix": [
+      1.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0
+    ],
+    "blend": "Normal",
+    "mask_context": 0,
+    "sort_key": 1,
+    "payload": {
+      "Mesh": {
+        "verts": [
+          [
+            0.0,
+            0.0
           ],
+          [
+            100.0,
+            0.0
+          ],
+          [
+            100.0,
+            80.0
+          ],
+          [
+            0.0,
+            80.0
+          ]
+        ],
+        "uvs": [
+          [
+            0.0,
+            1.0
+          ],
+          [
+            1.0,
+            1.0
+          ],
+          [
+            1.0,
+            0.0
+          ],
+          [
+            0.0,
+            0.0
+          ]
+        ],
+        "colors": [
           [
             1.0,
             1.0,
@@ -153,15 +218,9 @@ expression: json
           2,
           0,
           2,
-          3,
-          4,
-          5,
-          6,
-          4,
-          6,
-          7
+          3
         ],
-        "texture": 0,
+        "image_path": "logo.png",
         "program": 0,
         "color_matrix": [
           0.0,

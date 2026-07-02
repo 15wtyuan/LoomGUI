@@ -12,3 +12,5 @@ BASE=7a01d77
 - T4: complete (commit pending) — Stage 资源池 + load_package 不建 scene + 砍 textures/atlases/load_inline/build_registry
 - T4: complete (commits 0a0d855..fa19bc0, review clean) — load_package 进资源池不建 scene + 砍 textures/atlases/load_inline. texture.rs 留 T6 删；3 测试 ignore（package_load_renders_identical_to_inline/hover/disabled）T5 必须重写恢复
 - T5: complete (commit pending) — Stage::instantiate 克隆组件子树 + 伪类规则合并去重 + create_node_from_template 复用节点构造 + ensure_scene 首次建空骨架. 3 个 T4 ignore 测试重写恢复（load_package→instantiate→roots.push→render 等价 inline）. 492 core 测试全过, ignored 9→6（FFI 6 留 T7）
+- T5: complete (commits fa19bc0..3ac7a92, review clean after fix) — instantiate 克隆子树 + 伪类去重 + 3 T4 测试债还清 + 多实例 hover 独立性测试
+- T6: complete (commit pending) — Image RenderNode payload 改带 image_path (砍 texture/UV子区/tex_id/fit_uv/TextureRegistry/TexMeta/asset::texture.rs). layout solve 砍 textures 参数 (Image intrinsic 64×64 兜底). FrameBlob v7: tex_id 列→path_idx 列 + path string table arena. 556 workspace 测试全过 (486 core + 45 ffi + 余). FFI blob 同步改完 (非 T7 stub).

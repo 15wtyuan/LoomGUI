@@ -19,8 +19,10 @@
 //!
 //! taffy 0.5.2 的 `Style` 无 `order`，不做 flex order 排序（render 层按 DOM 顺序 /
 //! layout 输出的 `Layout.order` 渲染）。
+//!
+//! v1.4-a T6：核心不知图集。solve 不再接 textures 参数——Image intrinsic 尺寸用 64×64 兜底
+//! （真实尺寸归 Unity Sprite，T8 查 path→Sprite）。render payload 带 path，UV 全图 (0,0)-(1,1)。
 
-use crate::asset::texture::TextureRegistry;
 use crate::scene::node::{NodeId, NodeKind, Rect, Scene};
 use crate::style::resolved::{OverflowMode, TextAlign};
 use crate::text::layout::{measure_text, Font, TextLayout};
@@ -66,7 +68,7 @@ enum MeasureContext {
 ///
 /// `root_size` 是根节点固定尺寸（viewport / surface 尺寸）。`font` 借用到
 /// `compute_layout_with_measure` 结束，闭包内解引用喂给 `measure_text`。
-pub fn solve(scene: &mut Scene, font: &Font, root_size: (f32, f32), textures: &TextureRegistry) {
+pub fn solve(scene: &mut Scene, font: &Font, root_size: (f32, f32)) {
     // 防御：空 roots（空 scene）无几何可 solve——直接返回，避免 roots[0] 越界 panic。
     // Stage 可能在 scene 未装内容时 tick（如测/边界），不应 panic。
     if scene.roots.is_empty() {
@@ -82,7 +84,6 @@ pub fn solve(scene: &mut Scene, font: &Font, root_size: (f32, f32), textures: &T
         tree: &mut TaffyTree<MeasureContext>,
         taffy_ids: &mut Vec<Option<taffy::NodeId>>,
         id: NodeId,
-        textures: &TextureRegistry,
         parent_overflow: bool,
     ) -> taffy::NodeId {
         let node = scene.get(id).expect("live node");
@@ -114,12 +115,13 @@ pub fn solve(scene: &mut Scene, font: &Font, root_size: (f32, f32), textures: &T
                     nowrap: s.white_space_nowrap,
                 })
             }
-            NodeKind::Image { src } => {
+            NodeKind::Image { src: _ } => {
                 // 存 intrinsic + css 维度；等比与 Percent 解析留到 measure 闭包（消费 taffy known）。
                 // Percent width 在 measure 期 taffy 传 known.width=Some(解析宽)，
                 // 闭包据此算等比 height。
+                // v1.4-a T6：核心不知图集，intrinsic 尺寸用 64×64 兜底（真实尺寸归 Unity Sprite，T8）。
                 let s = &node.style.taffy_style;
-                let (iw, ih) = textures.get(src).map(|m| (m.width as f32, m.height as f32)).unwrap_or((64.0, 64.0));
+                let (iw, ih) = (64.0, 64.0);
                 Some(MeasureContext::Image {
                     iw,
                     ih,
@@ -134,7 +136,7 @@ pub fn solve(scene: &mut Scene, font: &Font, root_size: (f32, f32), textures: &T
         let children_ids: Vec<taffy::NodeId> = node
             .children
             .iter()
-            .map(|c| build(scene, tree, taffy_ids, *c, textures, self_overflow))
+            .map(|c| build(scene, tree, taffy_ids, *c, self_overflow))
             .collect();
 
         let tid = if let Some(mctx) = ctx {
@@ -148,7 +150,7 @@ pub fn solve(scene: &mut Scene, font: &Font, root_size: (f32, f32), textures: &T
         tid
     }
 
-    let root_tid = build(scene, &mut taffy_tree, &mut taffy_ids, scene.roots[0], textures, false);
+    let root_tid = build(scene, &mut taffy_tree, &mut taffy_ids, scene.roots[0], false);
 
     // taffy NodeId → scene NodeId 反查，供 measure 闭包按 taffy nid 把 TextLayout
     // 存进 scene 索引的 text_layouts。render 复用，消除 layout/render 双测量不一致。
@@ -268,7 +270,6 @@ pub fn solve(scene: &mut Scene, font: &Font, root_size: (f32, f32), textures: &T
 #[cfg(all(test, feature = "parse"))]
 mod tests {
     use super::*;
-    use crate::asset::texture::{TexMeta, TextureRegistry};
     use crate::parse::{css::parse_css, dom::parse_html};
     use crate::scene::{build_scene, NodeKind, Scene};
     use crate::style::cascade::resolve_styles;
@@ -289,8 +290,7 @@ mod tests {
         let sheet = parse_css(css).unwrap();
         let styles = resolve_styles(&tree, &sheet);
         let mut scene = build_scene(&tree, &styles);
-        let tex = TextureRegistry::default();
-        solve(&mut scene, &font().expect("test needs a font"), (200.0, 200.0), &tex);
+        solve(&mut scene, &font().expect("test needs a font"), (200.0, 200.0));
         let root = scene.get(scene.roots[0]).unwrap();
         let a = scene.get(root.children[0]).unwrap();
         let b = scene.get(root.children[1]).unwrap();
@@ -309,8 +309,7 @@ mod tests {
         let sheet = parse_css(css).unwrap();
         let styles = resolve_styles(&tree, &sheet);
         let mut scene = build_scene(&tree, &styles);
-        let tex = TextureRegistry::default();
-        solve(&mut scene, &font().expect("test needs a font"), (200.0, 200.0), &tex);
+        solve(&mut scene, &font().expect("test needs a font"), (200.0, 200.0));
         let root = scene.get(scene.roots[0]).unwrap();
         let a = scene.get(root.children[0]).unwrap();
         let b = scene.get(root.children[1]).unwrap();
@@ -335,8 +334,8 @@ mod tests {
     /// 其 MeasureContext 的 intrinsic 尺寸被 root_size 强制覆盖，测不出三档。
     /// 包一层 Container 根（idx 0），Image 做 leaf 子（idx 1），其 measure 值才生效。
     #[test]
-    fn image_measure_prefers_css_length_over_real_dims() {
-        // CSS width:100px height:50px，真实 200×200 → 用声明值（声明赢）。
+    fn image_css_length_overrides_intrinsic() {
+        // CSS width:100px height:50px → CSS 声明赢（覆盖 intrinsic 64×64 兜底）。
         let mut img_style = ResolvedStyle::default();
         img_style.taffy_style.size.width = Dimension::Length(100.0);
         img_style.taffy_style.size.height = Dimension::Length(50.0);
@@ -345,9 +344,7 @@ mod tests {
             (Some(0), NodeKind::Image { src: "x.png".into() }, img_style, Vec::new(), None, false, None),
         ];
         let mut scene = Scene::build(&entries);
-        let mut tex = TextureRegistry::default();
-        tex.insert("x.png", TexMeta { tex_id: 1, uv_min: [0.0, 0.0], uv_max: [1.0, 1.0], width: 200, height: 200 }); // 真实大于声明
-        solve(&mut scene, &font().expect("need font"), (300.0, 300.0), &tex);
+        solve(&mut scene, &font().expect("need font"), (300.0, 300.0));
         let img_id = scene.get(scene.roots[0]).unwrap().children[0];
         let r = &scene.get(img_id).unwrap().layout_rect; // Image 是 root 唯一子
         assert!((r.w - 100.0).abs() < 0.1, "CSS length 赢：w=100，got {}", r.w);
@@ -355,10 +352,10 @@ mod tests {
     }
 
     #[test]
-    fn image_measure_uses_real_dims_when_no_css() {
-        // 无 CSS 尺寸 + 已注册 200×100 → 用 200×100。
+    fn image_measure_uses_64_fallback_when_no_css() {
+        // 无 CSS 尺寸 + 核心不知图集 → 64×64 兜底（T6：真实尺寸归 Unity Sprite，T8）。
         // align_self=FlexStart 防 column 容器默认 stretch 把 cross 轴宽拉到 300，
-        // 让 measure 的 intrinsic 宽（200）落地到最终 layout_rect。
+        // 让 measure 的 intrinsic 宽（64）落地到最终 layout_rect。
         let mut img_style = ResolvedStyle::default();
         img_style.taffy_style.align_self = Some(AlignSelf::FlexStart);
         let entries = [
@@ -366,18 +363,16 @@ mod tests {
             (Some(0), NodeKind::Image { src: "x.png".into() }, img_style, Vec::new(), None, false, None),
         ];
         let mut scene = Scene::build(&entries);
-        let mut tex = TextureRegistry::default();
-        tex.insert("x.png", TexMeta { tex_id: 1, uv_min: [0.0, 0.0], uv_max: [1.0, 1.0], width: 200, height: 100 });
-        solve(&mut scene, &font().expect("need font"), (300.0, 300.0), &tex);
+        solve(&mut scene, &font().expect("need font"), (300.0, 300.0));
         let img_id = scene.get(scene.roots[0]).unwrap().children[0];
         let r = &scene.get(img_id).unwrap().layout_rect; // Image 是 root 唯一子
-        assert!((r.w - 200.0).abs() < 0.1, "真实像素：w=200，got {}", r.w);
-        assert!((r.h - 100.0).abs() < 0.1, "真实像素：h=100，got {}", r.h);
+        assert!((r.w - 64.0).abs() < 0.1, "兜底：w=64，got {}", r.w);
+        assert!((r.h - 64.0).abs() < 0.1, "兜底：h=64，got {}", r.h);
     }
 
     #[test]
     fn image_measure_falls_back_to_64_when_unregistered() {
-        // 无 CSS + 未注册 → 64×64。
+        // 无 CSS + 未注册 → 64×64（T6：核心不查图集，恒为 64×64 兜底）。
         // 同上 align_self=FlexStart 防 stretch。
         let mut img_style = ResolvedStyle::default();
         img_style.taffy_style.align_self = Some(AlignSelf::FlexStart);
@@ -386,8 +381,7 @@ mod tests {
             (Some(0), NodeKind::Image { src: "x.png".into() }, img_style, Vec::new(), None, false, None),
         ];
         let mut scene = Scene::build(&entries);
-        let tex = TextureRegistry::default();
-        solve(&mut scene, &font().expect("need font"), (300.0, 300.0), &tex);
+        solve(&mut scene, &font().expect("need font"), (300.0, 300.0));
         let img_id = scene.get(scene.roots[0]).unwrap().children[0];
         let r = &scene.get(img_id).unwrap().layout_rect; // Image 是 root 唯一子
         assert!((r.w - 64.0).abs() < 0.1, "兜底：w=64，got {}", r.w);
@@ -396,7 +390,7 @@ mod tests {
 
     #[test]
     fn image_measure_scales_height_to_width_aspect() {
-        // img style="width:80px" intrinsic 40×20 → height 等比 = 40（80×20/40），非 intrinsic 20。
+        // img style="width:80px" intrinsic 64×64（T6 兜底，1:1）→ height 等比 = 80（80×64/64）。
         let mut img_style = ResolvedStyle::default();
         img_style.taffy_style.size.width = Dimension::Length(80.0);
         img_style.taffy_style.align_self = Some(AlignSelf::FlexStart);
@@ -405,18 +399,16 @@ mod tests {
             (Some(0), NodeKind::Image { src: "x.png".into() }, img_style, Vec::new(), None, false, None),
         ];
         let mut scene = Scene::build(&entries);
-        let mut tex = TextureRegistry::default();
-        tex.insert("x.png", TexMeta { tex_id: 1, uv_min: [0.0, 0.0], uv_max: [1.0, 1.0], width: 40, height: 20 });
-        solve(&mut scene, &font().expect("need font"), (300.0, 300.0), &tex);
+        solve(&mut scene, &font().expect("need font"), (300.0, 300.0));
         let img_id = scene.get(scene.roots[0]).unwrap().children[0];
         let r = &scene.get(img_id).unwrap().layout_rect;
         assert!((r.w - 80.0).abs() < 0.1, "w=80 (CSS)");
-        assert!((r.h - 40.0).abs() < 0.1, "h 等比=40（80×20/40），got {}", r.h);
+        assert!((r.h - 80.0).abs() < 0.1, "h 等比=80（80×64/64，1:1 兜底），got {}", r.h);
     }
 
     #[test]
     fn image_measure_scales_width_to_height_aspect() {
-        // 只设 height：style="height:60px" intrinsic 40×20 → width 等比 = 120（60×40/20）。
+        // 只设 height：style="height:60px" intrinsic 64×64（T6 兜底，1:1）→ width 等比 = 60（60×64/64）。
         let mut img_style = ResolvedStyle::default();
         img_style.taffy_style.size.height = Dimension::Length(60.0);
         img_style.taffy_style.align_self = Some(AlignSelf::FlexStart);
@@ -425,12 +417,10 @@ mod tests {
             (Some(0), NodeKind::Image { src: "x.png".into() }, img_style, Vec::new(), None, false, None),
         ];
         let mut scene = Scene::build(&entries);
-        let mut tex = TextureRegistry::default();
-        tex.insert("x.png", TexMeta { tex_id: 1, uv_min: [0.0, 0.0], uv_max: [1.0, 1.0], width: 40, height: 20 });
-        solve(&mut scene, &font().expect("need font"), (300.0, 300.0), &tex);
+        solve(&mut scene, &font().expect("need font"), (300.0, 300.0));
         let img_id = scene.get(scene.roots[0]).unwrap().children[0];
         let r = &scene.get(img_id).unwrap().layout_rect;
         assert!((r.h - 60.0).abs() < 0.1, "h=60 (CSS)");
-        assert!((r.w - 120.0).abs() < 0.1, "w 等比=120（60×40/20），got {}", r.w);
+        assert!((r.w - 60.0).abs() < 0.1, "w 等比=60（60×64/64，1:1 兜底），got {}", r.w);
     }
 }
