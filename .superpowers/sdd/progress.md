@@ -22,3 +22,4 @@ BASE=7a01d77
 - T10: complete (commit pending) — showcase 拆多组件包：home + 7 page + tips_toast + mail + res/icons(15 PNG). 打包 10 components/4 manifest paths, roundtrip 验证 OK (根 parent_idx=None, D17 尺寸 64x64/108x108). img path 契约: HTML 须带 res/ 前缀. 旧 atlas.png 清理 (D8/D14). 旧 samples 归档保留
 - T10: complete (commits 43b7aed..6bb9998, review clean) — showcase 拆 10 组件包, 打包成功. T11 接 nav→instantiate + dyn-load-mail→同包 instantiate
 - T11: complete (commits 6bb9998..5cfde70, review clean after fix) — driver 重写 layer+nav+按页listener清+tips叠加. NativeHost 跨页摘修. tips/mail 叠加非覆盖(v1 无 absolute) v1.4-b 补
+- T12: complete (commits d6cfdd9..c945b3b) — final whole-branch review (opus) MUST-FIX 清理: 删 v10 loom_mail.pkg.bin + 5 v4 blob 测试 [Ignore]. core 495+ 全过, .dll 最新(T7 build, T7后无 Rust 源改). v1.4-a SDD 全流程结束, 待家里机 PlayMode 验收
