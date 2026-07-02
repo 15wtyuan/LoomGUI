@@ -31,6 +31,12 @@ namespace LoomGUI
         // mail 叠加层 NodeId（dyn-load-mail instantiate 出的 mail 组件根；uint.MaxValue = 未挂）。
         uint _mailOverlay = uint.MaxValue;
 
+        // NativeHost 绑定的 UI 节点 NodeId（page_controls 的 model-slot）。
+        // 离开 page_controls 时须 UnbindNativeHost 摘 wrapper GO，否则 _nhm._bindings 仍持旧 NodeId
+        // （已 RemoveNode、gen++ 失效）→ Sync 查 blob 找不到 → wrapper 停在末位、GO 视觉残留。
+        // uint.MaxValue = 当前页未绑 NativeHost。
+        uint _nativeBoundNode = uint.MaxValue;
+
         // showcase 包名（LoadPackage 用）+ pkg.bin 文件名（StreamingAssets 下）。
         const string ShowcasePkg = "showcase";
         const string ShowcasePkgFile = "loom_showcase.pkg.bin";
@@ -129,6 +135,13 @@ namespace LoomGUI
         {
             if (_currentPage != uint.MaxValue)
             {
+                // 若离开的页绑了 NativeHost，先 Unbind 摘 wrapper GO（RemoveNode 后旧 NodeId gen++ 失效，
+                // _nhm._bindings 残留 → Sync 查不到 → wrapper 卡末位、GO 视觉残留）。
+                if (_nativeBoundNode != uint.MaxValue)
+                {
+                    _stage.UnbindNativeHost(_nativeBoundNode);
+                    _nativeBoundNode = uint.MaxValue;
+                }
                 ClearPageListeners();              // 按页清 listener（§7.5）
                 _stage.RemoveNode(_currentPage);   // 摘当前页（联动清 anim/scroll/tween/focused_node）
                 _currentPage = uint.MaxValue;
@@ -233,8 +246,17 @@ namespace LoomGUI
             // NativeHost：绑外部 GO 到 model-slot（每帧 Sync 自动同步 wrapper TRS）。
             if (_nativeModel != null)
             {
-                _stage.BindNativeHost("model-slot", _nativeModel);
-                _nativeModel.transform.localScale = _nativeScale;
+                uint slot = _stage.FindNodeById("model-slot");
+                if (slot != uint.MaxValue)
+                {
+                    _stage.BindNativeHost(slot, _nativeModel);
+                    _nativeModel.transform.localScale = _nativeScale;
+                    _nativeBoundNode = slot;   // 记下，离开页时 Unbind 摘 wrapper GO
+                }
+                else
+                {
+                    Debug.LogError("[Showcase] page_controls: id 'model-slot' 未找到，跳过 NativeHost 绑定");
+                }
             }
             Debug.Log("[Showcase] page_controls 订阅完成（back + disabled + NativeHost）");
         }

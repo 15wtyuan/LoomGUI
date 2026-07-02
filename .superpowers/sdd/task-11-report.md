@@ -147,3 +147,30 @@ mail 是 showcase 包内组件（T10 合进），不需 LoadPackage 切包。Ope
 | §7.5 driver 维护 listener 注册表 | _pageListeners Dictionary<uint, List<(EventType, EventCallback)>> |
 | §7.5 切页前批量 RemoveListener | ClearPageListeners 遍历 RemoveListener |
 | §7.5 不用 EventHandler.Clear 粗清 | ClearPageListeners 细粒度按页清（grep 确认 Clear 只在注释） |
+
+---
+
+## 7. Review Fix — NativeHost 跨页摘 wrapper GO（Minor）
+
+**发现（review）**：`SubscribeControls` 每次 page_controls 打开调 `BindNativeHost("model-slot", _nativeModel)`。`NativeHostManager.Bind` 内部 Unbind-then-bind（重入不堆 wrapper），但 `OpenPage` 离开 page_controls 只 `RemoveNode(_currentPage)`——**不调 `UnbindNativeHost`**。
+
+**后果**：离开 page_controls 后 `_nhm._bindings` 仍持旧 NodeId（已 RemoveNode、gen++ 失效）→ Sync 每帧用旧 NodeId 查 blob（找不到）→ wrapper GO 停末位、`_nativeModel` 视觉残留（GO 停留 home 画面上直到重入 page_controls 或 scene 卸载）。
+
+**根因**：driver 未跟踪"当前页绑了哪个 NativeHost 节点"，离开时无从摘。
+
+**修复（option a：跟踪 bound node）**：
+1. 加字段 `uint _nativeBoundNode = uint.MaxValue`（当前页绑的 NativeHost 节点 NodeId；MaxValue=未绑）。
+2. `SubscribeControls`：改用 `FindNodeById("model-slot")` 拿 NodeId（不再走 string 重载）→ `BindNativeHost(slot, _nativeModel)` → `_nativeBoundNode = slot`。slot 未找到打 ErrorLog 跳过绑定（不静默失败）。
+3. `OpenPage` 离开当前页前：`if (_nativeBoundNode != uint.MaxValue)` → `UnbindNativeHost(_nativeBoundNode)` + reset `MaxValue`。**在 `RemoveNode(_currentPage)` 之前调**（旧 NodeId 仍有效，Unbind 能精准定位）。
+
+**API 确认**：`LoomStage.UnbindNativeHost(uint nodeId)` 存在（`LoomStage.cs:136`，`=> _nhm.Unbind(nodeId)`）；与 `BindNativeHost(uint, GameObject)` 对称。无需新增 API。
+
+**自检**：
+- 语法：field 声明 / if-guard / uint 赋值 / `UnbindNativeHost(uint)` 调用均合法。
+- 流程 home→page_controls→home：home `_nativeBoundNode=MaxValue` 跳过 unbind；page_controls bind+记 slot；离开 unbind（销 wrapper GO + `go.SetActive(false)`）+ reset；RemoveNode 清页。无残留。
+- 重入 page_controls：bind 时 `_nhm._bindings[slot]` 已清（离开时 unbind）→ Bind 内 Unbind 空操作 + 建全新 wrapper。无堆叠。
+- 回归：仅新增 unbind 路径，未改其他页订阅（home/text/image/scroll/tween/interact/dyntree 不动 `_nativeBoundNode`，保持 MaxValue，if 跳过）。
+
+**验证方式**：家里机 Unity PlayMode——home → page_controls（见 Cube 挂 model-slot）→ back-home（Cube 应立即消失，不停留画面）。原 bug：Cube 残留直到重入 page_controls。
+
+**改动文件**：`loomgui_unity/Assets/LoomGUI/Runtime/LoomShowcaseDriver.cs`（+1 field、OpenPage +5 行、SubscribeControls 改 14 行）。
