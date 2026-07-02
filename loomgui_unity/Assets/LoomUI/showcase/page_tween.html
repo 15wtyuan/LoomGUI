@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>动效页</title>
+<style>
+/* page_tween 组件 CSS（D6 组件隔离）——抽自旧 style.css 的 §7 + §4 hit/lamp + base */
+.root{width:1080px;height:1920px;background-color:#1a1d2e;}
+.header{background-color:#252839;border-bottom:2px solid #3a3f55;padding:20px;gap:14px;flex-direction:row;align-items:center;justify-content:space-between;}
+.title{color:#e0e0e0;font-size:32px;font-weight:700;}
+.back{background-color:#2d3148;border:1px solid #3a3f55;padding:10px 16px;color:#9aa0b4;font-size:18px;}
+.back:hover{background-color:#3a4258;color:#5fb2c4;border:1px solid #5fb2c4;}
+.back:active{transform:scale(0.96);}
+.scroll{flex-grow:1;overflow-y:scroll;}
+.content{gap:16px;padding:24px;}
+.sec{gap:16px;}
+.sec-h{color:#5fb2c4;font-size:28px;font-weight:700;border-bottom:1px solid #3a3f55;padding-bottom:8px;}
+.card{background-color:#252839;border:1px solid #3a3f55;padding:16px;gap:12px;}
+.card-h{flex-direction:row;justify-content:space-between;align-items:center;}
+.card-t{color:#e0e0e0;font-size:22px;font-weight:700;}
+.card-x{color:#9aa0b4;font-size:14px;}
+.card-b{flex-direction:row;gap:12px;flex-wrap:wrap;align-items:flex-start;}
+/* §4 交互事件集（hit + lamp 复用于动效触发按钮） */
+.hit{background-color:#2d3148;border:1px solid #3a3f55;padding:16px 24px;color:#e0e0e0;font-size:18px;}
+.hit:hover{background-color:#3a4258;border:1px solid #5fb2c4;color:#5fb2c4;}
+.hit:active{background-color:#5fb2c4;transform:scale(0.96);color:#1a1d2e;}
+.lamps{flex-direction:row;gap:6px;}
+.lamp{width:14px;height:14px;background-color:#3a3f55;}
+/* §7 动效舞台 */
+.demo{width:60px;height:40px;background-color:#5fb2c4;color:#1a1d2e;font-size:14px;display:flex;align-items:center;justify-content:center;}
+.ease-row{width:100%;height:30px;background-color:#1a1d2e;}
+</style>
+</head>
+<body>
+<div class="root">
+  <div class="header">
+    <div class="title">动效 · tween/ease/delay/kill</div>
+    <div class="back" id="back-home">← 返回</div>
+  </div>
+  <div class="scroll" id="page-scroll">
+    <div class="content">
+      <div class="sec" id="sec-7">
+        <div class="sec-h">§7 动效舞台</div>
+        <div class="card">
+          <div class="card-h"><span class="card-t">7.1 6 tween prop</span><span class="card-x">预期: 点按钮看 6 种属性动画</span></div>
+          <div class="card-b" style="flex-direction:column;gap:8px;width:100%">
+            <div class="hit" id="tween-play">播放全部</div>
+            <div class="demo" id="t-opacity">opacity</div>
+            <div class="demo" id="t-translate">translate</div>
+            <div class="demo" id="t-scale">scale</div>
+            <div class="demo" id="t-rotate">rotation</div>
+            <div class="demo" id="t-bgcolor">bg-color</div>
+            <div class="demo" id="t-textcolor">text-color</div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-h"><span class="card-t">7.2 10 缓动</span><span class="card-x">预期: 同 translate 不同 ease 曲线</span></div>
+          <div class="card-b" style="flex-direction:column;gap:6px;width:100%">
+            <div class="hit" id="ease-play">播放</div>
+            <div class="ease-row"><div class="demo" id="ease-0">QuadIn</div></div>
+            <div class="ease-row"><div class="demo" id="ease-1">CubicOut</div></div>
+            <div class="ease-row"><div class="demo" id="ease-2">BackInOut</div></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-h"><span class="card-t">7.3 delay 错峰</span><span class="card-x">预期: 3 块依次起（= 启动入场）</span></div>
+          <div class="card-b" style="flex-direction:column;gap:8px;width:100%">
+            <div class="hit" id="delay-play">播放（错峰）</div>
+            <div class="demo" id="d-0">delay 0</div>
+            <div class="demo" id="d-1">delay .2</div>
+            <div class="demo" id="d-2">delay .4</div>
+            <span class="card-x">delay 递增 = 启动错峰入场（StaggeredEntrance）所用机制。</span>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-h"><span class="card-t">7.4 complete 回调</span><span class="card-x">预期: 动画结束亮灯（TweenComplete + tag）</span></div>
+          <div class="card-b" style="flex-direction:column;gap:8px;width:100%">
+            <div class="hit" id="complete-play">播放（结束后亮灯）</div>
+            <div class="lamps" id="lamp-complete">
+              <div class="lamp"></div><div class="lamp"></div><div class="lamp"></div>
+            </div>
+            <span class="card-x">t-opacity 跑完后 core 产 TweenComplete（tag=7），C# 识别 tag 亮 lamp-complete。</span>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-h"><span class="card-t">7.5 kill / clear</span><span class="card-x">预期: kill 停末值 / clear 回 CSS 初始</span></div>
+          <div class="card-b" style="flex-direction:column;gap:8px;width:100%">
+            <div class="demo" id="kill-target">旋转中</div>
+            <div class="hit" id="kill-btn">kill（停末值）</div>
+            <div class="hit" id="clear-btn">clear（回 CSS）</div>
+            <span class="card-x">kill-target 启动即持续旋转（单次长 tween）；kill 冻结当前角，clear 清所有 anim 回 CSS。</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

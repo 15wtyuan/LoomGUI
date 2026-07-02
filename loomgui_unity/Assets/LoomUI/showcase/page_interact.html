@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>交互页</title>
+<style>
+/* page_interact 组件 CSS（D6 组件隔离）——抽自旧 style.css 的 §4 + base */
+.root{width:1080px;height:1920px;background-color:#1a1d2e;}
+.header{background-color:#252839;border-bottom:2px solid #3a3f55;padding:20px;gap:14px;flex-direction:row;align-items:center;justify-content:space-between;}
+.title{color:#e0e0e0;font-size:32px;font-weight:700;}
+.back{background-color:#2d3148;border:1px solid #3a3f55;padding:10px 16px;color:#9aa0b4;font-size:18px;}
+.back:hover{background-color:#3a4258;color:#5fb2c4;border:1px solid #5fb2c4;}
+.back:active{transform:scale(0.96);}
+.scroll{flex-grow:1;overflow-y:scroll;}
+.content{gap:16px;padding:24px;}
+.sec{gap:16px;}
+.sec-h{color:#5fb2c4;font-size:28px;font-weight:700;border-bottom:1px solid #3a3f55;padding-bottom:8px;}
+.card{background-color:#252839;border:1px solid #3a3f55;padding:16px;gap:12px;}
+.card-h{flex-direction:row;justify-content:space-between;align-items:center;}
+.card-t{color:#e0e0e0;font-size:22px;font-weight:700;}
+.card-x{color:#9aa0b4;font-size:14px;}
+.card-b{flex-direction:row;gap:12px;flex-wrap:wrap;align-items:flex-start;}
+/* §4 交互事件集 */
+.hit{background-color:#2d3148;border:1px solid #3a3f55;padding:16px 24px;color:#e0e0e0;font-size:18px;}
+.hit:hover{background-color:#3a4258;border:1px solid #5fb2c4;color:#5fb2c4;}
+.hit:active{background-color:#5fb2c4;transform:scale(0.96);color:#1a1d2e;}
+.hit.disabled{background-color:#2d3148;opacity:0.5;color:#6c7080;border:1px solid #3a3f55;}
+.lamps{flex-direction:row;gap:6px;}
+.lamp{width:14px;height:14px;background-color:#3a3f55;}
+.outer-r{background-color:#2d3148;border:1px solid #3a3f55;padding:20px;gap:12px;}
+.inner-r{background-color:#5fb2c4;padding:12px;color:#1a1d2e;font-size:16px;}
+.pe-none{background-color:#c2605a;padding:12px;color:#e0e0e0;font-size:14px;pointer-events:none;}
+</style>
+</head>
+<body>
+<div class="root">
+  <div class="header">
+    <div class="title">交互 · 事件/灯阵/路由/键盘</div>
+    <div class="back" id="back-home">← 返回</div>
+  </div>
+  <div class="scroll" id="page-scroll">
+    <div class="content">
+      <div class="sec" id="sec-4">
+        <div class="sec-h">§4 交互事件集</div>
+        <div class="card">
+          <div class="card-h"><span class="card-t">4.1 click + dblclick</span><span class="card-x">预期: 单击亮 1 下/双击亮 2 下（容器脉冲）</span></div>
+          <div class="card-b" style="flex-direction:column;gap:8px;width:100%">
+            <div class="hit" id="hit-click">点我（单击+双击）</div>
+            <div class="lamps" id="lamp-click">
+              <div class="lamp"></div><div class="lamp"></div><div class="lamp"></div><div class="lamp"></div><div class="lamp"></div><div class="lamp"></div>
+            </div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-h"><span class="card-t">4.2 hover / leave / active</span><span class="card-x">预期: 悬停变色 + 进入/离开亮灯</span></div>
+          <div class="card-b" style="flex-direction:column;gap:8px;width:100%">
+            <div class="hit" id="hit-hover">悬停我（RollOver/Out 亮灯）</div>
+            <div class="lamps" id="lamp-hover">
+              <div class="lamp"></div><div class="lamp"></div><div class="lamp"></div><div class="lamp"></div>
+            </div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-h"><span class="card-t">4.3 disabled</span><span class="card-x">预期: 不响应 click（C# SetNodeDisabled）</span></div>
+          <div class="card-b" style="flex-direction:column;gap:8px;width:100%">
+            <div class="hit disabled" id="hit-disabled">禁用（disabled 不响应）</div>
+            <span class="card-x">对比 4.1 可点；本块 SetNodeDisabled(true) 后 click 不触发。</span>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-h"><span class="card-t">4.4 drag</span><span class="card-x">预期: 拖动亮灯（DragMove）</span></div>
+          <div class="card-b" style="flex-direction:column;gap:8px;width:100%">
+            <div class="hit" draggable="true" id="hit-drag">拖我（draggable）</div>
+            <div class="lamps" id="lamp-drag">
+              <div class="lamp"></div><div class="lamp"></div><div class="lamp"></div><div class="lamp"></div>
+            </div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-h"><span class="card-t">4.5 longpress</span><span class="card-x">预期: 长按 1.5s 亮灯</span></div>
+          <div class="card-b" style="flex-direction:column;gap:8px;width:100%">
+            <div class="hit" id="hit-longpress">长按 1.5s</div>
+            <div class="lamps" id="lamp-longpress">
+              <div class="lamp"></div><div class="lamp"></div><div class="lamp"></div>
+            </div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-h"><span class="card-t">4.6 focus + Tab + key</span><span class="card-x">预期: 聚焦后按键亮灯（KeyDown）</span></div>
+          <div class="card-b" style="flex-direction:column;gap:8px;width:100%">
+            <div class="hit" tabindex="1" id="hit-key">点聚焦后按键（tabindex）</div>
+            <div class="lamps" id="lamp-key">
+              <div class="lamp"></div><div class="lamp"></div><div class="lamp"></div><div class="lamp"></div>
+              <div class="lamp"></div><div class="lamp"></div><div class="lamp"></div><div class="lamp"></div>
+            </div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-h"><span class="card-t">4.7 路由 + pointer-events</span><span class="card-x">预期: bubble + StopProp + 属性设置</span></div>
+          <div class="card-b" style="flex-direction:column;gap:8px;width:100%">
+            <div class="lamps" id="lamp-route">
+              <div class="lamp"></div><div class="lamp"></div><div class="lamp"></div>
+            </div>
+            <div class="outer-r" id="route-outer">
+              <div class="inner-r" id="route-inner">内（StopPropagation 止冒泡）</div>
+            </div>
+            <div class="hit" id="route-pe">可点（route-pe）</div>
+            <div class="pe-none">pointer-events:none 流内块（hit_test 跳过）</div>
+            <span class="card-x">pointer-events:none 节点 hit_test 跳过（点击穿透到下层）。v1 无 position:absolute 叠加，穿透叠加效果不可视，本卡演属性设置 + 路由 capture/bubble/StopPropagation。</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

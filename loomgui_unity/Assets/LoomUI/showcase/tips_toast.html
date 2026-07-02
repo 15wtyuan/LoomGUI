@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>tips_toast</title>
+<style>
+/* tips_toast 组件 CSS（D6 组件隔离）。
+   tips_layer 叠加层用：driver instantiate 后挂 tips_layer，定时 remove。
+   自身不定位（无 position:absolute，v1 限制）——由 tips_layer 容器决定位置。 */
+.toast{
+  background-color:#252839;border:1px solid #5fb2c4;border-radius:8px;
+  padding:20px 32px;gap:10px;align-items:center;
+  box-shadow:0 4px 12px #0008;
+}
+.toast-icon{font-size:28px;color:#5fb2c4;}
+.toast-text{color:#e0e0e0;font-size:20px;}
+.toast-sub{color:#9aa0b4;font-size:14px;}
+</style>
+</head>
+<body>
+<div class="toast" id="tips-toast">
+  <div class="toast-icon">✦</div>
+  <div style="flex-direction:column;gap:4px">
+    <div class="toast-text" id="tips-text">操作成功</div>
+    <div class="toast-sub">tips_layer 叠加演示（定时摘除）</div>
+  </div>
+</div>
+</body>
+</html>

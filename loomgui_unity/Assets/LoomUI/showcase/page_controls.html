@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>控件页</title>
+<style>
+/* page_controls 组件 CSS（D6 组件隔离）——抽自旧 style.css 的 §1/§2/§8 + base */
+.root{width:1080px;height:1920px;background-color:#1a1d2e;}
+.header{background-color:#252839;border-bottom:2px solid #3a3f55;padding:20px;gap:14px;flex-direction:row;align-items:center;justify-content:space-between;}
+.title{color:#e0e0e0;font-size:32px;font-weight:700;}
+.back{background-color:#2d3148;border:1px solid #3a3f55;padding:10px 16px;color:#9aa0b4;font-size:18px;}
+.back:hover{background-color:#3a4258;color:#5fb2c4;border:1px solid #5fb2c4;}
+.back:active{transform:scale(0.96);}
+.scroll{flex-grow:1;overflow-y:scroll;}
+.content{gap:16px;padding:24px;}
+.sec{gap:16px;}
+.sec-h{color:#5fb2c4;font-size:28px;font-weight:700;border-bottom:1px solid #3a3f55;padding-bottom:8px;}
+/* 卡片模板 */
+.card{background-color:#252839;border:1px solid #3a3f55;padding:16px;gap:12px;}
+.card-h{flex-direction:row;justify-content:space-between;align-items:center;}
+.card-t{color:#e0e0e0;font-size:22px;font-weight:700;}
+.card-x{color:#9aa0b4;font-size:14px;}
+.card-b{flex-direction:row;gap:12px;flex-wrap:wrap;align-items:flex-start;}
+/* §1 元素画廊 */
+.sw{width:60px;height:60px;}
+.btn-demo{background-color:#2d3148;border:1px solid #3a3f55;padding:12px 20px;color:#e0e0e0;font-size:18px;}
+.btn-demo:hover{background-color:#3a4258;border:1px solid #5fb2c4;color:#5fb2c4;}
+.btn-demo:active{background-color:#5fb2c4;transform:scale(0.96);color:#1a1d2e;}
+.btn-demo.disabled{background-color:#2d3148;opacity:0.5;color:#6c7080;}
+/* §2 布局练兵场 */
+.flx{flex-direction:row;background-color:#1a1d2e;border:1px solid #3a3f55;height:36px;padding:4px;gap:6px;align-items:center;}
+.flx div{width:24px;height:24px;background-color:#5fb2c4;color:#1a1d2e;font-size:12px;display:flex;align-items:center;justify-content:center;font-style:normal;}
+</style>
+</head>
+<body>
+<div class="root">
+  <div class="header">
+    <div class="title">控件 · 元素/布局/管线</div>
+    <div class="back" id="back-home">← 返回</div>
+  </div>
+  <div class="scroll" id="page-scroll">
+    <div class="content">
+      <div class="sec" id="sec-1">
+        <div class="sec-h">§1 元素画廊</div>
+        <div class="card">
+          <div class="card-h"><span class="card-t">1.1 色块矩阵</span><span class="card-x">预期: 8 色块正确呈现</span></div>
+          <div class="card-b">
+            <div class="sw" style="background-color:#1a1d2e"></div>
+            <div class="sw" style="background-color:#252839"></div>
+            <div class="sw" style="background-color:#5fb2c4"></div>
+            <div class="sw" style="background-color:#6fa66c"></div>
+            <div class="sw" style="background-color:#c2605a"></div>
+            <div class="sw" style="background-color:#e0e0e0"></div>
+            <div class="sw" style="background-color:#9aa0b4"></div>
+            <div class="sw" style="background-color:#6c7080"></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-h"><span class="card-t">1.2 img 整图</span><span class="card-x">预期: 图按宽呈现</span></div>
+          <div class="card-b">
+            <img src="res/icons/home.png" style="width:48px">
+            <img src="res/icons/home.png" style="width:64px">
+            <img src="res/icons/home.png" style="width:80px">
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-h"><span class="card-t">1.3 img 尺寸</span><span class="card-x">预期: px/%/auto 三模式</span></div>
+          <div class="card-b">
+            <img src="res/icons/eye.png" style="width:80px;height:80px">
+            <img src="res/icons/eye.png" style="width:50%">
+            <img src="res/icons/eye.png" style="width:auto">
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-h"><span class="card-t">1.4 span 文本</span><span class="card-x">预期: 文本节点</span></div>
+          <div class="card-b">
+            <span>裸文本呈现</span>
+            <div>div 文本</div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-h"><span class="card-t">1.5 button 三态</span><span class="card-x">预期: hover 青/active 按压/disabled 灰</span></div>
+          <div class="card-b">
+            <div class="btn-demo">normal</div>
+            <div class="btn-demo disabled" id="btn-demo-disabled">disabled</div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-h"><span class="card-t">1.6 NativeHost</span><span class="card-x">预期: 外部 GO 跟随 slot</span></div>
+          <div class="card-b">
+            <div id="model-slot" style="width:120px;height:120px;border:1px dashed #5fb2c4"></div>
+          </div>
+        </div>
+      </div>
+      <div class="sec" id="sec-2">
+        <div class="sec-h">§2 布局练兵场</div>
+        <div class="card">
+          <div class="card-h"><span class="card-t">2.1 flex-direction</span><span class="card-x">预期: row 横排 / column 竖排</span></div>
+          <div class="card-b" style="flex-direction:column;gap:8px;width:100%">
+            <div class="flx" style="flex-direction:row"><div>r1</div><div>r2</div><div>r3</div></div>
+            <div class="flx" style="flex-direction:column;align-items:stretch"><div>c1</div><div>c2</div><div>c3</div></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-h"><span class="card-t">2.2 flex-wrap</span><span class="card-x">预期: wrap 换行 / nowrap 溢出</span></div>
+          <div class="card-b" style="flex-direction:column;gap:8px;width:100%">
+            <div class="flx" style="flex-direction:row;flex-wrap:wrap;width:200px"><div>w1</div><div>w2</div><div>w3</div><div>w4</div><div>w5</div></div>
+            <div class="flx" style="flex-direction:row;flex-wrap:nowrap;width:200px"><div>n1</div><div>n2</div><div>n3</div><div>n4</div><div>n5</div></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-h"><span class="card-t">2.3 justify-content</span><span class="card-x">预期: 主轴 6 分布</span></div>
+          <div class="card-b" style="flex-direction:column;gap:8px;width:100%">
+            <div class="flx" style="justify-content:flex-start"><div>S</div><div>S</div><div>S</div></div>
+            <div class="flx" style="justify-content:center"><div>C</div><div>C</div><div>C</div></div>
+            <div class="flx" style="justify-content:flex-end"><div>E</div><div>E</div><div>E</div></div>
+            <div class="flx" style="justify-content:space-between"><div>B</div><div>B</div><div>B</div></div>
+            <div class="flx" style="justify-content:space-around"><div>A</div><div>A</div><div>A</div></div>
+            <div class="flx" style="justify-content:space-evenly"><div>V</div><div>V</div><div>V</div></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-h"><span class="card-t">2.4 align-items + align-self</span><span class="card-x">预期: 交叉轴对齐 + self 覆盖</span></div>
+          <div class="card-b" style="flex-direction:column;gap:8px;width:100%">
+            <div class="flx" style="align-items:flex-start;height:80px"><div>S</div><div>S</div><div>S</div></div>
+            <div class="flx" style="align-items:center;height:80px"><div>C</div><div>C</div><div>C</div></div>
+            <div class="flx" style="align-items:flex-end;height:80px"><div>E</div><div>E</div><div>E</div></div>
+            <div class="flx" style="align-items:stretch;height:80px"><div>T</div><div>T</div><div>T</div></div>
+            <div class="flx" style="align-items:flex-start;height:80px"><div>A</div><div style="align-self:center">★</div><div>A</div></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-h"><span class="card-t">2.5 gap vs margin</span><span class="card-x">预期: gap 等距 vs margin 不折叠</span></div>
+          <div class="card-b" style="flex-direction:column;gap:8px;width:100%">
+            <div class="flx" style="gap:16px"><div>g</div><div>g</div><div>g</div></div>
+            <div class="flx" style="gap:0"><div style="margin:0 8px">m</div><div style="margin:0 8px">m</div><div style="margin:0 8px">m</div></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-h"><span class="card-t">2.6 flex grow/shrink/basis</span><span class="card-x">预期: grow 占余比 / shrink 收缩</span></div>
+          <div class="card-b" style="flex-direction:column;gap:8px;width:100%">
+            <div class="flx" style="gap:6px"><div style="flex-grow:1">g1</div><div style="flex-grow:2">g2</div><div style="flex-grow:0;flex-basis:60px;width:60px">60</div></div>
+            <div class="flx" style="gap:6px;width:160px"><div style="flex-shrink:1">s1</div><div style="flex-shrink:0;width:48px">s0</div><div style="flex-shrink:1">s2</div><div style="flex-shrink:1">s3</div><div style="flex-shrink:1">s4</div></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-h"><span class="card-t">2.7 尺寸单位</span><span class="card-x">预期: px / % / auto + min-width + aspect</span></div>
+          <div class="card-b" style="flex-direction:column;gap:8px;width:100%">
+            <div class="flx" style="gap:6px"><div style="width:120px">120</div><div style="width:50%">50%</div><div style="width:auto">auto</div></div>
+            <div class="flx" style="gap:6px"><div style="min-width:80px;width:40px">min80</div><div style="aspect-ratio:2;width:40px">a2</div></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-h"><span class="card-t">2.8 order</span><span class="card-x">预期: DOM abc → 视觉 3/1/2</span></div>
+          <div class="card-b" style="flex-direction:column;gap:8px;width:100%">
+            <div class="flx"><div style="order:3">a</div><div style="order:1">b</div><div style="order:2">c</div></div>
+          </div>
+        </div>
+      </div>
+      <div class="sec" id="sec-8">
+        <div class="sec-h">§8 管线 / 分辨率</div>
+        <div class="card">
+          <div class="card-h"><span class="card-t">8.1 FairyBatching 合并</span><span class="card-x">预期: 3 同 atlas 图合并，Profiler draw call↓</span></div>
+          <div class="card-b">
+            <img src="res/icons/home.png" style="width:48px">
+            <img src="res/icons/eye.png" style="width:48px">
+            <img src="res/icons/zap.png" style="width:48px">
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-h"><span class="card-t">8.2 图集 atlas</span><span class="card-x">预期: 散图烤进 Unity Sprite Atlas</span></div>
+          <div class="card-b">
+            <img src="res/icons/home.png" style="width:64px">
+            <span class="card-x">res 下 Sprite 划进 Unity SpriteAtlas，按 path 查 Sprite（UV+Texture）。</span>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-h"><span class="card-t">8.3 dirty hash 静态帧</span><span class="card-x">预期: 静态帧全 Unchanged → C# 0 upload，Profiler GC Alloc≈0</span></div>
+          <div class="card-b">
+            <span class="card-x">说明卡：静止时不重传（dirty-hash 性能特性）。静态帧 Profiler 应见 GC Alloc≈0、无 mesh 重建。</span>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-h"><span class="card-t">8.4 参考分辨率 + safe-area</span><span class="card-x">预期: 改窗口尺寸看等比缩放 + safe-area 让边</span></div>
+          <div class="card-b">
+            <span class="card-x">改 Game 窗口尺寸 / 拖 Simulator 模拟刘海，UI 按 root_size=1080×1920 等比缩放 + safe-area 自动避让。</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

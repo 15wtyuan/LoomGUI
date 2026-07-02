@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>mail</title>
+<style>
+/* mail 组件 CSS（D6 组件隔离）——抽自旧 samples/dyn-mail/style.css。
+   由 page_dyntree 的 dyn-load-mail 按钮触发 instantiate 挂进 scene 演示多组件切界面。 */
+.root {
+  width: 600px;
+  height: 800px;
+  background-color: #1a1d2e;
+  flex-direction: column;
+  padding: 16px;
+  gap: 12px;
+}
+.header {
+  flex-direction: row;
+  justify-content: space-between;
+  align-items: center;
+  padding-bottom: 8px;
+  border-width: 0 0 1px 0;
+  border-color: #3a3f55;
+}
+.title { color: #e6e6e0; font-size: 28px; font-weight: 700; }
+.count { color: #5fb2c4; font-size: 16px; }
+.list { flex-direction: column; gap: 8px; flex: 1; }
+.mail-item {
+  flex-direction: row;
+  gap: 12px;
+  padding: 12px;
+  background-color: #2a2f45;
+  border-radius: 8px;
+  align-items: center;
+}
+.mail-icon {
+  width: 40px;
+  height: 40px;
+  border-radius: 20px;
+  color: #ffffff;
+  font-size: 18px;
+  font-weight: 700;
+  justify-content: center;
+  align-items: center;
+}
+.mail-body { flex-direction: column; gap: 4px; flex: 1; }
+.mail-from { color: #e6e6e0; font-size: 16px; font-weight: 600; }
+.mail-sub { color: #8a8fa3; font-size: 14px; }
+.footer { flex-direction: row; justify-content: center; padding-top: 8px; }
+.btn {
+  background-color: #5fb2c4;
+  color: #ffffff;
+  font-size: 18px;
+  font-weight: 600;
+  padding: 10px 32px;
+  border-radius: 6px;
+}
+.btn:hover { background-color: #6fc2d4; }
+.btn:active { background-color: #4fa2b4; }
+</style>
+</head>
+<body>
+<div class="root" id="mail-root">
+  <div class="header"><span class="title">邮件</span><span class="count">3 封未读</span></div>
+  <div class="list">
+    <div class="mail-item">
+      <div class="mail-icon" style="background-color:#5fb2c4">系</div>
+      <div class="mail-body">
+        <span class="mail-from">系统奖励</span>
+        <span class="mail-sub">每日登录奖励已发放</span>
+      </div>
+    </div>
+    <div class="mail-item">
+      <div class="mail-icon" style="background-color:#c2605a">战</div>
+      <div class="mail-body">
+        <span class="mail-from">竞技场</span>
+        <span class="mail-sub">赛季结束，你的排名 127</span>
+      </div>
+    </div>
+    <div class="mail-item">
+      <div class="mail-icon" style="background-color:#6fa66c">友</div>
+      <div class="mail-body">
+        <span class="mail-from">好友小明</span>
+        <span class="mail-sub">送了你 100 金币</span>
+      </div>
+    </div>
+  </div>
+  <div class="footer"><button class="btn">一键领取</button></div>
+</div>
+</body>
+</html>

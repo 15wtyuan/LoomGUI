@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>LoomGUI Showcase · 首页</title>
+<style>
+/* home 组件 CSS（D6 组件隔离，仅本组件节点用） */
+.root{width:1080px;height:1920px;background-color:#1a1d2e;}
+.header{background-color:#252839;border-bottom:2px solid #3a3f55;padding:20px;gap:14px;}
+.title{color:#e0e0e0;font-size:36px;font-weight:700;}
+.subtitle{color:#9aa0b4;font-size:16px;}
+.content{gap:16px;padding:24px;}
+.grid{flex-direction:row;flex-wrap:wrap;gap:20px;}
+.navbtn{
+  width:300px;height:160px;background-color:#2d3148;border:1px solid #3a3f55;
+  padding:20px;gap:12px;justify-content:center;
+}
+.navbtn:hover{background-color:#3a4258;border:1px solid #5fb2c4;}
+.navbtn:active{transform:scale(0.96);}
+.nav-icon{font-size:48px;color:#5fb2c4;}
+.nav-label{color:#e0e0e0;font-size:24px;font-weight:700;}
+.nav-desc{color:#9aa0b4;font-size:14px;}
+</style>
+</head>
+<body>
+<div class="root">
+  <div class="header">
+    <div class="title">LoomGUI Showcase</div>
+    <div class="subtitle">v1.4-a 多组件包 · 点卡片进各功能页</div>
+  </div>
+  <div class="content">
+    <div class="grid">
+      <div class="navbtn" id="nav-controls">
+        <div class="nav-icon">□</div>
+        <div class="nav-label">控件</div>
+        <div class="nav-desc">元素/布局/管线</div>
+      </div>
+      <div class="navbtn" id="nav-text">
+        <div class="nav-icon">T</div>
+        <div class="nav-label">文本</div>
+        <div class="nav-desc">CJK/ASCII/混排/字距</div>
+      </div>
+      <div class="navbtn" id="nav-image">
+        <div class="nav-icon">▦</div>
+        <div class="nav-label">图片</div>
+        <div class="nav-desc">bg-image/九宫格/滤镜</div>
+      </div>
+      <div class="navbtn" id="nav-scroll">
+        <div class="nav-icon">↕</div>
+        <div class="nav-label">滚动</div>
+        <div class="nav-desc">overflow/惯性/嵌套</div>
+      </div>
+      <div class="navbtn" id="nav-tween">
+        <div class="nav-icon">✦</div>
+        <div class="nav-label">动效</div>
+        <div class="nav-desc">tween/ease/delay/kill</div>
+      </div>
+      <div class="navbtn" id="nav-interact">
+        <div class="nav-icon">◉</div>
+        <div class="nav-label">交互</div>
+        <div class="nav-desc">事件/灯阵/路由/键盘</div>
+      </div>
+      <div class="navbtn" id="nav-dyntree">
+        <div class="nav-icon">⌘</div>
+        <div class="nav-label">动态树</div>
+        <div class="nav-desc">建/删/批量/set_style</div>
+      </div>
+    </div>
+    <div class="navbtn" id="nav-tips-demo" style="width:100%;height:80px;flex-direction:row;align-items:center;justify-content:center;gap:12px">
+      <div class="nav-label" style="font-size:20px">弹出 tips 演示</div>
+      <div class="nav-desc">→ tips_layer 叠加</div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

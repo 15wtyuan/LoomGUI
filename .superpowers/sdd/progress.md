@@ -18,3 +18,5 @@ BASE=7a01d77
 - T7: complete (commits c4d488e..262e0fb, review clean) — FFI load_package name + instantiate + 砍 atlas FFI + csbindgen regen + .dll. Unity LoomStage.cs 断裂 T8 修
 - T8: complete (commits 262e0fb..7223b95, review clean) — Unity path→Sprite + Sprite Atlas + 砍 LoadAtlas/_texMap. 旧 v4 测试/showcase driver T11/T12 还债
 - T9: complete (commit pending, 家里机编译验证) — Unity 包管理面板：LoomPackageSettings ScriptableObject + LoomPackageManagerWindow EditorWindow（智能识别/刷新/一键打包/资源校验）+ PkgManifestReader(C# 解析 pkg.bin AssetManifest). 本机无 Unity 工具链，C# 语法核对+grep 验证，家里机编译验证
+- T9: complete (commits 7223b95..43b7aed, review clean) — Unity 包管理面板 + PkgManifestReader(C# 手解析 pkg.bin manifest)
+- T10: complete (commit pending) — showcase 拆多组件包：home + 7 page + tips_toast + mail + res/icons(15 PNG). 打包 10 components/4 manifest paths, roundtrip 验证 OK (根 parent_idx=None, D17 尺寸 64x64/108x108). img path 契约: HTML 须带 res/ 前缀. 旧 atlas.png 清理 (D8/D14). 旧 samples 归档保留

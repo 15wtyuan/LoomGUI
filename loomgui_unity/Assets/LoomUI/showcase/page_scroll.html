@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>滚动页</title>
+<style>
+/* page_scroll 组件 CSS（D6 组件隔离）——抽自旧 style.css 的 §5 + base */
+.root{width:1080px;height:1920px;background-color:#1a1d2e;}
+.header{background-color:#252839;border-bottom:2px solid #3a3f55;padding:20px;gap:14px;flex-direction:row;align-items:center;justify-content:space-between;}
+.title{color:#e0e0e0;font-size:32px;font-weight:700;}
+.back{background-color:#2d3148;border:1px solid #3a3f55;padding:10px 16px;color:#9aa0b4;font-size:18px;}
+.back:hover{background-color:#3a4258;color:#5fb2c4;border:1px solid #5fb2c4;}
+.back:active{transform:scale(0.96);}
+.scroll{flex-grow:1;overflow-y:scroll;}
+.content{gap:16px;padding:24px;}
+.sec{gap:16px;}
+.sec-h{color:#5fb2c4;font-size:28px;font-weight:700;border-bottom:1px solid #3a3f55;padding-bottom:8px;}
+.card{background-color:#252839;border:1px solid #3a3f55;padding:16px;gap:12px;}
+.card-h{flex-direction:row;justify-content:space-between;align-items:center;}
+.card-t{color:#e0e0e0;font-size:22px;font-weight:700;}
+.card-x{color:#9aa0b4;font-size:14px;}
+.card-b{flex-direction:row;gap:12px;flex-wrap:wrap;align-items:flex-start;}
+/* §5 滚动实验室 */
+.mini{width:160px;height:120px;background-color:#1a1d2e;border:1px solid #3a3f55;overflow-y:scroll;}
+.filler{width:100%;height:300px;background-color:#2d3148;}
+.hscroll{width:100%;height:60px;flex-direction:row;overflow-x:scroll;overflow-y:hidden;white-space:nowrap;background-color:#1a1d2e;}
+.hfiller{min-width:120px;height:44px;background-color:#5fb2c4;color:#1a1d2e;margin:0 6px;display:flex;align-items:center;justify-content:center;}
+</style>
+</head>
+<body>
+<div class="root">
+  <div class="header">
+    <div class="title">滚动 · overflow/惯性/嵌套</div>
+    <div class="back" id="back-home">← 返回</div>
+  </div>
+  <div class="scroll" id="page-scroll">
+    <div class="content">
+      <div class="sec" id="sec-5">
+        <div class="sec-h">§5 滚动实验室</div>
+        <div class="card">
+          <div class="card-h"><span class="card-t">5.1 overflow 模式</span><span class="card-x">预期: scroll/auto/hidden</span></div>
+          <div class="card-b">
+            <div class="mini" style="overflow:scroll"><div class="filler"></div></div>
+            <div class="mini" style="overflow:auto"><div class="filler"></div></div>
+            <div class="mini" style="overflow:hidden"><div class="filler"></div></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-h"><span class="card-t">5.2 overflow-x/y</span><span class="card-x">预期: 嵌套水平滚 + 轴锁</span></div>
+          <div class="card-b"><div class="hscroll"><div class="hfiller">item1</div><div class="hfiller">item2</div><div class="hfiller">item3</div><div class="hfiller">item4</div></div></div>
+        </div>
+        <div class="card">
+          <div class="card-h"><span class="card-t">5.3 惯性/回弹/滚轮</span><span class="card-x">主页面即为该体验：拖动/滚轮，松手惯性、边界回弹</span></div>
+          <div class="card-b"><span class="card-x">本页外层 scroll-pane（#page-scroll）即本卡体验载体——拖动本体、滚轮滚动、松手后惯性滑行、触底/触顶边界回弹。</span></div>
+        </div>
+        <div class="card">
+          <div class="card-h"><span class="card-t">5.4 滚动条 + grip</span><span class="card-x">预期: 合成 thumb 可拖</span></div>
+          <div class="card-b">
+            <div class="mini" style="overflow:scroll"><div class="filler"></div></div>
+            <span class="card-x">同 5.1 的 scroll 容器，右侧合成 thumb 自动出现，拖动 thumb 可直接定位滚动位置（grip）。</span>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-h"><span class="card-t">5.5 嵌套+轴锁+仲裁</span><span class="card-x">预期: scroll-vs-drag 阈值赛跑</span></div>
+          <div class="card-b" style="flex-direction:column;gap:12px;width:100%">
+            <div class="mini" id="nested-scroll" style="overflow-y:scroll;height:200px">
+              <div class="hscroll"><div class="hfiller">h1</div><div class="hfiller">h2</div><div class="hfiller">h3</div><div class="hfiller">h4</div></div>
+              <div class="filler" draggable="true">drag me</div>
+              <div class="filler"></div>
+            </div>
+            <span class="card-x">内层竖滚内嵌水平滚 + draggable item：拖动起步时由 core 仲裁（scroll-vs-drag 阈值赛跑 + 轴锁），C# 订阅 DragMove 让 item 动。</span>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-h"><span class="card-t">5.6 SetScrollPos</span><span class="card-x">预期: 程序跳转滚动定位</span></div>
+          <div class="card-b"><span class="card-x">driver 可调 SetScrollPos 程序跳转本页 #page-scroll 到指定位置，演示滚动定位机制。</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>
