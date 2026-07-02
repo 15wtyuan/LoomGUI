@@ -14,3 +14,4 @@ BASE=7a01d77
 - T5: complete (commit pending) — Stage::instantiate 克隆组件子树 + 伪类规则合并去重 + create_node_from_template 复用节点构造 + ensure_scene 首次建空骨架. 3 个 T4 ignore 测试重写恢复（load_package→instantiate→roots.push→render 等价 inline）. 492 core 测试全过, ignored 9→6（FFI 6 留 T7）
 - T5: complete (commits fa19bc0..3ac7a92, review clean after fix) — instantiate 克隆子树 + 伪类去重 + 3 T4 测试债还清 + 多实例 hover 独立性测试
 - T6: complete (commit pending) — Image RenderNode payload 改带 image_path (砍 texture/UV子区/tex_id/fit_uv/TextureRegistry/TexMeta/asset::texture.rs). layout solve 砍 textures 参数 (Image intrinsic 64×64 兜底). FrameBlob v7: tex_id 列→path_idx 列 + path string table arena. 556 workspace 测试全过 (486 core + 45 ffi + 余). FFI blob 同步改完 (非 T7 stub).
+- T6: complete (commits 3ac7a92..c4d488e, review clean after D17 fix) — Image payload path + 砍 TextureRegistry + D17 图尺寸表(打包期 PNG IHDR). spec 补 D17
