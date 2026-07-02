@@ -40,7 +40,7 @@ description: >
 | 调试/验证新技巧 | knowledge-reference | §6 |
 | 已知问题/ledger 变化（v0 占位消除/新 defer 项） | knowledge-reference | §7 |
 | **设计契约变化**（新围栏 CSS 属性、新 Node 字段、架构调整、新主文档章节） | `docs/design/00-main-design.md` | 对应章节 |
-| 范围/defer 变化 | `docs/roadmap/` | v1-scope / v1x-deferred |
+| 范围/defer 变化 | `docs/roadmap/` | roadmap.md（已合并：范围/路线/机制草稿） |
 
 **§2 机制 vs §3 API 判据**：§2 = 数据结构/层职责/契约（怎么组织的）；§3 = crate 版本签名差异（草稿与实际不符）。同一发现两侧都涉及时，归到主要教训侧——如「taffy 不消费视觉属性」是 §3 API 边界认知，「ResolvedStyle 持哪些字段」是 §2 机制。
 
@@ -85,7 +85,7 @@ description: >
 
 **仅当本 session 改了设计契约**（新围栏 CSS 属性、新 Node 字段、架构调整、新主文档章节）才更新 `docs/design/00-main-design.md`。范围/defer 变化更新 `docs/roadmap/`。**纯实现/踩坑不进 docs**（进 skill）。
 
-**围栏属性判据**：属性已在 v1-scope §2 围栏列表 → 加实现支持**不触发** docs；属性**新增**到围栏列表 → 触发 docs（同步 v1-scope §2 + 主文档 §4.4）。
+**围栏属性判据**：属性已在围栏列表（`docs/design/fence.md`，真相源 `fence_contract.rs`）→ 加实现支持**不触发** docs；属性**新增**到围栏列表 → 触发 docs（同步 fence.md + 主文档 §4）。
 
 ### 6. Commit
 
