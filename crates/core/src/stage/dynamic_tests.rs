@@ -166,6 +166,59 @@ fn env_safe_inset_flows_through_layout() {
     assert_eq!(sc.get(abs).unwrap().layout_rect.y, 50.0);
 }
 
+/// #116 root 喂入语义：root_size 钉的是根的 border box（solve 期覆写 box_sizing=BorderBox），
+/// root+padding 内缩 content 而非外溢视口。home 页形态（100vw/100vh + px padding）回归门。
+#[test]
+fn root_padding_insets_content_instead_of_overflowing() {
+    let mut s = Stage::new_for_test(); // root 200×200
+    let root = s
+        .create_root("div", "width:100vw;height:100vh;padding:10px")
+        .unwrap();
+    let kid = s.create_node("div", "width:100%;height:100%").unwrap();
+    s.append_child(root, kid).unwrap();
+    s.tick_and_render();
+    let sc = s.scene.as_ref().unwrap();
+    let rr = sc.get(root).unwrap().layout_rect;
+    assert_eq!((rr.w, rr.h), (200.0, 200.0), "根 border box = 视口，不外溢");
+    let kr = sc.get(kid).unwrap().layout_rect;
+    assert_eq!((kr.x, kr.y, kr.w, kr.h), (10.0, 10.0, 180.0, 180.0));
+}
+
+/// #116 零 padding 根：BorderBox 与 ContentBox 等值——存量页（root 无 padding）无感。
+#[test]
+fn root_zero_padding_border_box_equivalent() {
+    let mut s = Stage::new_for_test();
+    let root = s.create_root("div", "width:100vw;height:100vh").unwrap();
+    let kid = s.create_node("div", "width:100%;height:100%").unwrap();
+    s.append_child(root, kid).unwrap();
+    s.tick_and_render();
+    let sc = s.scene.as_ref().unwrap();
+    let kr = sc.get(kid).unwrap().layout_rect;
+    assert_eq!((kr.x, kr.y, kr.w, kr.h), (0.0, 0.0, 200.0, 200.0));
+}
+
+/// #116 env 形态（16 页 `.root{width:100vw;height:100vh;padding:env(...)}`）：inset 注入
+/// 非零时根仍钳在视口内（BorderBox），content 起点随 inset 内移——旧语义根 border box
+/// 会外溢成 200×220。
+#[test]
+fn root_env_padding_clamped_to_viewport() {
+    let mut s = Stage::new_for_test();
+    let root = s
+        .create_root(
+            "div",
+            "width:100vw;height:100vh;padding-top:env(safe-area-inset-top)",
+        )
+        .unwrap();
+    let kid = s.create_node("div", "width:100%;height:100%").unwrap();
+    s.append_child(root, kid).unwrap();
+    s.set_safe_insets([20.0, 0.0, 0.0, 0.0]).unwrap();
+    s.tick_and_render();
+    let sc = s.scene.as_ref().unwrap();
+    let rr = sc.get(root).unwrap().layout_rect;
+    assert_eq!((rr.w, rr.h), (200.0, 200.0), "根不因 env padding 外溢");
+    assert_eq!(sc.get(kid).unwrap().layout_rect.y, 20.0);
+}
+
 /// #110 视口字号 + env 通道的字号继承边界：子自有 px 声明不被父视口值覆盖
 /// （set-ness 由 apply_css 记 bit）。
 #[test]

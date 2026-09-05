@@ -18,7 +18,9 @@ use yio_core::style::resolved::{DisplayMode, ResolvedStyle, TextAlign, TextDecor
 /// `<style>` 块（`css_rules`）三处 `FenceUnknownCssProp` 构造点，保证引导文案一致。
 pub(crate) fn unsupported_hint(prop: &str) -> Option<&'static str> {
     Some(match prop {
-        "box-sizing" => "Yio always uses the border-box model (width already includes padding and border — the engine default). This declaration has no effect — remove it.",
+        // 契约 = CSS 初始值 content-box（css-reference「padding adds to the set width/height」）。
+        // #116：本文案曾写反（border-box 措辞）——与 core pin（c30b9945）矛盾八个月，误导消费侧 AI。
+        "box-sizing" => "Yio uses the CSS default content-box model: padding adds to the set width/height (width:420px with padding:22px renders 464px wide). There is no border-box switch — remove this declaration and subtract padding from width/height yourself.",
         "visibility" => "Yio has no visibility:hidden. To hide an element use `display:none` (removes layout space) or `opacity:0` (keeps space).",
         "cursor" | "outline" | "user-select" | "object-fit" => {
             "not supported by fence — remove this declaration."
@@ -567,13 +569,13 @@ mod tests {
             .find(|d| d.code == DiagnosticCode::FenceUnknownCssProp)
             .expect("should error");
         assert!(
-            d.message.contains("border-box"),
-            "msg should explain Yio uses border-box: {}",
+            d.message.contains("content-box"),
+            "msg should state the content-box contract (#116): {}",
             d.message
         );
         assert!(
-            d.message.contains("remove"),
-            "msg should guide removal: {}",
+            d.message.contains("subtract"),
+            "msg should guide the padding subtraction: {}",
             d.message
         );
     }

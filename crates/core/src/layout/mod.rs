@@ -559,12 +559,20 @@ pub fn solve(
     // 设根 size：覆盖为调用方给的 root_size（viewport）。值比较短路——稳态帧
     //（viewport 未变）不 set_style，根保持干净缓存。
     // Style.size 字段类型是 Size<Dimension>（不是 LengthPercentageAuto）。
+    //
+    // 根的 box_sizing 在此覆写为 BorderBox：root_size 钉的是根的 **border box**（= 视口，
+    // 浏览器 ICB 同构——Stage 拥有画布，作者声明不参与），padding/border 内缩 content 而非
+    // 外溢。否则全局 ContentBox 钉（ResolvedStyle::default）把 root_size 解释成 content
+    // box，root+padding 恒外溢出视口（#116：home root 1920+96=2016；root 声明被本处覆写，
+    // 作者侧手算/包装层均救不回——「root+padding 内缩」是全屏页最高频惯用法，必须在喂入
+    // 语义层修根因）。零 padding 根 BorderBox 与 ContentBox 等值，存量页无感。
     let root_style = cache.tree.style(root_tid).unwrap().clone();
     let sized_root = Style {
         size: Size {
             width: Dimension::length(root_size.0),
             height: Dimension::length(root_size.1),
         },
+        box_sizing: taffy::style::BoxSizing::BorderBox,
         ..root_style.clone()
     };
     if sized_root != root_style {

@@ -93,7 +93,7 @@
 - `display:flex` 默认 `flex-direction:row`（标准 CSS 默认）。
 - 需要纵向堆叠明确写 `display:flex; flex-direction:column`。
 - `display:block/flex/none` 选择内部布局 Strategy，**不改变节点类型**。
-- `box-sizing`：Yio **border-box 专属**（width 含 padding+border，游戏 UI 友好），作者声明被 fence 拒绝并提示移除（`css_resolve.rs`）——已定决策，非待实现。
+- `box-sizing`：Yio **content-box 定版**（CSS 规范初始值——AI 按标准先验预测渲染，#116 拍板，否决 08-24 的 border-box 文案与 #115 的反转提案）；`padding adds to the set width/height`（`width:420px + padding:22px` 渲染 464 外框），作者声明被 fence 硬拒并给减法指引（`css_resolve.rs`）。唯一例外：**根节点 border box = 视口**（solve 期把 Stage 钉入的 root_size 连同 `box_sizing=BorderBox` 一起覆写根 taffy style——浏览器 ICB 同构；root 自身 padding 内缩而非外溢，作者对 root 的显式尺寸声明不参与）。全屏页惯用法 = `width:100vw; height:100vh` + 零 padding，内缩交给子级。
 
 ### 3.2 围栏元素
 
