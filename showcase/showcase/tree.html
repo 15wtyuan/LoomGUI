@@ -30,8 +30,11 @@
   [role="treeitem"] {display:flex;flex-direction:column; color:#9aa0b4; font-size:15px; border-radius:8px; }
   .row {display:flex;flex-direction:row; align-items:center; gap:8px; padding:10px 12px; border-radius:8px; }
   /* 悬浮 vs 选中刻意分层：悬浮 = 中性弱底（仅提示可点）；选中 = 主题色染底 + 亮字 + 粗体。
-     两态同色时用户分不清「指着」还是「选中了」——视觉必须可辨。 */
-  [role="treeitem"]:hover > .row { background-color:rgba(26,47,69,0.45); }
+     两态同色时用户分不清「指着」还是「选中了」——视觉必须可辨。
+     悬停钩子挂 .row 本体（core/browser 的 :hover 都按命中链全标祖先——input.rs
+     recompute_hovered；treeitem 作钩子时悬停叶子会点亮父 treeitem 的行。行与行不嵌套，
+     .row:hover 恰好一亮一行，两侧语义一致）。 */
+  .row:hover { background-color:rgba(26,47,69,0.45); }
   [role="treeitem"][aria-selected="true"] > .row { background-color:rgba(95,180,212,0.16); color:#5fb4d4; font-weight:700; }
   /* 折叠箭头：▸ 旋转 90° 表展开（transform transition 顺带演示过渡）。 */
   .chev { color:#6c7080; font-family:"DejaVuSans",serif; font-size:12px; transition:transform .15s; }
