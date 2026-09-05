@@ -63,11 +63,12 @@ pub fn parse_selector_with_reason(raw: &str) -> Result<ParsedSelector, String> {
     if raw.is_empty() {
         return Err("empty selector".to_string());
     }
-    // 越界字符快速判定：逗号 / > + ~ 组合子不在本子集（属性选择器 `[...]` 已支持，见
+    // 越界字符快速判定：逗号 / + ~ 组合子不在本子集（属性选择器 `[...]` 已支持，见
     // parse_compound；`:nth-child(2n+1)` 的 `+` 在括号内合法，按深度排除）。
+    // `>` 已入子集（#114 子代组合器）——见下方切分循环。
     if let Some(ch) = out_of_subset_combinator(raw) {
         return Err(format!(
-            "combinator \"{ch}\" is outside the fence (only descendant combinators)"
+            "combinator \"{ch}\" is outside the fence (only descendant \" \" and child \">\" combinators)"
         ));
     }
 
@@ -76,8 +77,11 @@ pub fn parse_selector_with_reason(raw: &str) -> Result<ParsedSelector, String> {
     let mut specificity_c = 0u32; // tag 数
     let mut compounds: Vec<Compound> = Vec::new();
 
-    // 按括号深度切分 compound：`split_whitespace` 会拆坏括号内空格
-    // （`:nth-child(2n + 1)` 的 `+` 两侧空格合法，CSS An+B 语法允许）。
+    // 按括号深度切分 compound：空白分隔后代链；`>`（括号外）自成 token（哨兵），
+    // 其后随 compound 标 Child。四种写法 `a>b` / `a > b` / `a >b` / `a> b` 同一处理
+    // （CSS 组合子两侧空白可有可无）。
+    // `split_whitespace` 会拆坏括号内空格（`:nth-child(2n + 1)` 的 `+` 两侧空格
+    // 合法，CSS An+B 语法允许），故手写深度扫描。
     let mut parts: Vec<&str> = Vec::new();
     let mut depth: i32 = 0;
     let mut start = 0usize;
@@ -85,6 +89,13 @@ pub fn parse_selector_with_reason(raw: &str) -> Result<ParsedSelector, String> {
         match ch {
             '(' => depth += 1,
             ')' => depth -= 1,
+            '>' if depth == 0 => {
+                if idx > start {
+                    parts.push(&raw[start..idx]);
+                }
+                parts.push(">");
+                start = idx + 1;
+            }
             _ if ch.is_whitespace() && depth == 0 => {
                 if idx > start {
                     parts.push(&raw[start..idx]);
@@ -98,15 +109,35 @@ pub fn parse_selector_with_reason(raw: &str) -> Result<ParsedSelector, String> {
         parts.push(&raw[start..]);
     }
 
+    let mut pending_child = false;
     for part in parts {
+        if part == ">" {
+            if compounds.is_empty() {
+                return Err("selector must not start with a \">\" combinator".to_string());
+            }
+            if pending_child {
+                return Err("duplicate \">\" combinator (missing compound between)".to_string());
+            }
+            pending_child = true;
+            continue;
+        }
         let (c, a, b, cc) = parse_compound_detailed(part)?;
         specificity_a += a;
         specificity_b += b;
         specificity_c += cc;
-        // 本子集只有后代组合（空格）；首个 compound 的 combinator 字段无前驱，matcher 不读
+        // comps[i].combinator 描述它与 comps[i-1] 的关系；首个 compound 的字段无前驱，
+        // matcher 不读。`>` 后随的 compound 标 Child（#114：复合控件嵌套态样式作用域）。
         let mut c = c;
-        c.combinator = Combinator::Descendant;
+        c.combinator = if pending_child {
+            Combinator::Child
+        } else {
+            Combinator::Descendant
+        };
+        pending_child = false;
         compounds.push(c);
+    }
+    if pending_child {
+        return Err("selector must not end with a \">\" combinator".to_string());
     }
 
     if compounds.is_empty() {
@@ -125,15 +156,16 @@ pub fn parse_selector_with_reason(raw: &str) -> Result<ParsedSelector, String> {
     })
 }
 
-/// 组合子越界扫描：括号外出现 `,` / `>` / `+` / `~` 即越界，返回首个越界字符。
-/// `:nth-child(An+B)` 的参数里 `+`/`-` 是合法语法（如 `2n+1`），括号内不判。
+/// 组合子越界扫描：括号外出现 `,` / `+` / `~` 即越界，返回首个越界字符。
+/// `>` 已入子集（#114，切分循环处理）；`:nth-child(An+B)` 的参数里 `+`/`-` 是
+/// 合法语法（如 `2n+1`），括号内不判。
 fn out_of_subset_combinator(raw: &str) -> Option<char> {
     let mut depth: i32 = 0;
     for ch in raw.chars() {
         match ch {
             '(' => depth += 1,
             ')' => depth -= 1,
-            ',' | '>' | '+' | '~' if depth == 0 => return Some(ch),
+            ',' | '+' | '~' if depth == 0 => return Some(ch),
             _ => {}
         }
     }
@@ -1080,7 +1112,6 @@ mod tests {
             (".btn:hover:not(.x)", "pseudo-class \":not\""),
             (".btn::before", "only ::part(name)"),
             ("*:hover", "universal selector \"*\""),
-            (".a > .b", "combinator \">\""),
             (".a + .b", "combinator \"+\""),
             ("[data-x^=\"y\"]", "attribute operator \"^=\""),
             (".a:nth-child(bad)", ":nth-child"),
@@ -1166,10 +1197,10 @@ mod tests {
     #[test]
     fn out_of_subset_returns_none() {
         // 属性选择器现已支持（[attr]/[attr="val"]）；逗号在 parse_style_block 预切分，
-        // parse_selector 自身仍拒；> + ~ 组合子仍越界（`+` 在 :nth-child 括号内合法）。
+        // parse_selector 自身仍拒；+ ~ 组合子仍越界（`+` 在 :nth-child 括号内合法）。
+        // `>` 已入子集（child_combinator 系列用例）。
         assert!(parse_selector(r#"[type="text"]"#).is_some());
         assert!(parse_selector(".a, .b").is_none());
-        assert!(parse_selector(".a > .b").is_none()); // Child 组合子本轮不做（仅后代空格）
         assert!(parse_selector(".a + .b").is_none());
         assert!(parse_selector(":nth-of-type(2)").is_none()); // 其他 nth-* 不在子集
                                                               // 属性选择器越界形态须显式拒（防静默降级：否则坏 selector 会被默默吞，
@@ -1179,6 +1210,58 @@ mod tests {
         assert!(parse_selector("[=x]").is_none());
         assert!(parse_selector("[]").is_none());
         assert!(parse_selector("[a=b").is_none());
+    }
+
+    #[test]
+    fn child_combinator() {
+        // #114：`>` 入子集。`.a > .b` → 两 compound，后者 combinator = Child。
+        let s = spec(".a > .b");
+        assert_eq!(s.compound.len(), 2);
+        assert_eq!(s.compound[0].classes, vec!["a".to_string()]);
+        assert_eq!(s.compound[1].combinator, Combinator::Child);
+        assert_eq!(s.compound[1].classes, vec!["b".to_string()]);
+        assert_eq!(s.specificity.1, 2); // 组合子不加 specificity
+    }
+
+    #[test]
+    fn child_combinator_whitespace_variants() {
+        // CSS 组合子两侧空白可有可无，四种写法同解析。
+        for raw in [".a>.b", ".a >.b", ".a> .b", ".a  >  .b"] {
+            let s = parse_selector(raw).unwrap_or_else(|| panic!("{raw} should parse"));
+            assert_eq!(s.compound.len(), 2, "{raw}");
+            assert_eq!(s.compound[1].combinator, Combinator::Child, "{raw}");
+        }
+    }
+
+    #[test]
+    fn child_combinator_chain() {
+        // .a > .b .c：中段 Child、末段 Descendant（混合链）。
+        let s = spec(".a > .b .c");
+        assert_eq!(s.compound.len(), 3);
+        assert_eq!(s.compound[1].combinator, Combinator::Child);
+        assert_eq!(s.compound[2].combinator, Combinator::Descendant);
+    }
+
+    #[test]
+    fn child_combinator_malformed_rejected() {
+        // 起始/结尾/连续 `>` 均显式拒（防静默吞——坏 selector 静默失效同属性选择器先例）。
+        assert!(parse_selector("> .a").is_none());
+        assert!(parse_selector(".a >").is_none());
+        assert!(parse_selector(".a > > .b").is_none());
+    }
+
+    #[test]
+    fn child_combinator_does_not_leak_inside_parens() {
+        // `:nth-child(...)` 参数内的 `+`/`-` 合法（既有行为）；本用例锁「括号内
+        // 不受组合子扫描影响」在 `>` 放行后仍成立——伪类参数解析路径零改动。
+        let s = spec(".a:nth-child(2n+1)");
+        assert!(s.compound[0].pseudo_nth_child.is_some());
+    }
+
+    #[test]
+    fn child_combinator_specificity_unchanged() {
+        // 组合子不参与 specificity：`.a > .b` 与 `.a .b` 同为 (0,2,0)。
+        assert_eq!(spec(".a > .b").specificity, spec(".a .b").specificity);
     }
 
     #[test]
@@ -1232,13 +1315,13 @@ mod tests {
 
     #[test]
     fn parse_style_block_skips_unparseable_selector() {
-        // .a > .b 越界 → 该规则进 diagnostic，其他规则照常
+        // .a + .b 越界 → 该规则进 diagnostic，其他规则照常（`>` 已入子集，改用 `+`）
         let (rules, _kf, diags) =
-            parse_style_block(".a > .b { color: #ff0000 }\n.ok { color: #0000ff }");
+            parse_style_block(".a + .b { color: #ff0000 }\n.ok { color: #0000ff }");
         assert_eq!(rules.len(), 1);
         assert_eq!(rules[0].selector.raw, ".ok");
         assert!(
-            diags.iter().any(|d| d.message.contains(".a > .b")),
+            diags.iter().any(|d| d.message.contains(".a + .b")),
             "越界选择器应报错: {diags:?}"
         );
     }
@@ -1494,8 +1577,8 @@ mod tests {
 
     #[test]
     fn runtime_css_parse_bad_selector_and_prop_error_with_location() {
-        let err = parse_runtime_css(".a > .b { color: #fff }").expect_err("越界选择器");
-        assert!(err.message.contains(".a > .b"));
+        let err = parse_runtime_css(".a + .b { color: #fff }").expect_err("越界选择器");
+        assert!(err.message.contains(".a + .b"));
         let err = parse_runtime_css(".a { colr: #fff }").expect_err("未知 prop");
         assert!(err.message.contains("colr"));
     }

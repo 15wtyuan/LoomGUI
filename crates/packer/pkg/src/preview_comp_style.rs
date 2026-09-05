@@ -229,6 +229,17 @@ fn rewrite_rule(name: &str, prelude: &str, block: &str, base_dir: &str, out: &mu
             branches.push(attr.clone());
             continue;
         }
+        // 宿主直子链（`tip-panel > .slot`，剥宿主后以 `>` 开头——#114 放行 Child）：
+        // 原串整体过 fence 校验（剥掉的宿主标签占首个 compound），分支 = `{attr} {rest}`
+        // （= 模板根的直接子；无「首复合段」可插，两分支同形）。
+        if stripped.starts_with('>') {
+            if yio_fence::css_rules::parse_selector(part).is_none() {
+                dropped.push(part.to_string());
+                continue;
+            }
+            branches.push(format!("{attr} {stripped}"));
+            continue;
+        }
         // fence 校验 = 与打包同一份选择器真相；越界构造 preview 同步拒绝。
         if yio_fence::css_rules::parse_selector(stripped).is_none() {
             dropped.push(part.to_string());
@@ -515,13 +526,33 @@ mod tests {
 
     #[test]
     fn out_of_fence_selector_dropped_with_comment() {
-        let out = rw(".a > .b { color: red }");
+        // `.a + .b` 越界（`>` 已入子集，#114）→ 该规则单独丢弃并留注释。
+        let out = rw(".a + .b { color: red }");
         assert!(!out.contains("color: red"));
-        assert!(out.contains("selector `.a > .b` dropped"));
+        assert!(out.contains("selector `.a + .b` dropped"));
         // 混合逗号：合法段保留，越界段单独丢弃。
-        let out2 = rw(".a, .b > .c { x: 1 }");
+        let out2 = rw(".a, .b + .c { x: 1 }");
         assert!(out2.contains(&format!("{ATTR} .a, {ATTR}.a {{ x: 1 }}")));
-        assert!(out2.contains("`.b > .c` dropped"));
+        assert!(out2.contains("`.b + .c` dropped"));
+    }
+
+    #[test]
+    fn child_combinator_passes_through_both_branches() {
+        // #114：`>` 已入子集——双分支保留 Child 语义（scope 属性钉首复合段 = 直父）。
+        let out = rw(".a > .b { color: red }");
+        assert!(out.contains(&format!("{ATTR} .a > .b, {ATTR}.a > .b {{ color: red }}")));
+        // 紧凑写法同透传。
+        let out2 = rw(".a>.b { x: 1 }");
+        assert!(out2.contains(&format!("{ATTR} .a>.b, {ATTR}.a>.b {{ x: 1 }}")));
+    }
+
+    #[test]
+    fn host_led_child_chain_keeps_direct_child_of_root() {
+        // 宿主直子链 `tip-panel > .slot`：剥宿主后以 `>` 开头——两分支同形，
+        // 语义 = 模板根的直接子（不得把属性插进 `>` 造出 `{attr} > > .slot`）。
+        let out = rw("tip-panel > .slot { x: 1 }");
+        assert!(out.contains(&format!("{ATTR} > .slot {{ x: 1 }}")));
+        assert!(!out.contains("> >"));
     }
 
     #[test]

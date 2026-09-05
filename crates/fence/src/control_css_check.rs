@@ -24,8 +24,8 @@
 //! 解析出的 `DynamicRule` 表，按 tag/class/id/attr 字面对照 IrElement 判定。
 
 use crate::diagnostic::{Diagnostic, DiagnosticCode, LineMap};
-use crate::ir::{IrElement, IrNodeKind, IrTree};
-use yio_core::style::dynamic::{AttrOp, Compound, DynamicRule, ParsedSelector};
+use crate::ir::{IrElement, IrNodeId, IrNodeKind, IrTree};
+use yio_core::style::dynamic::{AttrOp, Combinator, Compound, DynamicRule, ParsedSelector};
 
 /// 触发本校验的控件 role。带这些 role 的元素必被检查；`textbox` 同时覆盖
 /// TextField 与 TextArea（后者加 `aria-multiline="true"`）。
@@ -109,8 +109,8 @@ fn compound_matches_element(c: &Compound, el: &IrElement) -> bool {
     true
 }
 
-/// 完整选择器是否命中 node_id：最后一段须命中 node 本身，前面各段沿祖先链匹配
-/// （fence 子集只有后代组合——空格——parse_selector 拒 > + ~）。
+/// 完整选择器是否命中 node_id：最后一段须命中 node 本身，前面各段沿父链匹配
+/// （Child 组合子限直接父——#114；Descendant 沿祖先链逐层尝试）。
 pub(crate) fn selector_matches_node(sel: &ParsedSelector, tree: &IrTree, node_idx: usize) -> bool {
     let comps = &sel.compound;
     if comps.is_empty() {
@@ -130,8 +130,10 @@ pub(crate) fn selector_matches_node(sel: &ParsedSelector, tree: &IrTree, node_id
     match_ancestor_chain(comps, comps.len() - 1, node_idx, tree)
 }
 
-/// 递归匹配 comps[0..end_idx] 在 start_node 的祖先链上。
-/// `start_node` 已命中 comps[end_idx]；为 comps[end_idx-1] 找祖先。
+/// 递归匹配 comps[0..end_idx] 在 start_node 的父链上（core dynamic.rs
+/// `match_chain_with_state` 同款语义，消费 IrTree 而非 Scene）。
+/// `start_node` 已命中 comps[end_idx]；为 comps[end_idx-1] 找父：
+/// Child=直接父（唯一候选，无回溯）；Descendant=任一祖先，带回溯。
 fn match_ancestor_chain(
     comps: &[Compound],
     end_idx: usize,
@@ -142,19 +144,24 @@ fn match_ancestor_chain(
         return true;
     }
     let target_comp = &comps[end_idx - 1];
-    // fence 子集 combinator 恒为 Descendant（parse_selector 拒 Child/Adjacent），
-    // 故沿祖先链逐层尝试，不做 child 直父限制。
-    let mut cur = tree.nodes[start_node].parent;
-    while let Some(ancestor) = cur {
-        let matched = matches!(&tree.nodes[ancestor.0].kind, IrNodeKind::Element(anc_el)
+    let matched = |ancestor: IrNodeId| {
+        matches!(&tree.nodes[ancestor.0].kind, IrNodeKind::Element(anc_el)
             if compound_matches_element(target_comp, anc_el))
-            && match_ancestor_chain(comps, end_idx - 1, ancestor.0, tree);
-        if matched {
-            return true;
+            && match_ancestor_chain(comps, end_idx - 1, ancestor.0, tree)
+    };
+    match comps[end_idx].combinator {
+        Combinator::Child => tree.nodes[start_node].parent.is_some_and(matched),
+        Combinator::Descendant => {
+            let mut cur = tree.nodes[start_node].parent;
+            while let Some(ancestor) = cur {
+                if matched(ancestor) {
+                    return true;
+                }
+                cur = tree.nodes[ancestor.0].parent;
+            }
+            false
         }
-        cur = tree.nodes[ancestor.0].parent;
     }
-    false
 }
 
 /// 任一规则的选择器命中 node_idx。

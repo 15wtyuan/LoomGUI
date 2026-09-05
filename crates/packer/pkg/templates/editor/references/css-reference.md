@@ -141,8 +141,9 @@ so preview matches the runtime.
 
 ## Selectors
 
-A selector is a chain of compounds separated by whitespace (descendant
-combinator). Each compound is `tag? (.class | #id | [attr] | :pseudo)*`:
+A selector is a chain of compounds joined by combinators: whitespace
+(descendant — matches at any ancestor depth) or `>` (child — matches the
+direct parent only). Each compound is `tag? (.class | #id | [attr] | :pseudo)*`:
 
 - Pseudo-classes that work: `:hover`, `:active`, `:focus`, `:disabled`,
   `:checked`, `:nth-child(An+B | odd | even | N)`. They gate on live
@@ -167,7 +168,8 @@ combinator). Each compound is `tag? (.class | #id | [attr] | :pseudo)*`:
   never win); put the component's default visuals in `<style>` classes
   and reserve inline for structural layout.
 - Build errors (the diagnostic names the offending construct):
-  combinators `>` / `+` / `~` (descendant only), the universal selector
+  combinators `+` / `~` (`>` child is supported; adjacent and general
+  siblings are not), the universal selector
   `*`, unknown pseudo-classes (`:not()`, `:nth-of-type`, ...), and
   pseudo-elements other than `::part` (`::before`, `::after`, ...).
 - Attribute selectors: `[attr]` and `[attr="value"]` only; higher
@@ -181,6 +183,10 @@ Properties that do NOT exist in the fence (using any of these is a
 `FenceUnknownCssProp` build error):
 
 - `box-sizing` — there is no border-box switch; padding adds to the set width/height
+  (width:420px with padding:22px renders 464px wide). Full-bleed page roots:
+  keep `width:100vw; height:100vh` with **zero padding** and inset content via
+  the sections inside — a padded root overflows the canvas exactly like it
+  would in a browser.
 - `font-style` — no italic via CSS (and no `em` / `i` tags either)
 - `text-transform`
 - `user-select` — use `pointer-events` for interaction gating

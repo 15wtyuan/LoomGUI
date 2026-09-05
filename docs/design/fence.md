@@ -457,12 +457,12 @@ CSS 自定义属性 `--x` 与 `var()` 引用按 web 语义收窄进围栏。**�
 
 ### 阶段 4.5：`<style>` 块解析
 
-- 解析 `<style>` 标签的文本内容为 `DynamicRule` 选择器规则表（class/tag/id/后代空格/属性选择器/伪类 + specificity）。
+- 解析 `<style>` 标签的文本内容为 `DynamicRule` 选择器规则表（class/tag/id/后代空格/子代 `>`（#114）/属性选择器/伪类 + specificity）。
 - 解析 `<link rel="stylesheet">` 引入的外部 CSS——同一解析器、同一待遇（规则 + `@keyframes` + 诊断 file 落 CSS 路径）；CSS 内 `url()` 相对该 CSS 文件，解析前改写成等价的 HTML 相对路径（见 §2.1 路径基准总则）。
 - 解析 `@keyframes` at-rule 为 `KeyframesRule` 表（`from`/`to`/`N%` stop 选择器）。
 - 产出存入 `ParsedTemplate.dynamic_rules` + `ParsedTemplate.keyframes`。
 - 其他 at-rule（`@media` 等）丢弃 + 诊断。
-- **选择器解析器是手搓的**（零选择器依赖）：cssparser 只是分词器——不产选择器 AST、不算 specificity（prelude 只是一串不透明 token），要 AST 须再叠 `selectors`/`scraper`，连带拖进 fence 不需要的 HTML 解析器。spike 实证后放弃接入，手搓直产 core 类型（组合子集：class/tag/id/后代/属性/参数化伪类）。
+- **选择器解析器是手搓的**（零选择器依赖）：cssparser 只是分词器——不产选择器 AST、不算 specificity（prelude 只是一串不透明 token），要 AST 须再叠 `selectors`/`scraper`，连带拖进 fence 不需要的 HTML 解析器。spike 实证后放弃接入，手搓直产 core 类型（组合子集：class/tag/id/后代/子代/属性/参数化伪类）。
 
 ### 阶段 5：Structural（跨元素结构校验）
 
@@ -523,7 +523,7 @@ CSS 自定义属性 `--x` 与 `var()` 引用按 web 语义收窄进围栏。**�
 
 **规则**：受校验控件（`role` 在控件 role 白名单）若**无任何 `<style>` 规则的选择器命中它本身** → `FenceControlWithoutCss` error，打包失败。**必需子节点（§6.8 契约表）的每个实例同样须被命中**，任一无命中 → `FenceControlChildWithoutCss` error——本体命中只证明作者在样式控件，不证明子部件被样式（thumb 无 background = 可拖不可见的隐形滑块头）；`option`/`listitem` 多实例逐个查（存在一个被命中的不算过），template 蓝图内的 listitem 同样查。tag / class / id / 后代 / 属性选择器落地在该节点都算命中；伪类（`:hover` 等）不门控（带状态规则同样表明作者在样式控件）。**只有完全无命中才报错**。
 
-**选择器匹配**：复用 stage 4.5 解析出的 `dynamic_rules`，按 tag/class/id/attr 字面对照 IrElement 判定（fence-local，不依赖运行时 Node）。后代选择器沿祖先链逐层尝试（fence 子集只有后代组合空格，拒 `>` `+` `~`）。
+**选择器匹配**：复用 stage 4.5 解析出的 `dynamic_rules`，按 tag/class/id/attr 字面对照 IrElement 判定（fence-local，不依赖运行时 Node）。Descendant 沿祖先链逐层尝试；Child（`>`，#114）限直接父——直父不命中即整链不命中（与 core `match_element_with_state` 同款语义）。`+` `~` 仍拒。
 
 **教学文案**：指出控件无内置默认样式，再按 role 给出修复指引（`data-slot` 子节点型：progressbar/slider 引导为控件本身 + `data-slot=fill`/`thumb` 子配 CSS；switch/radio 引导 `[aria-checked]` 属性选择器；combobox 引导控件本身 + `role=listbox`/`role=option` 子；textbox/spinbutton 引导 background/border + caret-color）。
 

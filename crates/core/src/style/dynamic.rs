@@ -2465,6 +2465,85 @@ mod tests {
     }
 
     #[test]
+    fn child_combinator_matches_direct_parent_only() {
+        // #114：`>` 限直接父。三链 gp(.gp) → p(.p) → c(.c)：
+        // `.p > .c` 命中；`.gp > .c` 不命中（c 的父是 p）；`.gp .c` 命中（Descendant 回归）。
+        // hand_selector 只造 Descendant，Child 在此手工标注——解析端（fence）另有全链测试。
+        let mk = |sel: &str, child_comb: bool| {
+            let mut s = hand_selector(sel);
+            if child_comb {
+                s.raw = sel.replace(' ', " > ");
+                s.compound[1].combinator = Combinator::Child;
+            }
+            s
+        };
+        let mut gp = Node::default();
+        gp.classes = vec!["gp".to_string()];
+        let mut p = Node::default();
+        p.classes = vec!["p".to_string()];
+        let mut c = Node::default();
+        c.classes = vec!["c".to_string()];
+        let mut s = Scene::from_nodes(vec![gp, p, c], vec![(0, 1), (1, 2)]);
+        let gp_id = s.roots[0];
+        let p_id = s.get(gp_id).unwrap().children[0];
+        let c_id = s.get(p_id).unwrap().children[0];
+
+        push_global(
+            &mut s,
+            DynamicRule {
+                selector: mk(".p .c", true),
+                declarations: vec![Declaration {
+                    prop: "color".to_string(),
+                    value: "#ff0000".to_string(),
+                }],
+            },
+        );
+        rematch_pseudo_classes(&mut s, (1080.0, 1920.0), [0.0; 4]);
+        assert_eq!(
+            s.get(c_id).unwrap().style.color,
+            [1.0, 0.0, 0.0, 1.0],
+            "直父命中 → 红"
+        );
+
+        // .gp > .c：祖父非直父，Child 不命中
+        let mut s = Scene::from_nodes(
+            vec![Node::default(), Node::default(), Node::default()],
+            vec![(0, 1), (1, 2)],
+        );
+        let gp_id = s.roots[0];
+        let p_id = s.get(gp_id).unwrap().children[0];
+        let c_id = s.get(p_id).unwrap().children[0];
+        s.get_mut(gp_id).unwrap().classes = vec!["gp".to_string()];
+        s.get_mut(p_id).unwrap().classes = vec!["p".to_string()];
+        s.get_mut(c_id).unwrap().classes = vec!["c".to_string()];
+        push_global(
+            &mut s,
+            DynamicRule {
+                selector: mk(".gp .c", true),
+                declarations: vec![Declaration {
+                    prop: "color".to_string(),
+                    value: "#ff0000".to_string(),
+                }],
+            },
+        );
+        rematch_pseudo_classes(&mut s, (1080.0, 1920.0), [0.0; 4]);
+        assert_ne!(
+            s.get(c_id).unwrap().style.color,
+            [1.0, 0.0, 0.0, 1.0],
+            "祖父隔代 → Child 不命中"
+        );
+
+        // .gp .c：同结构 Descendant 命中——锁 Child/Descendant 语义区分
+        push_global(&mut s, rule(".gp .c", "color", "#00ff00"));
+        rematch_pseudo_classes(&mut s, (1080.0, 1920.0), [0.0; 4]);
+        assert_eq!(
+            s.get(c_id).unwrap().style.color,
+            [0.0, 1.0, 0.0, 1.0],
+            "同结构 Descendant 命中 → 绿"
+        );
+    }
+
+    #[test]
     fn no_pseudo_rule_not_in_dynamic_rules() {
         // 纯静态规则不进 dynamic_rules（打包器分流）——rematch 不区分有无伪类，
         // 只看状态门。若纯静态规则混进 dynamic，hovered=true 时仍匹配（无伪类规则恒匹配）。

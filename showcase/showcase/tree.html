@@ -9,7 +9,7 @@
      样式钩子全是 synth aria 属性选择器（core 从 ControlState 合成，作者 HTML 不写）：
      [aria-selected] 选中高亮 / [aria-expanded] 折叠箭头旋转 / [aria-level] 缩进层级。 */
   .root {display:flex; width:100vw; height:100vh; padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); background-color:#0e1620; flex-direction:row; }
-  .sidebar {display:flex;flex-direction:column; width:280px; background-color:rgba(21,36,51,0.72); padding:32px 20px; gap:6px; border-width:0 1px 0 0; border-style:solid; border-color:#2a5a75; }
+  .sidebar {display:flex;flex-direction:column; width:239px; background-color:rgba(21,36,51,0.72); padding:32px 20px; gap:6px; border-width:0 1px 0 0; border-style:solid; border-color:#2a5a75; }
   .side-back { color:#8ec5d8; font-size:14px; margin-bottom:20px; }
   .side-title { color:#e0e6ec; font-size:22px; font-weight:700; margin-bottom:8px; }
   .side-desc { color:#6c7080; font-size:12px; margin-bottom:20px; }
@@ -18,28 +18,30 @@
   .api-row {display:flex; flex-direction:row; gap:10px; margin-top:18px; }
   .api-btn { color:#e0e6ec; font-size:13px; padding:8px 14px; border-radius:8px; background-color:rgba(26,47,69,0.85); border-width:0 0 0 2px; border-style:solid; border-color:#2a5a75; }
   .api-btn:hover { border-color:#5fb4d4; color:#5fb4d4; }
-  .tree-pane {display:flex;flex-direction:column; width:320px; padding:32px 8px; gap:4px; overflow-y:auto; }
+  .tree-pane {display:flex;flex-direction:column; width:304px; padding:32px 8px; gap:4px; overflow-y:auto; }
   .pane-title { color:#e0e6ec; font-size:18px; font-weight:700; padding:0 12px 12px 12px; }
   /* 树条目：label 一律走 .row 子元素（branch = 箭头 + 文字 + 计数徽章，leaf = 纯文字）——
      悬停/选中/缩进钩子全挂 .row，裸文本叶拿不到任何交互样式（选中了也看不见）。
      branch 宿主嵌套条目为 block 子，纯文本 label 会触发 FenceMixedInlineBlock。
-     已知边界：选中钩子 [aria-selected] .row 是后代选择器（围栏子集只收后代组合器，拒 >），
-     选中含嵌套 branch 的条目（材料）会把嵌套 branch 行（金属）一并点亮——web 同源同表现。 */
+     状态钩子全部走子代组合器 >（#114 放行）：状态属性在 treeitem 宿主、视觉落直接子 .row/
+     .chev/.cnt——后代选择器会连带命中嵌套同构条目（选「材料」点亮嵌套「金属」行、展开
+     「材料」旋转「金属」箭头四症状），直子化后宿主状态只作用于自己那行。 */
   .tree {display:flex;flex-direction:column; gap:2px; }
   [role="treeitem"] {display:flex;flex-direction:column; color:#9aa0b4; font-size:15px; border-radius:8px; }
   .row {display:flex;flex-direction:row; align-items:center; gap:8px; padding:10px 12px; border-radius:8px; }
   /* 悬浮 vs 选中刻意分层：悬浮 = 中性弱底（仅提示可点）；选中 = 主题色染底 + 亮字 + 粗体。
      两态同色时用户分不清「指着」还是「选中了」——视觉必须可辨。 */
-  [role="treeitem"]:hover .row { background-color:rgba(26,47,69,0.45); }
-  [role="treeitem"][aria-selected="true"] .row { background-color:rgba(95,180,212,0.16); color:#5fb4d4; font-weight:700; }
+  [role="treeitem"]:hover > .row { background-color:rgba(26,47,69,0.45); }
+  [role="treeitem"][aria-selected="true"] > .row { background-color:rgba(95,180,212,0.16); color:#5fb4d4; font-weight:700; }
   /* 折叠箭头：▸ 旋转 90° 表展开（transform transition 顺带演示过渡）。 */
   .chev { color:#6c7080; font-family:"DejaVuSans",serif; font-size:12px; transition:transform .15s; }
-  [role="treeitem"][aria-expanded="true"] .chev { transform:rotate(90deg); color:#5fb4d4; }
+  [role="treeitem"][aria-expanded="true"] > .row > .chev { transform:rotate(90deg); color:#5fb4d4; }
   .cnt { color:#6c7080; font-size:12px; }
-  [role="treeitem"][aria-selected="true"] .cnt { color:#5fb4d4; }
-  /* 层级缩进走 [aria-level]（synth：顶层=1，嵌套深度即层级——作者不手写 class）。 */
-  [role="treeitem"][aria-level="2"] .row { padding-left:36px; }
-  [role="treeitem"][aria-level="3"] .row { padding-left:60px; }
+  [role="treeitem"][aria-selected="true"] > .row > .cnt { color:#5fb4d4; }
+  /* 层级缩进走 [aria-level]（synth：顶层=1，嵌套深度即层级——作者不手写 class）。
+     直子化顺带消掉旧后代形态的层间规则竞速（level-2/3 后代都命中嵌套 row，靠书写序决胜）。 */
+  [role="treeitem"][aria-level="2"] > .row { padding-left:36px; }
+  [role="treeitem"][aria-level="3"] > .row { padding-left:60px; }
   .main {display:flex;flex-direction:column; flex-grow:1; padding:48px; gap:16px; }
   .main-title { color:#e0e6ec; font-size:36px; font-weight:700; }
   .grid {display:flex;flex-direction:row; flex-wrap:wrap; gap:12px; }
