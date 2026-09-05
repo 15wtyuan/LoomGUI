@@ -8,6 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Changed
+- **box-sizing 契约定版 content-box（#116，breaking）**：尺寸语义 = CSS 规范初始值——
+  `padding adds to the set width/height`（`width:420px + padding:22px` 渲染 464 外框），
+  `box-sizing` 声明依旧围栏硬拒、报错文案改为 content-box 减法指引。五层收敛：core 钉
+  ContentBox 不动；fence 报错文案改写（曾与契约矛盾八个月）；preview base.css / rect-diff
+  reset.css 去除 `*{box-sizing:border-box}` 重置（预览对拍器从此说真话），并中立化 Chrome
+  UA 对 form 控件自钉的 border-box；showcase 17 页 55 条「显式尺寸+padding」规则手算折算。
+  **根节点语义**：solve 期把 Stage 钉入的 root_size 以 `box_sizing=BorderBox` 覆写根 taffy
+  style（浏览器 ICB 同构）——root 自身 padding 内缩而非外溢出画布；全屏页惯用法 =
+  `width:100vw; height:100vh` + 零 padding，内缩交给子级（home 页已按此改写）。
+- **围栏选择器放行子代组合器 `>`（#114）**：复合控件嵌套态样式作用域——状态属性在控件
+  宿主（`[aria-selected]` 等）、视觉落在直接子 wrapper 时，后代选择器会连带命中嵌套同构
+  后代（选「材料」点亮嵌套「金属」行）；`>` 限直接父，`+`/`~` 继续拒。core 匹配器
+  Child 语义既有（scope 批已实现，本批补单测），打包期 control-css 命中校验同步 Child。
+  fence.md / css-reference.md 组合器小节同步。
 - **项目更名 Ikat → Yio（breaking）**：品牌、crate 与二进制名（`ikat_core`→`yio_core` 等、
   `ikat`→`yio`、`ikat_gui.exe`→`yio_gui.exe`）、DLL 与 FFI 符号前缀（`ikat_ffi_c.dll`→
   `yio_ffi_c.dll`、`ikat_*`→`yio_*`）、C# 命名空间与程序集（`Ikat.*`→`Yio.*`）、Unity 包 id

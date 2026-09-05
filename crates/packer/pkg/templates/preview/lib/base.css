@@ -2,9 +2,12 @@
    路由供给 /yio-preview/lib/base.css；boot.js 自动注入 head 顶部）。
    只含「与 core 渲染约定对齐」的结构性 polyfill——主题（配色/字体）是消费侧资产，
    @font-face 归工作区自己的 preview 样式，不在此处。
-   polyfill-only：打包器只消费 body，head 不进 pkg.bin。 */
+   polyfill-only：打包器只消费 body，head 不进 pkg.bin。
 
-* { box-sizing: border-box; }
+   无 box-sizing 重置（#116）：契约 = CSS 初始值 content-box（core 钉 ContentBox），
+   浏览器 UA 缺省本就是 content-box——预览侧与 core 天然同语义，任何重置都会让
+   预览说谎（#116 实锤：border-box 重置使 .root 假装 1920×1080，core 实解 2016×1176）。 */
+
 /* iframe 视口 = 设计视口：body 零包装——core 页面根从 (0,0) 起，浏览器默认
    margin:8px 会整体平移出 rect-diff 系统性偏移。 */
 body { margin: 0; }
@@ -14,13 +17,16 @@ body { margin: 0; }
 html, body { height: 100%; }
 /* button 的 UA 外观（灰底/边框/字体链）与 core 自绘 Button 不符 → 裸化；
    cursor:pointer 对齐 #93 的运行时手型意图（浏览器原生渲染手型；Unity 侧
-   渲染取决于消费侧是否经 SetCursorTexture 注册贴图）。 */
+   渲染取决于消费侧是否经 SetCursorTexture 注册贴图）。
+   Chrome UA 对 button/input/select/textarea 自钉 box-sizing:border-box（div 无此
+   待遇）——须显式中立化回 content-box，否则尺寸语义在控件与非控件间劈叉（#116）。 */
 button {
   background: none;
   border: none;
   color: inherit;
   font: inherit;
   padding: 0;
+  box-sizing: content-box;
   cursor: pointer;
   text-decoration: none;
 }

@@ -9,9 +9,12 @@
   .col-list {display:flex; width:680px; flex-direction:column; gap:12px; overflow-y:auto; }
   .col-title { color:#e0e6ec; font-size:22px; font-weight:700; margin-bottom:4px; }
   .grid {display:flex; flex-direction:row; flex-wrap:wrap; gap:12px; }
-  .item {display:flex;flex-direction:column; width:120px; height:120px; background-color:rgba(21,36,51,0.72); border-radius:10px; padding:10px; gap:6px; align-items:center; position:relative; transition:transform .15s, background-color .15s; }
+  /* #116 content-box 适配：声明值 = 原 border-box 外框 − padding − 常驻透明 border。
+     3px 透明左框常驻（content-box 下动态加框会外扩 3px 顶开兄弟；border-box 世界
+     选中边框内含、外框恒 120）——.selected 只换色，外框两种状态逐像素稳定。 */
+  .item {display:flex;flex-direction:column; width:97px; height:100px; background-color:rgba(21,36,51,0.72); border:3px solid transparent; border-radius:10px; padding:10px; gap:6px; align-items:center; position:relative; transition:transform .15s, background-color .15s; }
   .item:hover { transform:scale(1.05); background-color:rgba(26,47,69,0.85); }
-  .item.selected { border-width:0 0 0 3px; border-style:solid; border-color:#d4a44e; }
+  .item.selected { border-color:#d4a44e; }
   .item-icon { width:56px; height:56px; }
   .item-badge { position:absolute; top:6px; right:6px; background-color:#d4a44e; color:#0e1620; font-size:12px; font-weight:700; padding:1px 6px; border-radius:10px; }
   /* ProgressBar（item-dur）：控件本身是轨道，作者写 data-slot=fill 子节点（width:% 由 value 驱动） */

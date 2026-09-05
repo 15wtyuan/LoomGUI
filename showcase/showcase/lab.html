@@ -14,7 +14,7 @@
   .specimen {display:flex;flex-direction:column; background-color:#0e1620; border-radius:8px; padding:16px; gap:12px; }
   /* fx-demo 固定宽：留出多余空间让 justify-content / align-items 的分布效果肉眼可见
      （content-sized 容器无富余空间，justify 无区别——标本馆 v1 看不懂的根因）。 */
-  .fx-demo {display:flex; flex-direction:row; gap:8px; background-color:#1a2f45; padding:10px; border-radius:6px; width:300px; }
+  .fx-demo {display:flex; flex-direction:row; gap:8px; background-color:#1a2f45; padding:10px; border-radius:6px; width:280px; }
   /* fx-item：自然 span+padding（无显式 display/尺寸）。A 修复后 span 走 rich_text_block，
      text+padding 作为整体正确测量（≈浏览器 inline span），不再是 flex 容器丢测量的变形方块。 */
   .fx-item { background-color:#2a5a75; color:#e0e6ec; padding:12px 18px; border-radius:4px; font-size:16px; }
@@ -91,7 +91,7 @@
   .vf-gray { filter:grayscale(1); background-color:#d4a44e; }
   .vf-bright { filter:brightness(1.4); background-color:#d4a44e; }
   .vf-hue { filter:hue-rotate(120deg); background-color:#c2605a; }
-  .ov-box { width:280px; height:80px; background-color:#1a2f45; border-radius:6px; padding:8px; }
+  .ov-box { width:264px; height:64px; background-color:#1a2f45; border-radius:6px; padding:8px; }
   .ov-scroll { overflow-y:scroll; }
   .ov-auto { overflow-y:auto; }
   .ov-hidden { overflow:hidden; }
@@ -109,7 +109,7 @@
   .bs-offset     { box-shadow:8px 8px 12px #000a; }                            /* 右下偏移 */
   .bs-radius     { border-radius:24px; box-shadow:0 8px 20px #000a; }          /* 大圆角 + shadow */
   /* I1：blur shadow 在圆角 overflow 容器内（SHADOW_BLUR ∩ CLIPPED_ROUNDED 合成——final-review 修复路径）*/
-  .bs-i1-clip    { width:220px; height:64px; background-color:#1a2f45; border-radius:16px; overflow:hidden; padding:8px; }
+  .bs-i1-clip    { width:204px; height:48px; background-color:#1a2f45; border-radius:16px; overflow:hidden; padding:8px; }
   .bs-i1-inner   { width:120px; height:40px; background-color:#2a5a75; border-radius:8px; box-shadow:0 10px 24px #000c; }
   /* 渐变标本矩阵（linear 多 stop / 任意角度 / radial 全形——v34 program=6 per-fragment shader）。
      注意：无 border-radius——渐变与圆角目前互斥（use_gradient 门），带圆角会静默丢渐变。 */
@@ -132,7 +132,7 @@
   .grad-under   { background-color:#3a2a1a; background-image:radial-gradient(circle at 50% 100%,rgba(212,164,78,0.9),rgba(212,164,78,0)); } /* bg-color 垫底合成 */
   .grad-txt3 { font-size:28px; font-weight:700; background-image:linear-gradient(137deg,#5fb4d4,#8ec5d8,#d4a44e); -webkit-background-clip:text; background-clip:text; color:#00000000; } /* 多 stop 任意角渐变字 */
   /* §18 换行控制全集（#73）：固定窄盒 + 亮边框，断行/溢出/行首字符一眼可辨。 */
-  .ws-box { width:230px; background-color:#1a2f45; border-radius:6px; padding:10px; display:flex; flex-direction:column; gap:6px; }
+  .ws-box { width:210px; background-color:#1a2f45; border-radius:6px; padding:10px; display:flex; flex-direction:column; gap:6px; }
   .ws-label { color:#9aa0b4; font-size:12px; }
   .ws-case { border-color:#3a5a78; border-style:solid; border-width:1px; padding:8px; font-size:14px; color:#e0e6ec; }
   .ws-nowrap { white-space:nowrap; }

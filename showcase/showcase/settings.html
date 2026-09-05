@@ -5,7 +5,7 @@
   <title>Yio 靶子冻结 Showcase · 设置</title>
   <style>
   .root {display:flex; width:100vw; height:100vh; padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); background-color:#0e1620; flex-direction:row; }
-  .sidebar {display:flex;flex-direction:column; width:260px; background-color:rgba(21,36,51,0.72); padding:32px 20px; gap:6px; border-width:0 1px 0 0; border-style:solid; border-color:#2a5a75; }
+  .sidebar {display:flex;flex-direction:column; width:219px; background-color:rgba(21,36,51,0.72); padding:32px 20px; gap:6px; border-width:0 1px 0 0; border-style:solid; border-color:#2a5a75; }
   .side-back { color:#8ec5d8; font-size:14px; margin-bottom:20px; }
   .side-title { color:#e0e6ec; font-size:22px; font-weight:700; margin-bottom:20px; }
   .tablist { display:flex; flex-wrap:wrap; gap:4px; }
@@ -23,13 +23,16 @@
   /* 文本控件无 UA 样式表：必须由 CSS 提供 background/border（围栏 CSS 契约校验）。
      caret-color = 光标色；selection-background = 选区高亮（私有属性平铺）。
      role 驱动：[role=textbox] 单/多行、[role=spinbutton] 数值、[role=combobox] 下拉。 */
-  [role="textbox"], [role="spinbutton"], [role="combobox"] { background-color:rgba(21,36,51,0.72); border-width:0 0 0 2px; border-style:solid; border-color:#2a5a75; color:#e0e6ec; font-size:15px; padding:8px 12px; border-radius:4px; caret-color:#5fb4d4; selection-background:rgba(95,180,212,0.45); width:240px; }
+  [role="textbox"], [role="spinbutton"], [role="combobox"] { background-color:rgba(21,36,51,0.72); border-width:0 0 0 2px; border-style:solid; border-color:#2a5a75; color:#e0e6ec; font-size:15px; padding:8px 12px; border-radius:4px; caret-color:#5fb4d4; selection-background:rgba(95,180,212,0.45); width:214px; }
   /* Dropdown (combobox)：作者写 data-slot=value（显示选中项）+ role=listbox（弹出）> role=option。
-     Yio 下拉无内建箭头——如需箭头作者自绘。core sync 切 listbox display + 写 value slot 文本。 */
-  [role="combobox"] { position:relative; display:block; width:200px; height:36px; }
-  [role="combobox"] [data-slot="value"] { position:absolute; left:0; top:0; width:100%; height:100%; display:flex; align-items:center; padding:0 12px; color:#e0e6ec; font-size:15px; }
-  [role="combobox"] [role="listbox"] { display:none; position:absolute; left:0; top:100%; width:200px; background-color:rgba(15,24,36,0.96); border-width:0 0 0 2px; border-style:solid; border-color:#2a5a75; border-radius:4px; padding:4px 0; }
-  [role="combobox"] [role="option"] { display:block; width:200px; height:32px; padding:0 12px; color:#e0e6ec; font-size:15px; }
+     Yio 下拉无内建箭头——如需箭头作者自绘。core sync 切 listbox display + 写 value slot 文本。
+     #116 content-box 适配：host 的 200×36 外框 = 26 行 padding(24/16)+border(2) 内含，
+     content 声明 = 174×20；value 插槽由 left:0+width:100%+自身padding 改双锚
+     left/right:12px（box 无背景，文本落点逐像素不变）。 */
+  [role="combobox"] { position:relative; display:block; width:174px; height:20px; }
+  [role="combobox"] [data-slot="value"] { position:absolute; left:12px; right:12px; top:0; height:100%; display:flex; align-items:center; color:#e0e6ec; font-size:15px; }
+  [role="combobox"] [role="listbox"] { display:none; position:absolute; left:0; top:100%; width:198px; background-color:rgba(15,24,36,0.96); border-width:0 0 0 2px; border-style:solid; border-color:#2a5a75; border-radius:4px; padding:4px 0; }
+  [role="combobox"] [role="option"] { display:block; width:176px; height:32px; padding:0 12px; color:#e0e6ec; font-size:15px; }
   .checkbox-row {display:flex; flex-direction:row; align-items:center; gap:10px; color:#9aa0b4; }
   .radio-group {display:flex; flex-direction:row; gap:20px; }
   .radio-opt {display:flex; flex-direction:row; align-items:center; gap:6px; color:#9aa0b4; font-size:15px; }

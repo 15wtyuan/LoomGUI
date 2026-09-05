@@ -23,7 +23,8 @@ there. The preview server closes that gap in **two layers** (#92):
   core's style-wall semantics, including root-class rules on the template
   root. It also wires control semantics (slider/combobox/switch/spinbutton/
   tabs/trees/dialogs/progressbar/textbox) and injects the structural base polyfill
-  (`box-sizing`, button reset, placeholder line). Its content is embedded
+  (button reset, placeholder line; no box-sizing reset — the contract is CSS
+  default content-box on both sides, #116). Its content is embedded
   in the running `yio` binary — always version-matched to the CLI. You
   never copy or reimplement any of this; a workspace copy would rot into a
   second source of truth (this happened in dogfooding; it is now a design

@@ -22,8 +22,10 @@
   .loot { color:#d4a44e; font-weight:700; }
   .sys { color:#5fb4d4; font-weight:700; }
   .enemy { color:#c2605a; font-weight:700; }
-  /* TextArea（多行 textbox）：无 UA 样式表，CSS 须提供 background/border + caret-color（围栏 CSS 契约） */
-  [role="textbox"][aria-multiline="true"] { width:100%; height:96px; resize:none; font-family:inherit; background-color:rgba(14,22,32,0.85); border-width:0 0 0 2px; border-style:solid; border-color:#2a5a75; color:#e0e6ec; font-size:15px; padding:10px 14px; border-radius:6px; caret-color:#5fb4d4; selection-background:rgba(95,180,212,0.45); }
+  /* TextArea（多行 textbox）：无 UA 样式表，CSS 须提供 background/border + caret-color（围栏 CSS 契约）
+     #116 content-box 适配：去掉 width:100%（父为 flex column，交叉轴 stretch 撑满同宽），
+     height 声明 = 原外框 96 − 纵向 padding 20 = 76。 */
+  [role="textbox"][aria-multiline="true"] { height:76px; resize:none; font-family:inherit; background-color:rgba(14,22,32,0.85); border-width:0 0 0 2px; border-style:solid; border-color:#2a5a75; color:#e0e6ec; font-size:15px; padding:10px 14px; border-radius:6px; caret-color:#5fb4d4; selection-background:rgba(95,180,212,0.45); }
   .reply-row {display:flex; flex-direction:row; gap:12px; align-items:flex-end; }
   .reply-btn { padding:10px 20px; border-radius:8px; background-color:#d4a44e; color:#0e1620; font-size:14px; font-weight:700; white-space:nowrap; }
   @keyframes breathe { 0%,100%{opacity:1} 50%{opacity:.4} }

@@ -11,7 +11,7 @@
   .section {display:flex;flex-direction:column; background-color:#152433; border-radius:12px; padding:22px; gap:12px; }
   .section-title { color:#8ec5d8; font-size:19px; font-weight:700; }
   .section-desc { color:#9aa0b4; font-size:13px; }
-  .stage {display:flex; flex-direction:row; gap:28px; align-items:center; flex-wrap:wrap; background-color:#0e1620; border-radius:8px; padding:18px 22px; min-height:92px; }
+  .stage {display:flex; flex-direction:row; gap:28px; align-items:center; flex-wrap:wrap; background-color:#0e1620; border-radius:8px; padding:18px 22px; min-height:56px; }
   .stage-col {display:flex;flex-direction:column; gap:6px; }
   .label { color:#6c7080; font-size:12px; }
   .note { color:#6c7080; font-size:12px; }
@@ -29,9 +29,9 @@
      listbox 弹层契约（同 form 页）：combobox position:relative 锚点 + listbox
      display:none 初态 / position:absolute 脱流 / top:100% 基线（core 视口翻转走
      transform，缺脱流会把容器撑开）。 */
-  [role="combobox"] { position:relative; background-color:#101c28; border-radius:8px; box-shadow:inset 0 0 0 1px #2a5a75; width:280px; padding:10px 14px; }
+  [role="combobox"] { position:relative; background-color:#101c28; border-radius:8px; box-shadow:inset 0 0 0 1px #2a5a75; width:252px; padding:10px 14px; }
   [role="combobox"] [data-slot="value"] { color:#e0e6ec; font-size:14px; }
-  [role="combobox"] [role="listbox"] { display:none; position:absolute; left:0; top:100%; width:100%; background-color:#0f1824; border-width:0 0 0 2px; border-style:solid; border-color:#2a5a75; border-radius:4px; padding:4px 0; }
+  [role="combobox"] [role="listbox"] { display:none; position:absolute; left:0; top:100%; right:0; background-color:#0f1824; border-width:0 0 0 2px; border-style:solid; border-color:#2a5a75; border-radius:4px; padding:4px 0; }
   [role="combobox"] [role="option"] { display:block; background-color:#152433; color:#c8d4e0; font-size:14px; padding:8px 12px; }
   [role="option"]:hover { background-color:#1d3a52; }
 
@@ -46,16 +46,18 @@
      克隆 template 占位，行样式切换是 Unity 运行时（BindItem）行为。 */
   [role="list"] { background-color:#101c28; border-radius:8px; }
   [role="listitem"] { background-color:#152433; }
-  .mt-list {display:flex;flex-direction:column;gap:8px; width:520px; height:340px; overflow-y:auto; padding:10px;}
+  .mt-list {display:flex;flex-direction:column;gap:8px; width:500px; height:320px; overflow-y:auto; padding:10px;}
   .mt-row {display:flex;flex-direction:row;align-items:center;gap:12px; border-radius:8px; padding:10px 14px;}
   .mt-idx { color:#6c7080; font-size:12px; font-family:JetBrainsMono, monospace; }
   .mt-title { color:#c8d4e0; font-size:14px; }
-  /* 强调行视觉烙进 row-tpl-accent 蓝图（高度也分化：64 vs 44——多模板估高按蓝图走）。 */
-  .mt-row-accent { background-color:#2a2233; box-shadow:inset 3px 0 0 0 #d4a44e; height:64px; }
-  .mt-row { height:44px; }
+  /* 强调行视觉烙进 row-tpl-accent 蓝图（高度也分化：64 vs 44——多模板估高按蓝图走）。
+     #116 content-box 适配：声明值一律 content 高 = 原 border-box 外框 − 纵向 padding
+     （44−20 / 64−20），外框尺寸与迁移前逐像素等值。 */
+  .mt-row-accent { background-color:#2a2233; box-shadow:inset 3px 0 0 0 #d4a44e; height:44px; }
+  .mt-row { height:24px; }
 
   /* #7 unload 演示舞台。 */
-  .ul-stage {display:flex;flex-direction:row;gap:14px;align-items:center;flex-wrap:wrap; min-height:80px; width:760px; border-radius:8px; background-color:#101c28; padding:14px;}
+  .ul-stage {display:flex;flex-direction:row;gap:14px;align-items:center;flex-wrap:wrap; min-height:52px; width:732px; border-radius:8px; background-color:#101c28; padding:14px;}
   </style>
 </head>
 <body>

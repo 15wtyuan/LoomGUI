@@ -9,7 +9,7 @@
      被整体饿死（小窗外的按钮也点不动）。none 后只有小窗面板（auto）是本 Stage 的
      命中面，窗外点击落回主 Stage。与主 Stage 同一共享 ResourceHost：字体只注册一次。 */
   .root {display:flex;flex-direction:column; width:100vw; height:100vh; padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); background-color:#0e162000; pointer-events:none; }
-  .mh-panel {position:absolute; left:16px; bottom:16px; display:flex;flex-direction:column; width:360px; gap:12px; background-color:rgba(33,51,36,0.88); border-width:2px; border-style:solid; border-color:#5fb4d4; border-radius:10px; padding:20px 24px; z-index:0; pointer-events:auto; }
+  .mh-panel {position:absolute; left:16px; bottom:16px; display:flex;flex-direction:column; width:308px; gap:12px; background-color:rgba(33,51,36,0.88); border-width:2px; border-style:solid; border-color:#5fb4d4; border-radius:10px; padding:20px 24px; z-index:0; pointer-events:auto; }
   .mh-title { color:#a8e6a0; font-size:16px; font-weight:700; }
   .mh-desc { color:#9aa0b4; font-size:12px; }
   .mh-btn { background-color:#5fb4d4; color:#0e1620; font-size:14px; font-weight:700; padding:6px 16px; border-radius:8px; }

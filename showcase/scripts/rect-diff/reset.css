@@ -1,7 +1,11 @@
 /* A1 reset: strip browser UA defaults so the browser baseline matches Yio's
    no-UA-stylesheet layout. Only zeroes UA-only values; showcase <style> rules
-   still apply on both sides, keeping absolute coordinates comparable. */
-* { box-sizing: border-box; }
+   still apply on both sides, keeping absolute coordinates comparable.
+
+   No box-sizing reset (#116): the contract is CSS default content-box on BOTH
+   sides (core pins ContentBox, browsers default to it). A border-box reset here
+   made the comparator lie — every "explicit size + padding" rule produced
+   systematic false diffs after v57 (c30b9945). */
 /* Neutralize preview-base.css's body chrome (display:flex; justify-content:
    center; padding:24px; min-height:100vh) — that wrapper is preview-only
    aesthetic with no core counterpart (pkg.bin consumes `body *`, never body
@@ -19,8 +23,11 @@ body {
 h1,h2,h3,h4,h5,h6,p,ul,ol,li,div { margin: 0; padding: 0; }
 ul,ol { list-style: none; }
 /* Form elements: strip UA padding/border/font so browser matches Yio (no UA
-   stylesheet). Showcase CSS then applies its own button/input styles on top. */
+   stylesheet). Showcase CSS then applies its own button/input styles on top.
+   Chrome's UA sheet pins box-sizing:border-box on form controls — neutralize it
+   too (the fence contract is content-box everywhere; #116). */
 button,input,select,textarea {
   margin: 0; padding: 0; border: 0; background: none;
   font: inherit; color: inherit; text-align: inherit;
+  box-sizing: content-box;
 }

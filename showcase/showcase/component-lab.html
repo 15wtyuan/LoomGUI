@@ -9,7 +9,7 @@
      动态加挂（widget-holder 持有者模板）/ 销毁最后。判据 = 肉眼强信号：
      组件出现/消失 + 连接/断开计数读数翻转。 */
   .root {display:flex; width:100vw; height:100vh; padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); background-color:#0e1620; flex-direction:row; }
-  .sidebar {display:flex;flex-direction:column; width:280px; background-color:rgba(21,36,51,0.72); padding:32px 20px; gap:6px; border-width:0 1px 0 0; border-style:solid; border-color:#2a5a75; }
+  .sidebar {display:flex;flex-direction:column; width:239px; background-color:rgba(21,36,51,0.72); padding:32px 20px; gap:6px; border-width:0 1px 0 0; border-style:solid; border-color:#2a5a75; }
   .side-back { color:#8ec5d8; font-size:14px; margin-bottom:20px; }
   .side-title { color:#e0e6ec; font-size:22px; font-weight:700; margin-bottom:8px; }
   .side-desc { color:#6c7080; font-size:12px; margin-bottom:20px; }
@@ -25,8 +25,8 @@
   /* 列表换绑淘汰摆台（#20 pump 路径）：外层 pane 定高 + overflow:scroll 是滚动
      视口；列表自身 height auto（虚拟化不变量——core 拒绝列表定高，head/tail
      spacer 撑滚动内容）+ block 流纵向堆叠；行距走 margin（block 无 flex gap）。 */
-  .cl-pane { width:640px; height:560px; overflow:scroll; padding:10px; background-color:#101c28; border-radius:8px; }
-  .cl-list { display:block; width:620px; }
+  .cl-pane { width:620px; height:540px; overflow:scroll; padding:10px; background-color:#101c28; border-radius:8px; }
+  .cl-list { display:block; width:600px; }
   .cl-row { margin-bottom:8px; }
   .cl-plain { color:#9aa0b4; font-size:13px; }
   /* ::part() 穿墙（#57）：页面规则穿组件内容墙命中组件内部 part 标记节点。

@@ -47,9 +47,10 @@ document.head.insertBefore(link, document.head.firstChild);
 `preview-theme.css` (name it anything) holds workspace-owned styling:
 
 - Theme colors/backgrounds/decoration. Do **not** re-declare structural
-  resets already owned by `/yio-preview/lib/base.css` (`box-sizing`,
-  button reset, placeholder line) — same-name rules here would fight the
-  framework copy as a second truth.
+  resets already owned by `/yio-preview/lib/base.css` (button reset,
+  placeholder line) — same-name rules here would fight the
+  framework copy as a second truth. (box-sizing needs no reset anywhere:
+  the contract is CSS default content-box on both sides, #116.)
 - Fonts need nothing here: the server auto-injects `@font-face` for every
   font in `yio.workspace.json` plus a default-family `body` rule
   (injected before your stylesheets, so your CSS wins). Hand-written

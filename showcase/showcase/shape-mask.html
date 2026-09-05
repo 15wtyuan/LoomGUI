@@ -8,7 +8,7 @@
      transform 局部系 + 运行时注入（Add 类规则 / var() 换形）+ circle 对角线语义/at/交集。
      判据 = 肉眼强信号（角被裁/轮廓/穿透读数翻/旋转可见/胶囊形/平边弧/换形）。 */
   .root {display:flex; width:100vw; height:100vh; padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); background-color:#0e1620; flex-direction:row; }
-  .sidebar {display:flex;flex-direction:column; width:280px; background-color:rgba(21,36,51,0.72); padding:32px 20px; gap:6px; border-width:0 1px 0 0; border-style:solid; border-color:#2a5a75; }
+  .sidebar {display:flex;flex-direction:column; width:239px; background-color:rgba(21,36,51,0.72); padding:32px 20px; gap:6px; border-width:0 1px 0 0; border-style:solid; border-color:#2a5a75; }
   .side-back { color:#8ec5d8; font-size:14px; margin-bottom:20px; }
   .side-title { color:#e0e6ec; font-size:22px; font-weight:700; margin-bottom:8px; }
   .side-desc { color:#6c7080; font-size:12px; margin-bottom:20px; }
@@ -49,7 +49,7 @@
   /* D 嵌套链：矩形滚动视口 × 圆头像行。判据：滚动时头像被视口边裁（rect∩circle 链）。 */
   /* border-radius + overflow:auto = 圆角 viewport 裁剪链（祖先圆角传播，#52）：
      滚到角时头像被圆角边裁——对齐浏览器行为。 */
-  .sm-scroll {display:flex;flex-direction:column; width:280px; height:132px; overflow:auto; background-color:rgba(21,36,51,0.72); padding:10px; gap:10px; border-radius:18px; }
+  .sm-scroll {display:flex;flex-direction:column; width:260px; height:112px; overflow:auto; background-color:rgba(21,36,51,0.72); padding:10px; gap:10px; border-radius:18px; }
   .sm-scroll-row {display:flex; flex-direction:row; gap:12px; }
   .sm-avatar-s { width:64px; height:64px; clip-path:circle(50%); }
   .sm-slot-s {display:flex; align-items:center; justify-content:center; width:64px; height:64px; background-color:#2a5a75; clip-path:polygon(50% 0%, 100% 50%, 50% 100%, 0% 50%); }
