@@ -24,6 +24,33 @@
       ],
       "max_size": 1024,
       "padding": 4
+    },
+    {
+      "name": "evict-a",
+      "standalone": false,
+      "dirs": [
+        "res/evict-a"
+      ],
+      "max_size": 1024,
+      "padding": 4
+    },
+    {
+      "name": "evict-b",
+      "standalone": false,
+      "dirs": [
+        "res/evict-b"
+      ],
+      "max_size": 1024,
+      "padding": 4
+    },
+    {
+      "name": "evict-c",
+      "standalone": false,
+      "dirs": [
+        "res/evict-c"
+      ],
+      "max_size": 1024,
+      "padding": 4
     }
   ],
   "fonts": [

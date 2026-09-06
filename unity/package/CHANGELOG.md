@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **图集页纹理逐出（#62）**：`SpriteResolver` 页缓存从「懒加载永不释放」升级为
+  expireAfterAccess 逐出——页从最后一次被画起计时，闲置超 `PageEvictionGraceSeconds`
+  （默认 10s，≤0 禁用）即销毁纹理、再次使用时现场重载。逐出证据两路：变更帧 `GetSprite`
+  盖章 + `MirrorPool.Sync` 每帧对 active 镜像对象的绑定页盖章（Skip 行不进 lean 段、变更
+  帧零 GetSprite——缺镜像侧续命则静态页的图集页会被误逐、材质引用已销毁纹理）。逐出按
+  各页最后使用独立倒计时、错峰死亡，无批量回收峰值；字体页独立字典结构豁免；仅 PlayMode
+  生效。观察面：`UnityYioBackend.Sprites`（`PagesAlive` / `PagesEvictedTotal`）。
+  showcase 新增 `texture-lab` 页：三组图标各挂独立图集（evict-a/b/c），开关+读数摆台
+  验收闲置逐出 / 独立倒计时 / 重载无缝。
+- **图标署名（CC BY 3.0）**：showcase 图标（含存量与新增 evict-a/b/c 测试图集）来自
+  [game-icons.net](https://game-icons.net/)，作者 Lorc、Delapouite & contributors，
+  许可 Creative Commons Attribution 3.0——存量图标自此补记署名。
+
 ### Changed
 - **box-sizing 契约定版 content-box（#116，breaking）**：尺寸语义 = CSS 规范初始值——
   `padding adds to the set width/height`（`width:420px + padding:22px` 渲染 464 外框），

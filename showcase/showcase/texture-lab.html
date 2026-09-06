@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8">
+  <title>Yio 靶子冻结 Showcase · 纹理逐出实验室</title>
+  <style>
+  .root {display:flex;flex-direction:column; width:100vw; height:100vh; padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); background-color:#0e1620; }
+  .body {display:flex; flex-direction:row; gap:24px; padding:24px; overflow:hidden; }
+  .panel {display:flex;flex-direction:column; width:340px; gap:14px; background-color:rgba(21,36,51,0.72); border-radius:10px; padding:24px; align-self:flex-start; }
+  .panel-title { color:#8ec5d8; font-size:16px; font-weight:700; }
+  .panel-desc { color:#9aa0b4; font-size:13px; }
+  .lab-btn { background-color:#5fb4d4; color:#0e1620; font-size:14px; font-weight:700; padding:6px 16px; border-radius:8px; }
+  .lab-read { color:#ffd24a; font-size:14px; }
+  .grp-col {display:flex; flex-direction:column; gap:20px; flex-grow:1; }
+  .grp {display:flex;flex-direction:column; gap:14px; background-color:rgba(21,36,51,0.72); border-radius:10px; padding:20px 24px; }
+  .grp.hidden {display:none;}
+  .grp-head {display:flex; flex-direction:row; align-items:center; gap:16px; }
+  .grp-title { color:#e6ebf2; font-size:16px; font-weight:700; flex-grow:1; }
+  .grp-btn { background-color:#d4a44e; color:#0e1620; font-size:13px; font-weight:700; padding:5px 14px; border-radius:8px; }
+  .grp-icons {display:flex; flex-direction:row; gap:18px; }
+  .grp-icon { width:96px; height:96px; }
+  </style>
+</head>
+<body>
+  <div class="root">
+    <page-top id="page-top"><span slot="title" class="pt-title" style="color:#e0e6ec;font-size:20px;font-weight:700">纹理逐出实验室</span></page-top>
+    <div class="body">
+      <div class="panel">
+        <span class="panel-title">页纹理逐出（#62）</span>
+        <span class="panel-desc">三组图标各挂一张独立图集（evict-a/b/c）。隐藏一组 → 该图集页失去所有可见引用 → 宽限期（默认 10s）过后被逐出销毁；恢复显示 → 现场重载。逐出按各页最后使用时刻独立计时——错峰隐藏三组，读数应逐次 +1 而非一次清仓。</span>
+        <button id="btn-refresh" class="lab-btn">刷新读数</button>
+        <span id="ro-alive" class="lab-read">存活页：待刷新</span>
+        <span id="ro-evicted" class="lab-read">累计逐出：待刷新</span>
+        <span class="panel-desc">验收：隐藏 A → 约 10s 后存活 -1、累计 +1；B/C 不动。恢复 A → 图标无缝重现（重载证据）、存活回升、累计不变。</span>
+      </div>
+      <div class="grp-col">
+        <div class="grp" id="grp-a">
+          <div class="grp-head"><span class="grp-title">A 组 · 武器（图集 evict-a）</span><button id="btn-grp-a" class="grp-btn">隐藏 A 组</button></div>
+          <div class="grp-icons">
+            <img class="grp-icon" src="../res/evict-a/broadsword.png" alt="broadsword">
+            <img class="grp-icon" src="../res/evict-a/crossed-swords.png" alt="crossed-swords">
+            <img class="grp-icon" src="../res/evict-a/battle-axe.png" alt="battle-axe">
+            <img class="grp-icon" src="../res/evict-a/battle-gear.png" alt="battle-gear">
+            <img class="grp-icon" src="../res/evict-a/spiked-mace.png" alt="spiked-mace">
+            <img class="grp-icon" src="../res/evict-a/roman-shield.png" alt="roman-shield">
+          </div>
+        </div>
+        <div class="grp" id="grp-b">
+          <div class="grp-head"><span class="grp-title">B 组 · 生灵（图集 evict-b）</span><button id="btn-grp-b" class="grp-btn">隐藏 B 组</button></div>
+          <div class="grp-icons">
+            <img class="grp-icon" src="../res/evict-b/minotaur.png" alt="minotaur">
+            <img class="grp-icon" src="../res/evict-b/flamingo.png" alt="flamingo">
+            <img class="grp-icon" src="../res/evict-b/pumpkin.png" alt="pumpkin">
+            <img class="grp-icon" src="../res/evict-b/centurion-helmet.png" alt="centurion-helmet">
+            <img class="grp-icon" src="../res/evict-b/ninja-armor.png" alt="ninja-armor">
+            <img class="grp-icon" src="../res/evict-b/wolverine-claws.png" alt="wolverine-claws">
+          </div>
+        </div>
+        <div class="grp" id="grp-c">
+          <div class="grp-head"><span class="grp-title">C 组 · 机关（图集 evict-c）</span><button id="btn-grp-c" class="grp-btn">隐藏 C 组</button></div>
+          <div class="grp-icons">
+            <img class="grp-icon" src="../res/evict-c/boombox.png" alt="boombox">
+            <img class="grp-icon" src="../res/evict-c/radar-sweep.png" alt="radar-sweep">
+            <img class="grp-icon" src="../res/evict-c/spoutnik.png" alt="spoutnik">
+            <img class="grp-icon" src="../res/evict-c/mailbox.png" alt="mailbox">
+            <img class="grp-icon" src="../res/evict-c/microchip.png" alt="microchip">
+            <img class="grp-icon" src="../res/evict-c/factory.png" alt="factory">
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

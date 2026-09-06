@@ -4,7 +4,10 @@
     "showcase"
   ],
   "atlases": [
-    "icons"
+    "icons",
+    "evict-a",
+    "evict-b",
+    "evict-c"
   ],
   "fonts": [
     {

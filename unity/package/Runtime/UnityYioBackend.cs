@@ -78,6 +78,12 @@ namespace Yio
         internal NativeHostManager NativeHost => _nhm;
 
         /// <summary>
+        /// 图集页解析器（Driver/消费侧诊断读数用：PagesAlive / PagesEvictedTotal /
+        /// PageEvictionGraceSeconds——#62 页纹理逐出的观察面）。只读用途；写入走 InitSprites。
+        /// </summary>
+        public SpriteResolver Sprites => _sprites;
+
+        /// <summary>
         /// SpriteResolver 初始化：传入所有 atlas manifest + 页纹理懒加载委托。
         /// Driver.Awake 后调：ParseAtlas 解析每个 atlas.json → <see cref="AtlasManifest"/>，传入此方法。
         /// loadPage(pageFileName) 按需加载页 PNG（Driver 决定走 Resources/AB/Addressables）。

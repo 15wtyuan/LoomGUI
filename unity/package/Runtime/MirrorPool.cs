@@ -19,6 +19,11 @@ namespace Yio
         public bool Stale;
         public ulong LastNodeId;      // 诊断：最近绑定的 node_id（DumpState 打印；不做复用校验——复用换绑是 reuse_key 池化的正常行为）
 
+        // #62 页纹理逐出：本 obj 当前绑定的图集页键（null=非页承载：字体页/miss/纯色）。
+        // UpdateHeader 每 lean 帧随 look 重写；Skip 帧不重写——但 Skip 行本就「视觉与上帧
+        // 相同」，绑定不变是精确语义。Sync 每帧对 active obj 的绑定页盖章续命。
+        public (int, int)? BoundPage;
+
         // #66：mesh 原始（未补偿）AABB。FULL 帧上传后 RecalculateBounds 时存底；剔除补偿
         // 永远基于此值重算。不能读 Mesh.bounds 顶替：Header 帧不重建 mesh，Mesh.bounds 里
         // 是上一帧「已补偿值」，再乘一次线性矩阵得 AABB(L·AABB(L·B)) ≠ AABB(L·B)——滚动中
@@ -113,6 +118,26 @@ namespace Yio
             // 防御：陈旧/非当前 blob 直接早退（magic+version 校验）。不做清理——上一帧的 GO
             // 维持不动比误销毁更安全；调用方应自检 IsValid 再 Sync。
             if (!blob.IsValid) return;
+
+            // #62 镜像侧续命：Skip 行不进 lean 段（变更帧零 GetSprite），「闲置页仍被画」
+            // 的证据只能从镜像取——active GO = 本帧在屏，其绑定页照章盖章。缺这步，静态页
+            // 的图集页在宽限期满被销毁而材质仍引用已销毁纹理（图标蒸发）。池 ≤ 数百量级，
+            // 每帧迭代纳秒级；盖章只写缓存命中项，零分配。先盖章收本帧证据，再 Sweep 裁决。
+            if (sprites != null)
+            {
+                if (_poolByNodeId.Count > 0)
+                    foreach (var kv in _poolByNodeId)
+                        if (kv.Value.BoundPage.HasValue && kv.Value.Go.activeSelf)
+                            sprites.StampPage(kv.Value.BoundPage.Value);
+                if (_poolByReuse.Count > 0)
+                    foreach (var kv in _poolByReuse)
+                        if (kv.Value.BoundPage.HasValue && kv.Value.Go.activeSelf)
+                            sprites.StampPage(kv.Value.BoundPage.Value);
+
+                // 页纹理逐出心跳（#62）：Sync 是每帧必经口，顺路驱动 SpriteResolver 扫一遍
+                // 闲置页。策略细节（宽限/盖章/字体豁免）全封在 SpriteResolver，此处不感知。
+                sprites.Sweep();
+            }
 
             // ① 全标 stale（两个 dict）
             foreach (var kv in _poolByNodeId) kv.Value.Stale = true;
@@ -221,6 +246,9 @@ namespace Yio
         void UpdateHeader(RenderObj ro, FrameBlob blob, int i, Transform root,
                           MaterialManager mm, byte kind, SpriteLookup look, Texture tex)
         {
+            // #62：绑定页键随 look 刷新（null=字体页/miss/纯色，不参与续命）。Skip 帧
+            // 不进本函数——绑定沿用上帧，与「Skip=视觉未变」的行语义一致。
+            ro.BoundPage = look.PageKey;
             // flatten：所有节点挂 root（挂载行除外——路由到业务 3D 容器，见 ResolveParent）。
             // pure 和非 pure 统一 GO localPosition=(Mtx,Mty)（world translate 进 GO transform）。
             // 非纯平移的 scale/rotate 进 _ObjectMatrix（无 translate）。translate 进 GO

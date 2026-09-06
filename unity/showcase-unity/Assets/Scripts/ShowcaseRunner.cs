@@ -36,6 +36,7 @@ public class ShowcaseRunner : MonoBehaviour
         ("nav-comp", "component-lab"),
         ("nav-shape", "shape-mask"),
         ("nav-tree", "tree"),
+        ("nav-evict", "texture-lab"),
         ("nav-fx", "effects"),
         ("nav-world", "world"),
         ("nav-stress", "stress"),
@@ -214,6 +215,45 @@ public class ShowcaseRunner : MonoBehaviour
         Debug.Log($"[Showcase] Instantiate showcase/{page} = OK");
     }
 
+    /// texture-lab 页 driver（#62 页纹理逐出验收）：
+    /// 三组开关 add/remove hidden class——display:none 剪枝后该图集页失去全部可见引用，
+    /// SpriteResolver 宽限期（默认 10s）满即逐出销毁；恢复显示走 GetOrLoadPage 现场重载。
+    /// 读数取 driver.Host.Backend 的 SpriteResolver 统计（PagesAlive / PagesEvictedTotal）。
+    /// 判据（肉眼强信号）：隐藏一组 → 约 10s 后「存活 -1、累计 +1」且其余组不动；三组错峰
+    /// 隐藏则读数逐次 +1（每页独立倒计时，非批量清仓）；恢复 → 图标无缝重现、存活回升、累计不变。
+    void WireTextureLabDrivers(Container page)
+    {
+        void Refresh()
+        {
+            var sprites = (_driver.Host?.Backend as UnityYioBackend)?.Sprites;
+            if (sprites == null) return;
+            if (page.TryGet<TextElement>("ro-alive", out var ra))
+                ra.TextContent = $"存活页：{sprites.PagesAlive}";
+            if (page.TryGet<TextElement>("ro-evicted", out var re))
+                re.TextContent = $"累计逐出：{sprites.PagesEvictedTotal}";
+        }
+        void WireGroup(string btnId, string grpId, string label)
+        {
+            if (!page.TryGet<Button>(btnId, out var btn)
+                || !page.TryGet<Container>(grpId, out var grp))
+                return;
+            bool hidden = false;
+            btn.Clicked += () =>
+            {
+                hidden = !hidden;
+                if (hidden) { grp.Classes.Add("hidden"); btn.TextContent = $"恢复{label}"; }
+                else { grp.Classes.Remove("hidden"); btn.TextContent = $"隐藏{label}"; }
+                Refresh();
+            };
+        }
+        WireGroup("btn-grp-a", "grp-a", "A 组");
+        WireGroup("btn-grp-b", "grp-b", "B 组");
+        WireGroup("btn-grp-c", "grp-c", "C 组");
+        if (page.TryGet<Button>("btn-refresh", out var bRefresh))
+            bRefresh.Clicked += Refresh;
+        Refresh();
+    }
+
     /// adapt 演示页（#110）：三个模式按钮 → Driver.SetAdaptMode 运行时切换 + 读数翻转。
     /// 判据（肉眼强信号）：切 fit-width 后拖 Game 视图高度 → 内容重排无黑边、字号随
     /// 窗口缩放（vmin）；letterbox 出黑边对照；读数 span 跟随按钮翻转。
@@ -255,6 +295,8 @@ public class ShowcaseRunner : MonoBehaviour
             WireInfraDrivers(page);
         if (pageName == "adapt")
             WireAdaptModeSwitch(page);
+        if (pageName == "texture-lab")
+            WireTextureLabDrivers(page);
         if (pageName == "home")
         {
             foreach (var (cardId, target) in NAV_CARDS)

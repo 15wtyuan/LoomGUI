@@ -15,6 +15,13 @@ namespace Yio
         public int origW;
         public int origH;
         public bool found;
+
+        /// <summary>
+        /// 命中的图集页键（atlasIdx, page）。null = 非页承载（字体页 / miss / 空键）——
+        /// 逐出续命（StampPage）只对页承载的命中生效；字体页在 _fontPages 独立字典，
+        /// 结构上不在逐出面。
+        /// </summary>
+        public (int AtlasIdx, int Page)? PageKey;
     }
 
     /// <summary>
@@ -41,8 +48,32 @@ namespace Yio
         // Merged sprite table: sprite_key → (atlasIdx, page, uvRect, origW, origH).
         Dictionary<string, (int atlasIdx, int page, UnityEngine.Rect uvRect, int origW, int origH)> _sprites;
 
-        // Page texture cache: (atlasIdx, page) → Texture2D. Lazy-loaded via loadPage delegate.
-        Dictionary<(int, int), Texture2D> _pageCache;
+        /// <summary>页缓存条目：纹理 + 最后使用时刻（Time.unscaledTime 秒）。</summary>
+        struct PageEntry
+        {
+            public Texture2D Tex;
+            public float LastUsed;
+        }
+
+        // Page texture cache: (atlasIdx, page) → entry. Lazy-loaded via loadPage delegate.
+        // 字体页不在此表（_fontPages 独立字典）——逐出只扫本表，字体页结构上天然豁免。
+        Dictionary<(int, int), PageEntry> _pageCache;
+
+        // Sweep 受害者收集，成员复用（每帧零分配）。
+        readonly List<(int, int)> _evictScratch = new List<(int, int)>();
+
+        /// <summary>
+        /// 页纹理逐出宽限期（unscaled 秒）：一页从最后一次被画起计时，超时即 Destroy。
+        /// expireAfterAccess 语义（每次使用续命）；≤0 禁用逐出。10s 默认压「刚逐出又要回」
+        /// 的重载抖动；秒制而非帧制——30fps 移动端与 144fps 桌面同一语义。
+        /// </summary>
+        public float PageEvictionGraceSeconds { get; set; } = 10f;
+
+        /// <summary>当前缓存的页纹理数（含未过宽限期的闲置页）。</summary>
+        public int PagesAlive => _pageCache?.Count ?? 0;
+
+        /// <summary>会话累计逐出页数（Clear 归零）。验收读数：逐出后重载应 +1 且不再变。</summary>
+        public int PagesEvictedTotal { get; private set; }
 
         // Font atlas pages: path → full-region SpriteLookup. Registered externally by SyncFontAtlas.
         Dictionary<string, SpriteLookup> _fontPages;
@@ -64,7 +95,7 @@ namespace Yio
         public void Init(List<AtlasManifest> atlases, Func<string, Texture2D> loadPage)
         {
             _sprites = new Dictionary<string, (int, int, UnityEngine.Rect, int, int)>();
-            _pageCache = new Dictionary<(int, int), Texture2D>();
+            _pageCache = new Dictionary<(int, int), PageEntry>();
             _fontPages = new Dictionary<string, SpriteLookup>();
             _warned = new HashSet<string>();
             _loadPage = loadPage;
@@ -128,7 +159,8 @@ namespace Yio
                 uvRect = entry.uvRect,
                 origW = entry.origW,
                 origH = entry.origH,
-                found = true
+                found = true,
+                PageKey = (entry.atlasIdx, entry.page)
             };
         }
 
@@ -159,13 +191,72 @@ namespace Yio
             _pageCache?.Clear();
             _fontPages?.Clear();
             _warned?.Clear();
+            _evictScratch.Clear();
+            PagesEvictedTotal = 0;
+        }
+
+        /// <summary>
+        /// 逐出闲置页（MirrorPool.Sync 每帧驱动）。判据 = 「这帧没有画面在画它」连续超过
+        /// PageEvictionGraceSeconds——证据有两路：① GetSprite 的盖章（变更帧的加载/换图），
+        /// ② StampPage 的镜像侧盖章（Skip 行不进 lean 段、变更帧零 GetSprite——闲置静态页
+        /// 靠 MirrorPool 每帧代 active GO 盖章续命，缺它则静态页的图集页在宽限期满后被
+        /// 销毁而 mesh 材质仍引用已销毁纹理）。语义引用不看：display:none / 滚出视口的节点
+        /// 不盖章，其页到期即逐出，重新可见时经 GetOrLoadPage 现载（重激活同帧经 lean 行
+        /// UpdateHeader 重绑纹理，不会引用已销毁纹理）。Destroy 是释放级廉价操作（非托管
+        /// GC 停顿），错峰死亡随各页最后使用时刻自然分布，无批量回收峰值。仅 PlayMode：
+        /// EditMode 无长会话内存压力，且 Object.Destroy 在编辑态非法。
+        /// </summary>
+        public void Sweep()
+        {
+            if (!Application.isPlaying) return;
+            if (_pageCache == null || _pageCache.Count == 0) return;
+            float grace = PageEvictionGraceSeconds;
+            if (grace <= 0f) return;
+
+            float now = Time.unscaledTime;
+            foreach (var kv in _pageCache)
+                if (now - kv.Value.LastUsed > grace)
+                    _evictScratch.Add(kv.Key);
+            for (int i = 0; i < _evictScratch.Count; i++)
+            {
+                PageEntry e = _pageCache[_evictScratch[i]];
+                _pageCache.Remove(_evictScratch[i]);
+                if (e.Tex != null)
+                {
+                    UnityEngine.Object.Destroy(e.Tex);
+                    PagesEvictedTotal++;
+                }
+            }
+            _evictScratch.Clear();
+        }
+
+        /// <summary>
+        /// 镜像侧续命（MirrorPool.Sync 每帧对每个 active RenderObj 的绑定页调用）：
+        /// 页在缓存中则刷新最后使用时刻；不在缓存 = 已逐出/未加载，无需动作——下次
+        /// 变更帧的 GetSprite 会现载。缺缓存条目时零写入，闲置池迭代零分配。
+        /// </summary>
+        public void StampPage((int AtlasIdx, int Page) key)
+        {
+            if (_pageCache == null) return;
+            if (_pageCache.TryGetValue(key, out var e))
+            {
+                e.LastUsed = Time.unscaledTime;
+                _pageCache[key] = e;    // struct：改字段须写回
+            }
         }
 
         Texture2D GetOrLoadPage(int atlasIdx, int page)
         {
             var key = (atlasIdx, page);
             if (_pageCache == null) return null;
-            if (_pageCache.TryGetValue(key, out var cached)) return cached;
+            // 命中即盖章（expireAfterAccess 的续命点）：MirrorPool lean 段每帧对每个可见
+            // mesh 节点走到这里——盖到的页 = 本帧有画面在画，逐出判据的证据源。
+            if (_pageCache.TryGetValue(key, out var cached))
+            {
+                cached.LastUsed = Time.unscaledTime;
+                _pageCache[key] = cached;   // struct：改字段须写回
+                return cached.Tex;
+            }
 
             if (_loadPage == null) return null;
             if (_atlasPages == null || atlasIdx >= _atlasPages.Count) return null;
@@ -174,7 +265,7 @@ namespace Yio
 
             string fileName = pages[page];
             Texture2D tex = _loadPage(fileName);
-            if (tex != null) _pageCache[key] = tex;
+            if (tex != null) _pageCache[key] = new PageEntry { Tex = tex, LastUsed = Time.unscaledTime };
             return tex;
         }
     }
