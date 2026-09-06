@@ -327,9 +327,10 @@ namespace Yio.HeadlessTests
             var (stage, ctx) = StageHarness.Create();
             try
             {
+                // 坏选择器样例须选仍处围栏外的构造：`>` 已入子集（#114），相邻组合器 `+` 仍拒。
                 var ex = Assert.Throws<UIStyleException>(() =>
-                    ctx.StyleSheet.Add(".a > .b { color: #fff }"));
-                Assert.Contains(".a > .b", ex.Message);
+                    ctx.StyleSheet.Add(".a + .b { color: #fff }"));
+                Assert.Contains(".a + .b", ex.Message);
             }
             finally { StageHarness.Destroy(stage); }
         }
