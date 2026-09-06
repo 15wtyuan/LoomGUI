@@ -120,18 +120,20 @@ namespace Yio
             if (!blob.IsValid) return;
 
             // #62 镜像侧续命：Skip 行不进 lean 段（变更帧零 GetSprite），「闲置页仍被画」
-            // 的证据只能从镜像取——active GO = 本帧在屏，其绑定页照章盖章。缺这步，静态页
-            // 的图集页在宽限期满被销毁而材质仍引用已销毁纹理（图标蒸发）。池 ≤ 数百量级，
-            // 每帧迭代纳秒级；盖章只写缓存命中项，零分配。先盖章收本帧证据，再 Sweep 裁决。
+            // 的证据只能从镜像取——activeInHierarchy GO = 本帧真的在屏（activeSelf 不够：
+            // 挂在被业务侧 SetActive(false) 的祖先下时 activeSelf 仍 true，页面会因此被
+            // 永久续命、永不逐出）。缺这步，静态页的图集页在宽限期满被销毁而材质仍引用
+            // 已销毁纹理（图标蒸发）。池 ≤ 数百量级，每帧迭代纳秒级；盖章只写缓存命中项，
+            // 零分配。先盖章收本帧证据，再 Sweep 裁决。
             if (sprites != null)
             {
                 if (_poolByNodeId.Count > 0)
                     foreach (var kv in _poolByNodeId)
-                        if (kv.Value.BoundPage.HasValue && kv.Value.Go.activeSelf)
+                        if (kv.Value.BoundPage.HasValue && kv.Value.Go.activeInHierarchy)
                             sprites.StampPage(kv.Value.BoundPage.Value);
                 if (_poolByReuse.Count > 0)
                     foreach (var kv in _poolByReuse)
-                        if (kv.Value.BoundPage.HasValue && kv.Value.Go.activeSelf)
+                        if (kv.Value.BoundPage.HasValue && kv.Value.Go.activeInHierarchy)
                             sprites.StampPage(kv.Value.BoundPage.Value);
 
                 // 页纹理逐出心跳（#62）：Sync 是每帧必经口，顺路驱动 SpriteResolver 扫一遍
